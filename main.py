@@ -34,19 +34,10 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QAction, QFont, QColor
 
 # Try importing CAN libraries
-try:
-    import can
-    CAN_AVAILABLE = True
-except ImportError:
-    CAN_AVAILABLE = False
-    print("python-can not available. Install with: pip install python-can")
 
-try:
-    import cantools
-    DBC_AVAILABLE = True
-except ImportError:
-    DBC_AVAILABLE = False
-    print("cantools not available. Install with: pip install cantools")
+import can
+import cantools
+
 
 @dataclass
 class CANFrame:
@@ -274,7 +265,7 @@ class CANTraceModel(QAbstractTableModel):
         decoded_parts = []
 
         # DBC decoding
-        if self.dbc_database and DBC_AVAILABLE:
+        if self.dbc_database:
             try:
                 message = self.dbc_database.get_message_by_name_or_arbitration_id(frame.arbitration_id)
                 decoded = self.dbc_database.decode_message(frame.arbitration_id, frame.data)
@@ -350,7 +341,7 @@ class CANGroupedModel(QAbstractTableModel):
             if col == 0:  # ID
                 return f"0x{can_id:X}"
             elif col == 1:  # Name
-                if self.dbc_database and DBC_AVAILABLE:
+                if self.dbc_database:
                     try:
                         message = self.dbc_database.get_message_by_name_or_arbitration_id(can_id)
                         return message.name
@@ -381,7 +372,7 @@ class CANGroupedModel(QAbstractTableModel):
         decoded_parts = []
 
         # DBC decoding
-        if self.dbc_database and DBC_AVAILABLE:
+        if self.dbc_database:
             try:
                 message = self.dbc_database.get_message_by_name_or_arbitration_id(frame.arbitration_id)
                 decoded = self.dbc_database.decode_message(frame.arbitration_id, frame.data)
@@ -854,10 +845,6 @@ class CANBusObserver(QMainWindow):
             QMessageBox.warning(self, "No File", "Please select a DBC file first")
             return
 
-        if not DBC_AVAILABLE:
-            QMessageBox.warning(self, "DBC Support", "cantools library not available.\nInstall with: pip install cantools")
-            return
-
         try:
             self.dbc_database = cantools.database.load_file(filename)
             self.trace_model.set_dbc_database(self.dbc_database)
@@ -934,73 +921,11 @@ class CANFrameGenerator(QThread):
             time.sleep(1)  # 1 second between cycles
 
 
-class TestCANBusObserver(CANBusObserver):
-    """Test version with frame generator for demo purposes"""
-
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("CAN Bus Observer - Test Mode")
-        self.frame_generator = None
-
-        # Add test controls
-        self.add_test_controls()
-
-    def add_test_controls(self):
-        # Add test mode controls to the main layout
-        central_widget = self.centralWidget()
-        main_layout = central_widget.layout()
-
-        # Create test controls layout
-        test_layout = QHBoxLayout()
-        test_layout.addWidget(QLabel("Test Mode:"))
-
-        self.generate_btn = QPushButton("Start Generator")
-        self.stop_generate_btn = QPushButton("Stop Generator")
-        self.stop_generate_btn.setEnabled(False)
-
-        test_layout.addWidget(self.generate_btn)
-        test_layout.addWidget(self.stop_generate_btn)
-        test_layout.addStretch()
-
-        # Insert test controls after the main toolbar
-        main_layout.insertLayout(1, test_layout)
-
-        self.generate_btn.clicked.connect(self.start_generator)
-        self.stop_generate_btn.clicked.connect(self.stop_generator)
-
-    def start_generator(self):
-        if not self.frame_generator:
-            self.frame_generator = CANFrameGenerator()
-            self.frame_generator.frame_generated.connect(self.on_frame_received)
-
-        self.frame_generator.start_generation()
-        self.generate_btn.setEnabled(False)
-        self.stop_generate_btn.setEnabled(True)
-        self.connection_label.setText("Test Generator Running")
-
-    def stop_generator(self):
-        if self.frame_generator:
-            self.frame_generator.stop_generation()
-
-        self.generate_btn.setEnabled(True)
-        self.stop_generate_btn.setEnabled(False)
-        self.connection_label.setText("Test Generator Stopped")
-
-    def closeEvent(self, event):
-        if self.frame_generator:
-            self.frame_generator.stop_generation()
-        super().closeEvent(event)
-
-
 def main():
     app = QApplication(sys.argv)
 
-    # Use test version if CAN libraries are not available
-    if CAN_AVAILABLE:
-        window = CANBusObserver()
-    else:
-        print("CAN libraries not available, starting in test mode")
-        window = TestCANBusObserver()
+    window = CANBusObserver()
+
 
     window.show()
     sys.exit(app.exec())
