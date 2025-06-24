@@ -3,7 +3,7 @@
 CAN Bus Observer GUI - Similar to PCAN-View
 Features:
 - Frame view grouped by ID or chronological trace
-- DBC decoding support
+- DBC decoding support and signal-based transmitting
 - CAN log file saving/loading
 - Frame filtering with min/max/mask
 - Basic CANopen decoding
@@ -171,7 +171,7 @@ class CANTraceModel(QAbstractTableModel):
         if self.dbc_database and CAN_AVAILABLE:
             try:
                 message = self.dbc_database.get_message_by_frame_id(frame.arbitration_id)
-                decoded_signals = self.dbc_database.decode_message(frame.arbitration_id, frame.data)
+                decoded_signals = self.dbc_database.decode_message(frame.arbitration_id, frame.data, decode_choices=False)
                 signal_strs = [f"{name}={value}" for name, value in decoded_signals.items()]
                 decoded_parts.append(f"DBC: {message.name} {' '.join(signal_strs)}")
             except KeyError: pass
@@ -243,7 +243,7 @@ class CANGroupedModel(QAbstractTableModel):
         decoded_parts = []
         if self.dbc_database and CAN_AVAILABLE:
             try:
-                decoded_signals = self.dbc_database.decode_message(frame.arbitration_id, frame.data)
+                decoded_signals = self.dbc_database.decode_message(frame.arbitration_id, frame.data, decode_choices=False)
                 signal_strs = [f"{name}={value}" for name, value in decoded_signals.items()]
                 decoded_parts.append(" ".join(signal_strs))
             except KeyError: pass
@@ -302,9 +302,78 @@ class FilterWidget(QWidget):
         except ValueError: pass
         self.filter.accept_standard = self.standard_cb.isChecked(); self.filter.accept_extended = self.extended_cb.isChecked(); self.filter.accept_data = self.data_cb.isChecked(); self.filter.accept_remote = self.remote_cb.isChecked()
 
+class SignalTransmitPanel(QGroupBox):
+    """A panel to configure signals for a given DBC message."""
+    data_encoded = Signal(bytes) # Emits the encoded data payload
+
+    def __init__(self):
+        super().__init__("Signal Configuration")
+        self.message = None # cantools.database.Message
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Signal", "Value", "Unit"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.table)
+        self.table.cellChanged.connect(self._encode_signals)
+
+    def clear_panel(self):
+        self.message = None
+        self.table.clearContents()
+        self.table.setRowCount(0)
+        self.setTitle("Signal Configuration")
+        self.setVisible(False)
+
+    def populate_from_message(self, message):
+        self.message = message
+        self.table.blockSignals(True) # Block signals while populating
+        self.table.clearContents()
+        self.table.setRowCount(len(message.signals))
+
+        for row, sig in enumerate(message.signals):
+            self.table.setItem(row, 0, QTableWidgetItem(sig.name))
+            initial_value = sig.initial if sig.initial is not None else 0
+            self.table.setItem(row, 1, QTableWidgetItem(str(initial_value)))
+            unit = sig.unit if sig.unit else ""
+            self.table.setItem(row, 2, QTableWidgetItem(unit))
+            # Make name and unit read-only
+            self.table.item(row, 0).setFlags(self.table.item(row, 0).flags() & ~Qt.ItemIsEditable)
+            self.table.item(row, 2).setFlags(self.table.item(row, 2).flags() & ~Qt.ItemIsEditable)
+
+        self.table.blockSignals(False) # Unblock signals
+        self.setTitle(f"Signal Configuration: {message.name}")
+        self.setVisible(True)
+        self._encode_signals() # Initial encode
+
+    def _encode_signals(self):
+        if not self.message:
+            return
+
+        signal_data = {}
+        try:
+            for row in range(self.table.rowCount()):
+                name = self.table.item(row, 0).text()
+                value_str = self.table.item(row, 1).text()
+                # Safely convert to number (int or float)
+                signal_data[name] = float(value_str) if '.' in value_str else int(value_str)
+
+            encoded_data = self.message.encode(signal_data, strict=True)
+            self.data_encoded.emit(encoded_data)
+        except (ValueError, TypeError) as e:
+            # Don't emit if data is invalid, just wait for user to fix it.
+            pass
+        except Exception as e:
+            QMessageBox.warning(self, "Encoding Error", f"Could not encode signals: {e}")
+
 class TransmitPanel(QGroupBox):
     """Widget for sending multiple CAN frames."""
     frame_to_send = Signal(object)  # can.Message
+    row_selection_changed = Signal(int, str) # row, id_text
+
     def __init__(self):
         super().__init__("Transmit")
         self.timers: Dict[int, QTimer] = {}
@@ -312,22 +381,21 @@ class TransmitPanel(QGroupBox):
         if not CAN_AVAILABLE: self.setEnabled(False); self.setTitle("Transmit (python-can not available)")
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        # Control buttons
         control_layout = QHBoxLayout()
-        self.add_btn = QPushButton("Add Frame")
-        self.remove_btn = QPushButton("Remove Selected")
+        self.add_btn = QPushButton("Add Frame"); self.remove_btn = QPushButton("Remove Selected")
         control_layout.addWidget(self.add_btn); control_layout.addWidget(self.remove_btn); control_layout.addStretch()
         layout.addLayout(control_layout)
-        # Table
         self.table = QTableWidget()
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(["Enable", "ID (hex)", "Type", "RTR", "DLC", "Data (hex)", "Cycle (ms)", "Send"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.table)
-        # Connect signals
         self.add_btn.clicked.connect(self.add_frame)
         self.remove_btn.clicked.connect(self.remove_selected_frames)
+        self.table.currentItemChanged.connect(self._on_current_item_changed)
+        self.table.cellChanged.connect(self._on_cell_changed)
     def add_frame(self):
         row = self.table.rowCount()
         self.table.insertRow(row)
@@ -341,38 +409,50 @@ class TransmitPanel(QGroupBox):
         # Enable Checkbox
         enable_cb = QCheckBox(); enable_cb.toggled.connect(partial(self._toggle_periodic, row)); self.table.setCellWidget(row, 0, self._center_widget(enable_cb))
         # ID
-        id_edit = QLineEdit("100"); self.table.setCellWidget(row, 1, id_edit)
+        self.table.setItem(row, 1, QTableWidgetItem("100"))
         # Type ComboBox
         type_combo = QComboBox(); type_combo.addItems(["Standard", "Extended"]); self.table.setCellWidget(row, 2, type_combo)
         # RTR Checkbox
         rtr_cb = QCheckBox(); self.table.setCellWidget(row, 3, self._center_widget(rtr_cb))
-        # DLC SpinBox
-        dlc_spin = QSpinBox(); dlc_spin.setRange(0, 8); self.table.setCellWidget(row, 4, dlc_spin)
+        # DLC
+        self.table.setItem(row, 4, QTableWidgetItem("0"))
         # Data
-        data_edit = QLineEdit(); data_edit.textChanged.connect(lambda text, r=row: self._update_dlc_from_data(r)); self.table.setCellWidget(row, 5, data_edit)
+        data_edit = QTableWidgetItem(""); self.table.setItem(row, 5, data_edit)
         # Cycle Time
-        cycle_edit = QLineEdit("100"); self.table.setCellWidget(row, 6, cycle_edit)
+        self.table.setItem(row, 6, QTableWidgetItem("100"))
         # Send Button
-        send_btn = QPushButton("Send"); send_btn.clicked.connect(partial(self.send_frame, row)); self.table.setCellWidget(row, 7, send_btn)
+        send_btn = QPushButton("Send"); send_btn.clicked.connect(partial(self.send_frame_from_row, row)); self.table.setCellWidget(row, 7, send_btn)
     def _center_widget(self, widget):
-        # Helper to center widgets like checkboxes in cells
         cell_widget = QWidget(); layout = QHBoxLayout(cell_widget); layout.addWidget(widget); layout.setAlignment(Qt.AlignCenter); layout.setContentsMargins(0,0,0,0); return cell_widget
+    def _on_current_item_changed(self, current, previous):
+        if current and (not previous or current.row() != previous.row()):
+            row = current.row()
+            id_text = self.table.item(row, 1).text()
+            self.row_selection_changed.emit(row, id_text)
+    def _on_cell_changed(self, row, column):
+        if column == 1: # ID changed
+            id_text = self.table.item(row, 1).text()
+            self.row_selection_changed.emit(row, id_text)
+        elif column == 5: # Data changed
+            self._update_dlc_from_data(row)
     def _update_dlc_from_data(self, row):
-        data_edit = self.table.cellWidget(row, 5)
-        dlc_spin = self.table.cellWidget(row, 4)
+        data_text = self.table.item(row, 5).text()
+        dlc_item = self.table.item(row, 4)
         try:
-            data_len = len(bytes.fromhex(data_edit.text().replace(" ", "")))
-            if data_len <= 8: dlc_spin.setValue(data_len)
+            data_len = len(bytes.fromhex(data_text.replace(" ", "")))
+            if data_len <= 8: dlc_item.setText(str(data_len))
         except (ValueError, TypeError): pass
+    def update_row_data(self, row, data_bytes):
+        self.table.blockSignals(True)
+        self.table.item(row, 5).setText(data_bytes.hex(' '))
+        self.table.item(row, 4).setText(str(len(data_bytes)))
+        self.table.blockSignals(False)
     def _toggle_periodic(self, row, state):
         if state:
             try:
-                cycle_ms = int(self.table.cellWidget(row, 6).text())
+                cycle_ms = int(self.table.item(row, 6).text())
                 if cycle_ms <= 0: raise ValueError("Cycle time must be positive")
-                timer = QTimer(self)
-                timer.timeout.connect(partial(self.send_frame, row))
-                timer.start(cycle_ms)
-                self.timers[row] = timer
+                timer = QTimer(self); timer.timeout.connect(partial(self.send_frame_from_row, row)); timer.start(cycle_ms); self.timers[row] = timer
             except (ValueError, TypeError) as e:
                 QMessageBox.warning(self, "Invalid Cycle Time", f"Row {row+1}: Please enter a valid positive number for cycle time. Error: {e}")
                 self.table.cellWidget(row, 0).findChild(QCheckBox).setChecked(False)
@@ -380,31 +460,29 @@ class TransmitPanel(QGroupBox):
     def _stop_timer_for_row(self, row):
         if row in self.timers: self.timers.pop(row).stop()
     def stop_all_timers(self):
-        for timer in self.timers.values(): timer.stop()
-        self.timers.clear()
+        for timer in self.timers.values(): timer.stop(); self.timers.clear()
         for r in range(self.table.rowCount()): self.table.cellWidget(r, 0).findChild(QCheckBox).setChecked(False)
-    def send_frame(self, row):
+    def send_frame_from_row(self, row):
         try:
-            can_id = int(self.table.cellWidget(row, 1).text(), 16)
+            can_id = int(self.table.item(row, 1).text(), 16)
             is_extended = self.table.cellWidget(row, 2).currentIndex() == 1
             is_rtr = self.table.cellWidget(row, 3).findChild(QCheckBox).isChecked()
-            dlc = self.table.cellWidget(row, 4).value()
-            data_str = self.table.cellWidget(row, 5).text().replace(" ", "")
+            dlc = int(self.table.item(row, 4).text())
+            data_str = self.table.item(row, 5).text().replace(" ", "")
             data_bytes = bytes.fromhex(data_str) if data_str and not is_rtr else b''
             message = can.Message(arbitration_id=can_id, is_extended_id=is_extended, is_remote_frame=is_rtr, dlc=dlc, data=data_bytes)
             self.frame_to_send.emit(message)
         except (ValueError, TypeError) as e:
             QMessageBox.warning(self, "Invalid Transmit Data", f"Row {row+1}: Could not send frame. Please check data format.\nError: {e}")
-            self._stop_timer_for_row(row)
-            self.table.cellWidget(row, 0).findChild(QCheckBox).setChecked(False)
+            self._stop_timer_for_row(row); self.table.cellWidget(row, 0).findChild(QCheckBox).setChecked(False)
     def send_selected_frames(self):
         selected_rows = sorted(list(set(index.row() for index in self.table.selectionModel().selectedIndexes())))
-        for row in selected_rows: self.send_frame(row)
+        for row in selected_rows: self.send_frame_from_row(row)
 
 class CANBusObserver(QMainWindow):
     """Main CAN Bus Observer application"""
     def __init__(self):
-        super().__init__(); self.setWindowTitle("CAN Bus Observer"); self.setGeometry(100, 100, 1200, 800)
+        super().__init__(); self.setWindowTitle("CAN Bus Observer"); self.setGeometry(100, 100, 1200, 900)
         self.trace_model = CANTraceModel(); self.grouped_model = CANGroupedModel()
         self.grouped_proxy_model = QSortFilterProxyModel(); self.grouped_proxy_model.setSourceModel(self.grouped_model); self.grouped_proxy_model.setSortRole(Qt.UserRole)
         self.can_reader = None; self.dbc_database = None; self.frame_filter = CANFrameFilter(); self.log_file = None; self.frame_count = 0
@@ -418,19 +496,27 @@ class CANBusObserver(QMainWindow):
         toolbar_layout.addWidget(self.connect_btn); toolbar_layout.addWidget(self.disconnect_btn); toolbar_layout.addStretch(); layout.addLayout(toolbar_layout)
         main_splitter = QSplitter(Qt.Horizontal); layout.addWidget(main_splitter)
         left_widget = QWidget(); left_layout = QVBoxLayout(left_widget)
+        # Left side splitter for receive/transmit
+        left_splitter = QSplitter(Qt.Vertical)
         control_layout = QHBoxLayout(); self.clear_btn = QPushButton("Clear"); self.save_log_btn = QPushButton("Save Log"); self.load_log_btn = QPushButton("Load Log")
-        control_layout.addWidget(self.clear_btn); control_layout.addWidget(self.save_log_btn); control_layout.addWidget(self.load_log_btn); control_layout.addStretch(); left_layout.addLayout(control_layout)
+        control_layout.addWidget(self.clear_btn); control_layout.addWidget(self.save_log_btn); control_layout.addWidget(self.load_log_btn); control_layout.addStretch()
+        left_layout.addLayout(control_layout)
+        # Receive part
+        receive_widget = QWidget(); receive_layout = QVBoxLayout(receive_widget); receive_layout.setContentsMargins(0,0,0,0)
         self.tab_widget = QTabWidget()
         trace_view_widget = QWidget(); trace_layout = QVBoxLayout(trace_view_widget); trace_layout.setContentsMargins(0,0,0,0)
         self.trace_table = QTableView(); self.trace_table.setModel(self.trace_model); self.trace_table.horizontalHeader().setStretchLastSection(True); self.trace_table.setAlternatingRowColors(True); self.trace_table.setSelectionBehavior(QTableView.SelectRows)
         self.autoscroll_cb = QCheckBox("Autoscroll"); self.autoscroll_cb.setChecked(True); trace_layout.addWidget(self.trace_table); trace_layout.addWidget(self.autoscroll_cb); self.tab_widget.addTab(trace_view_widget, "Trace")
         self.grouped_table = QTableView(); self.grouped_table.setModel(self.grouped_proxy_model); self.grouped_table.setSortingEnabled(True); self.grouped_table.horizontalHeader().setStretchLastSection(True); self.grouped_table.setAlternatingRowColors(True); self.grouped_table.setSelectionBehavior(QTableView.SelectRows); self.tab_widget.addTab(self.grouped_table, "Grouped")
-        left_layout.addWidget(self.tab_widget)
-        self.transmit_panel = TransmitPanel();
-        self.transmit_panel.frame_to_send.connect(self.send_can_frame);
-        self.transmit_panel.setEnabled(False);
-        left_layout.addWidget(self.transmit_panel)
-        main_splitter.addWidget(left_widget)
+        receive_layout.addWidget(self.tab_widget); left_splitter.addWidget(receive_widget)
+        # Transmit part
+        transmit_area = QWidget(); transmit_layout = QVBoxLayout(transmit_area); transmit_layout.setContentsMargins(0,0,0,0)
+        self.transmit_panel = TransmitPanel(); self.transmit_panel.setEnabled(False)
+        self.signal_transmit_panel = SignalTransmitPanel(); self.signal_transmit_panel.setVisible(False)
+        transmit_layout.addWidget(self.transmit_panel); transmit_layout.addWidget(self.signal_transmit_panel); left_splitter.addWidget(transmit_area)
+        left_splitter.setSizes([600, 300]) # Initial sizes for receive/transmit areas
+        left_layout.addWidget(left_splitter); main_splitter.addWidget(left_widget)
+        # Right side
         right_widget = QWidget(); right_layout = QVBoxLayout(right_widget)
         dbc_group = QGroupBox("DBC Database"); dbc_layout = QVBoxLayout(dbc_group); dbc_file_layout = QHBoxLayout()
         self.dbc_file_edit = QLineEdit(); self.dbc_browse_btn = QPushButton("Browse"); self.dbc_load_btn = QPushButton("Load")
@@ -438,21 +524,37 @@ class CANBusObserver(QMainWindow):
         canopen_group = QGroupBox("CANopen"); canopen_layout = QVBoxLayout(canopen_group); self.canopen_enable_cb = QCheckBox("Enable CANopen Decoding"); canopen_layout.addWidget(self.canopen_enable_cb); right_layout.addWidget(canopen_group)
         self.filter_widget = FilterWidget(); right_layout.addWidget(self.filter_widget); right_layout.addStretch(); main_splitter.addWidget(right_widget)
         main_splitter.setSizes([800, 400])
+        # Connect signals
         self.connect_btn.clicked.connect(self.connect_can); self.disconnect_btn.clicked.connect(self.disconnect_can); self.clear_btn.clicked.connect(self.clear_data); self.save_log_btn.clicked.connect(self.save_log)
         self.load_log_btn.clicked.connect(self.load_log); self.dbc_browse_btn.clicked.connect(self.browse_dbc); self.dbc_load_btn.clicked.connect(self.load_dbc); self.canopen_enable_cb.toggled.connect(self.toggle_canopen)
         self.trace_model.rowsInserted.connect(self.autoscroll_trace_view)
+        self.transmit_panel.frame_to_send.connect(self.send_can_frame)
+        self.transmit_panel.row_selection_changed.connect(self.on_transmit_row_selected)
+        self.signal_transmit_panel.data_encoded.connect(self.on_signal_data_encoded)
         if not CAN_AVAILABLE:
             self.connect_btn.setEnabled(False); self.connect_btn.setText("Connect (lib missing)"); self.dbc_load_btn.setEnabled(False); self.dbc_browse_btn.setEnabled(False); self.statusBar().showMessage("python-can or cantools not found. Functionality limited.")
-
     def setup_menubar(self):
         menubar=self.menuBar(); file_menu=menubar.addMenu("File"); load_action=QAction("Load Log...",self); load_action.triggered.connect(self.load_log); file_menu.addAction(load_action); save_action=QAction("Save Log...",self); save_action.triggered.connect(self.save_log); file_menu.addAction(save_action); file_menu.addSeparator(); exit_action=QAction("Exit",self); exit_action.triggered.connect(self.close); file_menu.addAction(exit_action); tools_menu=menubar.addMenu("Tools"); dbc_action=QAction("Load DBC...",self); dbc_action.triggered.connect(self.browse_dbc); tools_menu.addAction(dbc_action)
     def setup_statusbar(self):
         self.statusBar().showMessage("Ready"); self.frame_count_label = QLabel("Frames: 0"); self.connection_label = QLabel("Disconnected"); self.statusBar().addPermanentWidget(self.frame_count_label); self.statusBar().addPermanentWidget(self.connection_label)
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key_Space and self.transmit_panel.table.hasFocus():
-            self.transmit_panel.send_selected_frames()
-            event.accept()
+            self.transmit_panel.send_selected_frames(); event.accept()
         else: super().keyPressEvent(event)
+    def on_transmit_row_selected(self, row, id_text):
+        if not self.dbc_database:
+            self.signal_transmit_panel.clear_panel()
+            return
+        try:
+            can_id = int(id_text, 16)
+            message = self.dbc_database.get_message_by_frame_id(can_id)
+            self.signal_transmit_panel.populate_from_message(message)
+        except (KeyError, ValueError):
+            self.signal_transmit_panel.clear_panel()
+    def on_signal_data_encoded(self, data_bytes):
+        current_row = self.transmit_panel.table.currentRow()
+        if current_row >= 0:
+            self.transmit_panel.update_row_data(current_row, data_bytes)
     def connect_can(self):
         interface = self.interface_combo.currentText(); channel = self.channel_edit.text()
         self.can_reader = CANReaderThread(interface, channel); self.can_reader.frame_received.connect(self.on_frame_received); self.can_reader.error_occurred.connect(self.on_can_error)
@@ -461,12 +563,7 @@ class CANBusObserver(QMainWindow):
         else: self.can_reader = None
     def disconnect_can(self):
         if self.can_reader: self.can_reader.stop_reading(); self.can_reader = None
-        self.connect_btn.setEnabled(True);
-        self.disconnect_btn.setEnabled(False);
-        self.transmit_panel.setEnabled(False);
-        self.transmit_panel.stop_all_timers();
-        self.connection_label.setText("Disconnected");
-        self.statusBar().showMessage("CAN bus disconnected")
+        self.connect_btn.setEnabled(True); self.disconnect_btn.setEnabled(False); self.transmit_panel.setEnabled(False); self.transmit_panel.stop_all_timers(); self.connection_label.setText("Disconnected"); self.statusBar().showMessage("CAN bus disconnected")
     def send_can_frame(self, message: can.Message):
         if self.can_reader and self.can_reader.bus:
             try: self.can_reader.bus.send(message); self.statusBar().showMessage(f"Sent frame ID 0x{message.arbitration_id:X}")
@@ -482,7 +579,7 @@ class CANBusObserver(QMainWindow):
     def on_can_error(self, error_message: str):
         QMessageBox.warning(self, "CAN Error", error_message); self.statusBar().showMessage(f"Error: {error_message}"); self.disconnect_can()
     def clear_data(self):
-        self.trace_model.clear_frames(); self.grouped_model.clear_frames(); self.frame_count = 0; self.frame_count_label.setText("Frames: 0"); self.statusBar().showMessage("Data cleared")
+        self.trace_model.clear_frames(); self.grouped_model.clear_frames(); self.frame_count = 0; self.frame_count_label.setText("Frames: 0"); self.statusBar().showMessage("Data cleared"); self.signal_transmit_panel.clear_panel()
     def save_log(self):
         if self.trace_model.rowCount() == 0: QMessageBox.information(self, "No Data", "No frames to save"); return
         filename, _ = QFileDialog.getSaveFileName(self, "Save CAN Log", "", "CAN Log Files (*.log);;All Files (*)")
@@ -525,6 +622,7 @@ class CANBusObserver(QMainWindow):
             self.dbc_database = cantools.database.load_file(filename)
             self.trace_model.set_dbc_database(self.dbc_database); self.grouped_model.set_dbc_database(self.dbc_database)
             self.statusBar().showMessage(f"DBC loaded: {len(self.dbc_database.messages)} messages")
+            self.signal_transmit_panel.clear_panel() # Clear in case a message was selected
         except Exception as e:
             QMessageBox.critical(self, "DBC Load Error", f"Failed to load DBC file: {e}")
             self.dbc_database = None; self.trace_model.set_dbc_database(None); self.grouped_model.set_dbc_database(None)
