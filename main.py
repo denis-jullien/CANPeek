@@ -51,6 +51,7 @@ except ImportError:
                 raise ImportError("cantools library is not installed.")
 
 # --- Data Structures ---
+TRACE_BUFFER_LIMIT = 100 # Max frames to keep in trace view
 
 @dataclass
 class CANFrame:
@@ -144,6 +145,14 @@ class CANTraceModel(HierarchicalCANModel):
     def __init__(self):
         super().__init__(["Timestamp", "ID", "Type", "DLC", "Data"])
     def add_frame(self, frame: CANFrame):
+        if len(self.top_level_items) >= TRACE_BUFFER_LIMIT:
+            self.beginRemoveRows(QModelIndex(), 0, 0)
+            self.top_level_items.pop(0)
+            # Renumber rows
+            for i, item in enumerate(self.top_level_items):
+                item.row_in_parent = i
+            self.endRemoveRows()
+
         row = len(self.top_level_items)
         self.beginInsertRows(QModelIndex(), row, row)
         display_item = DisplayItem(parent=None, data_source=frame, row_in_parent=row)
@@ -219,7 +228,6 @@ class CANGroupedModel(HierarchicalCANModel):
         self.frame_counts[can_id] += 1
         self.timestamps[can_id].append(frame.timestamp)
         if len(self.timestamps[can_id]) > 10: self.timestamps[can_id].pop(0)
-
     def data(self, index, role):
         if not index.isValid(): return None
         item: DisplayItem = index.internalPointer()
@@ -469,14 +477,17 @@ class CANBusObserver(QMainWindow):
         active_dbcs = self.project.get_active_dbcs()
         self.trace_model.set_dbc_databases(active_dbcs); self.grouped_model.set_dbc_databases(active_dbcs)
         self.transmit_panel.set_dbc_databases(active_dbcs)
-        self.on_transmit_row_selected(self.transmit_panel.table.currentRow(), self.transmit_panel.table.currentItem().text() if self.transmit_panel.table.currentItem() else "")
+        current_item = self.transmit_panel.table.currentItem()
+        self.on_transmit_row_selected(self.transmit_panel.table.currentRow(), current_item.text() if current_item else "")
     def on_transmit_row_selected(self, row, id_text):
         self.signal_transmit_panel.clear_panel()
         if row < 0: return
         try:
-            if message := self.transmit_panel.get_message_from_id(int(id_text, 16)):
+            can_id = int(id_text, 16)
+            if message := self.transmit_panel.get_message_from_id(can_id):
                 self.signal_transmit_panel.populate(message)
-        except (ValueError, AttributeError): pass
+        except (ValueError, AttributeError):
+             pass # Ignore empty or invalid ID text during editing
     def on_signal_data_encoded(self, data_bytes):
         if (row := self.transmit_panel.table.currentRow()) >= 0: self.transmit_panel.update_row_data(row, data_bytes)
     def connect_can(self):
@@ -505,11 +516,48 @@ class CANBusObserver(QMainWindow):
     def clear_data(self):
         self.trace_model.clear_frames(); self.grouped_model.clear_frames(); self.frame_count = 0
     def save_log(self):
-        # This would need to be adapted to save from the hierarchical model if desired
-        pass
+        if self.trace_model.rowCount() == 0:
+            QMessageBox.information(self, "No Data", "No frames to save")
+            return
+        filename, _ = QFileDialog.getSaveFileName(self, "Save CAN Log", "", "CAN Log Files (*.log);;All Files (*)")
+        if filename:
+            try:
+                with open(filename, 'w') as f:
+                    f.write("# CAN Bus Log File\n# Format: timestamp id is_ext dlc data\n")
+                    for item in self.trace_model.top_level_items:
+                        frame: CANFrame = item.data_source
+                        f.write(f"{frame.timestamp:.6f} {frame.arbitration_id:X} {'E' if frame.is_extended else 'S'} {frame.dlc} {frame.data.hex(' ')}\n")
+                self.statusBar().showMessage(f"Log saved to {filename}")
+            except Exception as e:
+                QMessageBox.critical(self, "Save Error", f"Failed to save log: {e}")
     def load_log(self):
-        # This would need to be adapted to load into the hierarchical model
-        pass
+        filename, _ = QFileDialog.getOpenFileName(self, "Load CAN Log", "", "CAN Log Files (*.log);;All Files (*)")
+        if filename:
+            try:
+                self.clear_data()
+                with open(filename, 'r') as f:
+                    frames_to_add = []
+                    for line in f:
+                        if line.startswith('#') or not line.strip(): continue
+                        parts = line.split()
+                        try:
+                            ts, id_hex, type_char, dlc_str, *data_hex = parts
+                            frame = CANFrame(
+                                timestamp=float(ts),
+                                arbitration_id=int(id_hex, 16),
+                                is_extended=(type_char == 'E'),
+                                dlc=int(dlc_str),
+                                data=bytes.fromhex("".join(data_hex))
+                            )
+                            frames_to_add.append(frame)
+                        except (ValueError, IndexError):
+                            print(f"Warning: Invalid line in log file: {line.strip()}")
+
+                for frame in frames_to_add:
+                    self.on_frame_received(frame)
+                self.statusBar().showMessage(f"Loaded {len(frames_to_add)} frames from {filename}")
+            except Exception as e:
+                QMessageBox.critical(self, "Load Error", f"Failed to load log: {e}")
     def update_stats(self): self.frame_count_label.setText(f"Frames: {self.frame_count}")
     def closeEvent(self, event):
         self.disconnect_can(); event.accept()
