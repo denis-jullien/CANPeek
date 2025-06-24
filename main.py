@@ -251,23 +251,46 @@ class CANGroupedModel(QAbstractItemModel):
         return sigs
     def clear_frames(self):
         self.beginResetModel(); self.top_level_items.clear(); self.frame_counts.clear(); self.timestamps.clear(); self.item_map.clear(); self.endResetModel()
-    def add_frame(self, frame: CANFrame):
-        can_id = frame.arbitration_id
-        if can_id not in self.item_map:
-            row = len(self.top_level_items); self.beginInsertRows(QModelIndex(), row, row)
-            item = DisplayItem(None, frame, row_in_parent=row)
-            self.top_level_items.append(item); self.item_map[can_id] = item
-            self.frame_counts[can_id] = 0; self.timestamps[can_id] = []
-            self.endInsertRows()
-        else:
-            item = self.item_map[can_id]; item.data_source = frame; item.children_populated = False
-            p_idx = self.createIndex(item.row_in_parent, 0, item)
-            if item.children:
-                self.beginRemoveRows(p_idx, 0, len(item.children)-1); item.children.clear(); self.endRemoveRows()
-            self.dataChanged.emit(p_idx, self.index(item.row_in_parent, self.columnCount()-1))
-        self.frame_counts[can_id] += 1
-        self.timestamps[can_id].append(frame.timestamp)
-        if len(self.timestamps[can_id]) > 10: self.timestamps[can_id].pop(0)
+    def update_frames(self, frames: List[CANFrame]):
+        """
+        Process a batch of frames, updating the model's internal state.
+        This is much more efficient and thread-safe than adding one by one.
+        """
+        if not frames:
+            return
+
+        # Tell the view that we are about to perform a major change.
+        # This is the key to preventing crashes. It stops the view from
+        # trying to read the model while we are modifying it.
+        self.beginResetModel()
+
+        for frame in frames:
+            can_id = frame.arbitration_id
+            
+            # Update frame counts and timestamps
+            self.frame_counts[can_id] = self.frame_counts.get(can_id, 0) + 1
+            if can_id not in self.timestamps:
+                self.timestamps[can_id] = deque(maxlen=10)
+            self.timestamps[can_id].append(frame.timestamp)
+
+            if can_id not in self.item_map:
+                # This is a new CAN ID, create a new top-level item for it.
+                item = DisplayItem(parent=None, data_source=frame)
+                item.row_in_parent = len(self.top_level_items)
+                self.top_level_items.append(item)
+                self.item_map[can_id] = item
+            else:
+                # This ID already exists, just update its data source and invalidate its children.
+                item = self.item_map[can_id]
+                item.data_source = frame
+                # If children were previously expanded, they need to be repopulated on next expansion.
+                if item.children_populated:
+                    item.children.clear()
+                    item.children_populated = False
+        
+        # Now that all internal data structures are updated, tell the view it can
+        # read the new state. The view will refresh itself completely.
+        self.endResetModel()
     def data(self, index, role):
         if not index.isValid(): return None
         item: DisplayItem = index.internalPointer(); col = index.column()
@@ -296,38 +319,63 @@ class CANGroupedModel(QAbstractItemModel):
             if col == 5: return frame.data.hex(' ')
         return None
 
-# --- Hardware and Worker Threads ---
+# 1. Fix CANReaderThread to not access bus directly from main thread
 class CANReaderThread(QThread):
     frame_received = Signal(object)
     error_occurred = Signal(str)
+    send_frame = Signal(object)  # Add this signal
+    
     def __init__(self, interface: str, channel: str):
         super().__init__()
         self.interface = interface
         self.channel = channel
         self.running = False
+        self.bus = None  # Store bus in thread
         self.daemon = True
+        self.send_frame.connect(self._send_frame_internal)  # Connect signal to internal method
+        
+    def _send_frame_internal(self, message):
+        """Send frame from within the thread context"""
+        if self.bus and self.running:
+            try:
+                self.bus.send(message)
+            except Exception as e:
+                self.error_occurred.emit(f"Send error: {e}")
+    
     def start_reading(self):
         if not CAN_AVAILABLE:
-            self.error_occurred.emit("python-can library not available"); return False
+            self.error_occurred.emit("python-can library not available")
+            return False
         self.running = True
         self.start()
         return True
+    
     def stop_reading(self):
         self.running = False
+        self.wait(3000)  # Wait up to 3 seconds for thread to finish
+        
     def run(self):
-        bus = None
         try:
-            bus = can.Bus(interface=self.interface, channel=self.channel, receive_own_messages=True)
+            self.bus = can.Bus(interface=self.interface, channel=self.channel, receive_own_messages=True)
             while self.running:
-                msg = bus.recv(timeout=0.1)
-                if msg: self.frame_received.emit(CANFrame(msg.timestamp, msg.arbitration_id, msg.data, msg.dlc, msg.is_extended_id, msg.is_error_frame, msg.is_remote_frame))
+                msg = self.bus.recv(timeout=0.1)
+                if msg and self.running:  # Check running again after recv
+                    frame = CANFrame(
+                        msg.timestamp, msg.arbitration_id, msg.data, msg.dlc,
+                        msg.is_extended_id, msg.is_error_frame, msg.is_remote_frame
+                    )
+                    self.frame_received.emit(frame)
         except Exception as e:
-            if self.running: self.error_occurred.emit(f"CAN reader error: {e}")
+            if self.running:
+                self.error_occurred.emit(f"CAN reader error: {e}")
         finally:
-            if bus:
-                try: bus.shutdown()
-                except Exception as e: print(f"Error shutting down CAN bus: {e}")
-
+            if self.bus:
+                try:
+                    self.bus.shutdown()
+                except Exception as e:
+                    print(f"Error shutting down CAN bus: {e}")
+                finally:
+                    self.bus = None
 # --- UI Classes ---
 class DBCEditor(QWidget):
     def __init__(self, dbc_file: DBCFile): super().__init__(); self.dbc_file = dbc_file; self.setup_ui()
@@ -510,19 +558,83 @@ class CANBusObserver(QMainWindow):
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key_Space and self.transmit_panel.table.hasFocus(): self.transmit_panel.send_selected(); event.accept()
         else: super().keyPressEvent(event)
+    # 6. Add thread-safe frame processing
     def _process_frame(self, frame: CANFrame):
-        self.frame_batch.append(frame)
+        """Thread-safe frame processing"""
+        try:
+            # Just append to batch - don't do any Qt operations here
+            self.frame_batch.append(frame)
+        except Exception as e:
+            print(f"Error processing frame: {e}")
     def update_views(self):
-        if not self.frame_batch: return
-        frames_to_process = self.frame_batch; self.frame_batch = []
-        active_filters = self.project.get_active_filters()
-        filtered_frames = [f for f in frames_to_process if not active_filters or any(filt.matches(f) for filt in active_filters)]
-        if not filtered_frames: return
-        for frame in filtered_frames: self.grouped_model.add_frame(frame)
-        self.all_received_frames.extend(filtered_frames)
-        self.trace_model.set_data(self.all_received_frames[-TRACE_BUFFER_LIMIT:])
-        if self.autoscroll_cb.isChecked(): self.trace_view.scrollToBottom()
-        self.frame_count_label.setText(f"Frames: {len(self.all_received_frames)}")
+        if not self.frame_batch:
+            return
+
+        try:
+            frames_to_process = self.frame_batch[:]
+            self.frame_batch.clear()
+
+            active_filters = self.project.get_active_filters()
+            filtered_frames = [f for f in frames_to_process
+                               if not active_filters or any(filt.matches(f) for filt in active_filters)]
+
+            if not filtered_frames:
+                return
+
+            # --- BEGIN NEW LOGIC: PRESERVE EXPANSION STATE ---
+            # 1. Save the CAN IDs of all currently expanded items.
+            # We use the proxy model because that's what the view sees.
+            expanded_ids = set()
+            proxy_model = self.grouped_proxy_model
+            for row in range(proxy_model.rowCount()):
+                proxy_index = proxy_model.index(row, 0)
+                if self.grouped_view.isExpanded(proxy_index):
+                    # Map the proxy index back to the source model to get our stable CAN ID
+                    source_index = proxy_model.mapToSource(proxy_index)
+                    # The UserRole holds the CAN ID for top-level items
+                    can_id = self.grouped_model.data(source_index, Qt.UserRole)
+                    if can_id is not None:
+                        expanded_ids.add(can_id)
+            # --- END OF SAVE LOGIC ---
+
+
+            # Update the models. The grouped_model will call begin/endResetModel,
+            # which causes the view to collapse everything.
+            self.grouped_model.update_frames(filtered_frames)
+            self.all_received_frames.extend(filtered_frames)
+
+            # Keep trace buffer within limits
+            if len(self.all_received_frames) > TRACE_BUFFER_LIMIT:
+                 # Slicing is faster for this than re-assigning a huge list
+                 del self.all_received_frames[:-TRACE_BUFFER_LIMIT]
+
+            # The trace_model's set_data also uses begin/endResetModel
+            self.trace_model.set_data(self.all_received_frames)
+
+
+            # --- BEGIN NEW LOGIC: RESTORE EXPANSION STATE ---
+            # 2. After the model has reset, iterate through the new items and
+            #    re-expand the ones that were expanded before.
+            if expanded_ids:
+                for row in range(proxy_model.rowCount()):
+                    proxy_index = proxy_model.index(row, 0)
+                    source_index = proxy_model.mapToSource(proxy_index)
+                    can_id = self.grouped_model.data(source_index, Qt.UserRole)
+                    if can_id in expanded_ids:
+                        self.grouped_view.setExpanded(proxy_index, True)
+            # --- END OF RESTORE LOGIC ---
+
+
+            if self.autoscroll_cb.isChecked():
+                self.trace_view.scrollToBottom()
+
+            self.frame_count_label.setText(f"Frames: {len(self.all_received_frames)}")
+
+        except Exception as e:
+            print(f"Error in update_views: {e}")
+            import traceback
+            traceback.print_exc()
+
     def on_project_changed(self):
         active_dbcs = self.project.get_active_dbcs()
         self.trace_model.dbc_databases = active_dbcs; self.trace_model.canopen_enabled = self.project.canopen_enabled; self.trace_model.layoutChanged.emit()
@@ -547,14 +659,26 @@ class CANBusObserver(QMainWindow):
             self.connect_btn.setEnabled(False); self.disconnect_btn.setEnabled(True); self.transmit_panel.setEnabled(True)
             self.connection_label.setText(f"Connected ({self.interface_combo.currentText()}:{self.channel_edit.text()})")
         else: self.can_reader = None
+    # 3. Fix disconnect_can method
     def disconnect_can(self):
-        if self.can_reader: self.can_reader.stop_reading(); self.can_reader = None
-        self.connect_btn.setEnabled(True); self.disconnect_btn.setEnabled(False); self.transmit_panel.setEnabled(False); self.transmit_panel.stop_all_timers(); self.connection_label.setText("Disconnected")
+        if self.can_reader:
+            self.can_reader.stop_reading()  # This now waits for thread to finish
+            self.can_reader.deleteLater()   # Properly clean up thread
+            self.can_reader = None
+        self.connect_btn.setEnabled(True)
+        self.disconnect_btn.setEnabled(False)
+        self.transmit_panel.setEnabled(False)
+        self.transmit_panel.stop_all_timers()
+        self.connection_label.setText("Disconnected")
+    # 2. Fix send_can_frame method in CANBusObserver
     def send_can_frame(self, message: can.Message):
-        if self.can_reader and self.can_reader.bus: # This direct access is not ideal but necessary for sending
-            try: self.can_reader.bus.send(message)
-            except Exception as e: QMessageBox.critical(self, "Transmit Error", f"Failed to send frame: {e}")
-        else: QMessageBox.warning(self, "Not Connected", "Connect to a CAN bus before sending frames.")
+        """Send CAN frame using thread-safe signal"""
+        if self.can_reader and self.can_reader.running:
+            # Use signal to send from correct thread context
+            self.can_reader.send_frame.emit(message)
+        else:
+            QMessageBox.warning(self, "Not Connected", "Connect to a CAN bus before sending frames.")
+
     def on_can_error(self, error_message: str):
         QMessageBox.warning(self, "CAN Error", error_message); self.statusBar().showMessage(f"Error: {error_message}"); self.disconnect_can()
     def clear_data(self):
@@ -586,7 +710,20 @@ class CANBusObserver(QMainWindow):
                 self.frame_batch.extend(frames_to_add); self.update_views()
                 self.statusBar().showMessage(f"Loaded {len(self.all_received_frames)} frames from {filename}")
             except Exception as e: QMessageBox.critical(self, "Load Error", f"Failed to load log: {e}")
-    def closeEvent(self, event): self.gui_update_timer.stop(); self.disconnect_can(); event.accept()
+    # 4. Fix closeEvent to ensure proper cleanup
+    def closeEvent(self, event):
+        # Stop timer first
+        if hasattr(self, 'gui_update_timer'):
+            self.gui_update_timer.stop()
+        
+        # Disconnect CAN with proper cleanup
+        self.disconnect_can()
+        
+        # Process any remaining events
+        QApplication.processEvents()
+        
+        # Accept the close event
+        event.accept()
 
 def main():
     app = QApplication(sys.argv)
