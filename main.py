@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CAN Bus Observer GUI - Similar to PCAN-Explorer
+CAN Bus Observer GUI
 Features:
 - Project-based configuration with Tree View
 - Highly performant, batched-update Trace/Grouped views
