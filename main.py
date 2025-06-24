@@ -329,23 +329,84 @@ class CANGroupedModel(QAbstractItemModel):
             if col == 5: return frame.data.hex(' ')
         return None
 
-# ... (CANReaderThread is unchanged) ...
+# --- Hardware and Worker Threads ---
+
 class CANReaderThread(QThread):
+    """
+    A robust worker thread for reading CAN frames.
+    The can.Bus object is created and destroyed exclusively within this thread's run() method.
+    """
     error_occurred = Signal(str)
-    def __init__(self, frame_queue: deque, interface="socketcan", channel="can0"):
-        super().__init__(); self.frame_queue = frame_queue; self.interface, self.channel, self.running, self.bus = interface, channel, False, None
+
+    def __init__(self, frame_queue: deque, interface: str, channel: str):
+        super().__init__()
+        self.frame_queue = frame_queue
+        self.interface = interface
+        self.channel = channel
+        self.running = False
+        self.bus = None
+
     def start_reading(self):
-        if not CAN_AVAILABLE: self.error_occurred.emit("python-can library not available"); return False
-        try: self.bus = can.Bus(interface=self.interface, channel=self.channel, receive_own_messages=True); self.running = True; self.start(); return True
-        except Exception as e: self.error_occurred.emit(f"Failed to connect: {e}"); return False
-    def stop_reading(self): self.running = False; self.wait()
+        """Starts the thread's execution."""
+        if not CAN_AVAILABLE:
+            self.error_occurred.emit("python-can library not available")
+            return False
+        self.running = True
+        self.start()
+        return True
+
+    def stop_reading(self):
+        """
+        Signals the thread to stop. Does not directly touch the bus object.
+        The run() method will handle the cleanup.
+        """
+        self.running = False
+        self.wait(500) # Wait up to 500ms for the thread to finish cleanly
+
     def run(self):
+        """
+        Main thread loop. Creates, uses, and destroys the bus object here.
+        """
+        try:
+            self.bus = can.Bus(interface=self.interface, channel=self.channel, receive_own_messages=True)
+        except Exception as e:
+            self.error_occurred.emit(f"Failed to connect to CAN bus: {e}")
+            self.running = False # Ensure loop doesn't run
+            return
+
         while self.running:
             try:
-                if msg := self.bus.recv(timeout=0.1):
-                    self.frame_queue.append(CANFrame(msg.timestamp, msg.arbitration_id, msg.data, msg.dlc, msg.is_extended_id, msg.is_error_frame, msg.is_remote_frame))
+                msg = self.bus.recv(timeout=0.1)
+                if msg:
+                    # Create the frame and append it to the thread-safe deque
+                    frame = CANFrame(
+                        timestamp=msg.timestamp,
+                        arbitration_id=msg.arbitration_id,
+                        data=msg.data,
+                        dlc=msg.dlc,
+                        is_extended=msg.is_extended_id,
+                        is_error=msg.is_error_frame,
+                        is_remote=msg.is_remote_frame
+                    )
+                    self.frame_queue.append(frame)
+            except can.CanError as e:
+                # On a bus error (like disconnect), signal the main thread and exit loop
+                if self.running: # Avoid sending error if we were already asked to stop
+                    self.error_occurred.emit(f"CAN bus error: {e}")
+                break # Exit the loop cleanly
             except Exception as e:
-                if self.running: self.error_occurred.emit(f"CAN read error: {e}"); break
+                if self.running:
+                    self.error_occurred.emit(f"An unexpected error occurred in CAN reader: {e}")
+                break
+
+
+        if self.bus:
+            try:
+                self.bus.shutdown()
+            except Exception as e:
+                # Log if shutdown fails, but don't crash
+                print(f"Error shutting down CAN bus: {e}")
+        self.bus = None
 
 # --- (UI classes are mostly unchanged, ProjectExplorer gets CANopen checkbox) ---
 class DBCEditor(QWidget):
