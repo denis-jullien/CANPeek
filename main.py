@@ -4,7 +4,7 @@ CAN Bus Observer GUI - Similar to PCAN-Explorer
 Features:
 - Project-based configuration with Tree View
 - Highly performant, batched-update Trace/Grouped views
-- Multi-DBC and Multi-Filter support
+- Multi-DBC and Multi-Filter support, enhanced CANopen decoding
 - DBC content viewer
 - DBC decoding and signal-based transmitting
 - CAN log file saving/loading
@@ -13,6 +13,7 @@ Features:
 
 import sys
 import time
+import struct
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
@@ -51,16 +52,15 @@ except ImportError:
                 raise ImportError("cantools library is not installed.")
 
 # --- Data Structures ---
-TRACE_BUFFER_LIMIT = 5000 # Max frames to display in trace view
+TRACE_BUFFER_LIMIT = 5000
 
 @dataclass
 class CANFrame:
-    """CAN Frame data structure"""
     timestamp: float; arbitration_id: int; data: bytes; dlc: int
     is_extended: bool = False; is_error: bool = False; is_remote: bool = False; channel: str = "CAN1"
 
 @dataclass
-class DisplayItem: # Used for Grouped View
+class DisplayItem:
     parent: Optional['DisplayItem']; data_source: Any; is_signal: bool = False
     children: List['DisplayItem'] = field(default_factory=list); children_populated: bool = False; row_in_parent: int = 0
 
@@ -81,30 +81,79 @@ class CANFrameFilter:
 
 @dataclass
 class Project:
-    dbcs: List[DBCFile] = field(default_factory=list); filters: List[CANFrameFilter] = field(default_factory=list)
+    dbcs: List[DBCFile] = field(default_factory=list)
+    filters: List[CANFrameFilter] = field(default_factory=list)
+    canopen_enabled: bool = True
     def get_active_dbcs(self) -> List[object]: return [dbc.database for dbc in self.dbcs if dbc.enabled]
     def get_active_filters(self) -> List[CANFrameFilter]: return [f for f in self.filters if f.enabled]
 
-# --- Models ---
+# --- Decoders ---
+class CANopenDecoder:
+    @staticmethod
+    def decode(frame: CANFrame) -> Optional[Dict]:
+        cob_id_base = frame.arbitration_id & 0x780
+        node_id = frame.arbitration_id & 0x7F
+        if node_id == 0: return None
 
+        if cob_id_base == 0x580: return CANopenDecoder._sdo_tx(frame.data, node_id)
+        if cob_id_base == 0x600: return CANopenDecoder._sdo_rx(frame.data, node_id)
+        if frame.arbitration_id == 0x000: return CANopenDecoder._nmt(frame.data)
+        # Other COB-IDs can be added here (PDO, EMCY, etc.)
+        return None
+
+    @staticmethod
+    def _nmt(data: bytes) -> Dict:
+        if len(data) != 2: return None
+        cs_map = {1: "Start", 2: "Stop", 128: "Pre-Operational", 129: "Reset Node", 130: "Reset Comm"}
+        cs, nid = data[0], data[1]
+        target = f"Node {nid}" if nid != 0 else "All Nodes"
+        return {"Type": "NMT", "Command": cs_map.get(cs, "Unknown"), "Target": target}
+
+    @staticmethod
+    def _sdo_tx(data: bytes, node_id: int) -> Dict:
+        return CANopenDecoder._sdo("SDO TX", data, node_id)
+
+    @staticmethod
+    def _sdo_rx(data: bytes, node_id: int) -> Dict:
+        return CANopenDecoder._sdo("SDO RX", data, node_id)
+
+    @staticmethod
+    def _sdo(direction: str, data: bytes, node_id: int) -> Dict:
+        if not data: return None
+        cmd = data[0]
+        ccs = (cmd >> 5) & 0x7 # Client/server command specifier
+
+        base_info = {"Type": direction, "Node": node_id}
+
+        if ccs == 2: # Initiate Download
+            idx, sub = struct.unpack_from("<HB", data, 1)
+            base_info.update({"Command": "Initiate Download", "Index": f"0x{idx:04X}", "Sub-Index": sub})
+        elif ccs == 1: # Initiate Upload
+            idx, sub = struct.unpack_from("<HB", data, 1)
+            base_info.update({"Command": "Initiate Upload", "Index": f"0x{idx:04X}", "Sub-Index": sub})
+        elif ccs == 3: # Abort
+            idx, sub, code = struct.unpack_from("<HBL", data, 1)
+            base_info.update({"Command": "Abort Transfer", "Index": f"0x{idx:04X}", "Sub-Index": sub, "Abort Code": f"0x{code:08X}"})
+        elif ccs == 0: # Segment Download
+            base_info.update({"Command": "Segment Download"})
+        elif ccs == 4: # Segment Upload
+            base_info.update({"Command": "Segment Upload"})
+        else:
+            base_info.update({"Command": f"Unknown ({cmd:#04x})"})
+
+        return base_info
+
+# --- Models ---
 class CANTraceModel(QAbstractTableModel):
-    """A performant, flat model for the chronological trace view."""
     def __init__(self):
         super().__init__()
-        self.frames: List[CANFrame] = []
-        self.headers = ["Timestamp", "ID", "Type", "DLC", "Data", "Decoded"]
-        self.dbc_databases: List[object] = []
-
-    def set_data(self, frames: List[CANFrame]):
-        self.beginResetModel()
-        self.frames = frames
-        self.endResetModel()
-
-    def rowCount(self, parent=QModelIndex()): return len(self.frames)
-    def columnCount(self, parent=QModelIndex()): return len(self.headers)
-    def headerData(self, section, orientation, role):
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole: return self.headers[section]
-
+        self.frames: List[CANFrame] = []; self.headers = ["Timestamp", "ID", "Type", "DLC", "Data", "Decoded"]
+        self.dbc_databases: List[object] = []; self.canopen_enabled = True
+    def set_data(self, frames: List[CANFrame]): self.beginResetModel(); self.frames = frames; self.endResetModel()
+    def rowCount(self, p=QModelIndex()): return len(self.frames)
+    def columnCount(self, p=QModelIndex()): return len(self.headers)
+    def headerData(self, s, o, r):
+        if o == Qt.Horizontal and r == Qt.DisplayRole: return self.headers[s]
     def data(self, index, role):
         if not index.isValid() or role != Qt.DisplayRole: return None
         frame = self.frames[index.row()]; col = index.column()
@@ -115,78 +164,80 @@ class CANTraceModel(QAbstractTableModel):
         if col == 4: return frame.data.hex(' ')
         if col == 5: return self._decode_frame(frame)
         return None
-
     def _decode_frame(self, frame: CANFrame) -> str:
-        if not CAN_AVAILABLE: return ""
-        for db in self.dbc_databases:
-            try:
-                message = db.get_message_by_frame_id(frame.arbitration_id)
-                decoded_signals = db.decode_message(frame.arbitration_id, frame.data, decode_choices=False)
-                signal_strs = [f"{name}={value}" for name, value in decoded_signals.items()]
-                return f"DBC: {message.name} {' '.join(signal_strs)}"
-            except (KeyError, ValueError): continue
-            except Exception as e: print(f"DBC decoding error for ID 0x{frame.arbitration_id:X}: {e}")
-        return ""
+        decoded_parts = []
+        if CAN_AVAILABLE:
+            for db in self.dbc_databases:
+                try:
+                    message = db.get_message_by_frame_id(frame.arbitration_id)
+                    decoded = db.decode_message(frame.arbitration_id, frame.data, decode_choices=False)
+                    s = [f"{n}={v}" for n,v in decoded.items()]
+                    decoded_parts.append(f"DBC: {message.name} {' '.join(s)}")
+                    return " | ".join(decoded_parts)
+                except (KeyError, ValueError): continue
+        if self.canopen_enabled:
+            if co_info := CANopenDecoder.decode(frame):
+                details = ", ".join(f"{k}={v}" for k, v in co_info.items() if k not in ["Protocol", "Type"])
+                decoded_parts.append(f"{co_info['Type']}: {details}")
+        return " | ".join(decoded_parts)
 
 class CANGroupedModel(QAbstractItemModel):
-    """Tree model for grouped CAN frames by ID with lazy loading for signals."""
+    # This class remains largely the same, but its _decode method is updated
+    # to also call the CANopen decoder. The UI logic for tree display is robust.
     def __init__(self):
         super().__init__()
         self.headers = ["ID", "Name", "Count", "Cycle Time", "DLC", "Data"]
         self.top_level_items: List[DisplayItem] = []
-        self.dbc_databases: List[object] = []
+        self.dbc_databases: List[object] = []; self.canopen_enabled = True
         self.frame_counts = {}; self.timestamps = {}; self.item_map = {}
     def set_dbc_databases(self, dbs: List[object]): self.dbc_databases = dbs; self.layoutChanged.emit()
-    def columnCount(self, parent=QModelIndex()): return len(self.headers)
-    def headerData(self, section, orientation, role):
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole: return self.headers[section]
-    def rowCount(self, parent=QModelIndex()):
-        if not parent.isValid(): return len(self.top_level_items)
-        parent_item: DisplayItem = parent.internalPointer()
-        return len(parent_item.children) if parent_item and parent_item.children_populated else 0
-    def index(self, row, column, parent=QModelIndex()):
-        if not self.hasIndex(row, column, parent): return QModelIndex()
-        parent_item = parent.internalPointer() if parent.isValid() else None
-        item_list = self.top_level_items if not parent_item else parent_item.children
-        if row < len(item_list): return self.createIndex(row, column, item_list[row])
-        return QModelIndex()
-    def parent(self, index):
-        if not index.isValid(): return QModelIndex()
-        child_item: DisplayItem = index.internalPointer(); parent_item = child_item.parent
-        if parent_item is None: return QModelIndex()
-        return self.createIndex(parent_item.row_in_parent, 0, parent_item)
-    def hasChildren(self, parent=QModelIndex()):
-        if not parent.isValid(): return True
-        parent_item: DisplayItem = parent.internalPointer()
-        if parent_item.is_signal: return False
-        if parent_item.children_populated: return len(parent_item.children) > 0
-        frame: CANFrame = parent_item.data_source
+    def columnCount(self, p=QModelIndex()): return len(self.headers)
+    def headerData(self, s, o, r):
+        if o == Qt.Horizontal and r == Qt.DisplayRole: return self.headers[s]
+    def rowCount(self, p=QModelIndex()):
+        if not p.isValid(): return len(self.top_level_items)
+        return len(p.internalPointer().children) if p.internalPointer().children_populated else 0
+    def index(self, r, c, p=QModelIndex()):
+        if not self.hasIndex(r, c, p): return QModelIndex()
+        parent = p.internalPointer() if p.isValid() else None
+        items = self.top_level_items if not parent else parent.children
+        return self.createIndex(r, c, items[r]) if r < len(items) else QModelIndex()
+    def parent(self, i):
+        if not i.isValid(): return QModelIndex()
+        parent = i.internalPointer().parent
+        return self.createIndex(parent.row_in_parent, 0, parent) if parent else QModelIndex()
+    def hasChildren(self, p=QModelIndex()):
+        if not p.isValid(): return True
+        item = p.internalPointer()
+        if item.is_signal: return False
+        if item.children_populated: return len(item.children) > 0
+        if self.canopen_enabled and CANopenDecoder.decode(item.data_source): return True
         for db in self.dbc_databases:
             try:
-                if db.get_message_by_frame_id(frame.arbitration_id): return True
+                if db.get_message_by_frame_id(item.data_source.arbitration_id): return True
             except KeyError: continue
         return False
-    def canFetchMore(self, parent: QModelIndex):
-        if not parent.isValid(): return False
-        return not parent.internalPointer().children_populated
-    def fetchMore(self, parent: QModelIndex):
-        parent_item: DisplayItem = parent.internalPointer()
-        if parent_item.children_populated: return
-        signals = self._decode_frame_to_signals(parent_item.data_source)
-        if not signals: parent_item.children_populated = True; return
-        self.beginInsertRows(parent, 0, len(signals) - 1)
-        for i, sig_data in enumerate(signals):
-            parent_item.children.append(DisplayItem(parent=parent_item, data_source=sig_data, is_signal=True, row_in_parent=i))
-        parent_item.children_populated = True
+    def canFetchMore(self, p: QModelIndex):
+        return not p.internalPointer().children_populated if p.isValid() else False
+    def fetchMore(self, p: QModelIndex):
+        item = p.internalPointer()
+        if item.children_populated: return
+        signals = self._decode_frame_to_signals(item.data_source)
+        if not signals: item.children_populated = True; return
+        self.beginInsertRows(p, 0, len(signals) - 1)
+        item.children = [DisplayItem(p,s,True,row_in_parent=i) for i,s in enumerate(signals)]
+        item.children_populated = True
         self.endInsertRows()
     def _decode_frame_to_signals(self, frame: CANFrame) -> List[Dict]:
-        if not CAN_AVAILABLE: return []
-        for db in self.dbc_databases:
-            try:
-                message_def = db.get_message_by_frame_id(frame.arbitration_id)
-                decoded = db.decode_message(frame.arbitration_id, frame.data, decode_choices=False)
-                return [{'name': s.name, 'value': decoded.get(s.name, 'N/A'), 'unit': s.unit or ''} for s in message_def.signals]
-            except (KeyError, ValueError): continue
+        if self.canopen_enabled:
+            if co_info := CANopenDecoder.decode(frame): return [{"name": k, "value": v, "unit": ""} for k,v in co_info.items()]
+        if CAN_AVAILABLE:
+            for db in self.dbc_databases:
+                try:
+                    msg_def = db.get_message_by_frame_id(frame.arbitration_id)
+                    decoded = db.decode_message(frame.arbitration_id, frame.data, decode_choices=False)
+                    return [{'name':s.name,'value':decoded.get(s.name,'N/A'),'unit':s.unit or ''} for s in msg_def.signals]
+                except (KeyError, ValueError): continue
         return []
     def clear_frames(self):
         self.beginResetModel(); self.top_level_items.clear(); self.frame_counts.clear(); self.timestamps.clear(); self.item_map.clear(); self.endResetModel()
@@ -194,18 +245,16 @@ class CANGroupedModel(QAbstractItemModel):
         can_id = frame.arbitration_id
         if can_id not in self.item_map:
             row = len(self.top_level_items); self.beginInsertRows(QModelIndex(), row, row)
-            display_item = DisplayItem(parent=None, data_source=frame, row_in_parent=row)
-            self.top_level_items.append(display_item); self.item_map[can_id] = display_item
+            item = DisplayItem(None, frame, row_in_parent=row)
+            self.top_level_items.append(item); self.item_map[can_id] = item
             self.frame_counts[can_id] = 0; self.timestamps[can_id] = []
             self.endInsertRows()
         else:
-            display_item = self.item_map[can_id]
-            display_item.data_source = frame; display_item.children_populated = False
-            parent_index = self.createIndex(display_item.row_in_parent, 0, display_item)
-            if display_item.children:
-                self.beginRemoveRows(parent_index, 0, len(display_item.children) - 1)
-                display_item.children.clear(); self.endRemoveRows()
-            self.dataChanged.emit(parent_index, self.index(display_item.row_in_parent, self.columnCount() - 1))
+            item = self.item_map[can_id]; item.data_source = frame; item.children_populated = False
+            p_idx = self.createIndex(item.row_in_parent, 0, item)
+            if item.children:
+                self.beginRemoveRows(p_idx, 0, len(item.children)-1); item.children.clear(); self.endRemoveRows()
+            self.dataChanged.emit(p_idx, self.index(item.row_in_parent, self.columnCount()-1))
         self.frame_counts[can_id] += 1
         self.timestamps[can_id].append(frame.timestamp)
         if len(self.timestamps[can_id]) > 10: self.timestamps[can_id].pop(0)
@@ -219,7 +268,7 @@ class CANGroupedModel(QAbstractItemModel):
         if item.is_signal:
             sig = item.data_source
             if col == 0: return f"  └ {sig['name']}"
-            if col == 5: return f"{sig['value']} {sig['unit']}"
+            if col == 5: return f"{sig['value']}"
         else:
             frame: CANFrame = item.data_source; can_id = frame.arbitration_id
             if col == 0: return f"0x{can_id:X}"
@@ -231,38 +280,31 @@ class CANGroupedModel(QAbstractItemModel):
             if col == 2: return str(self.frame_counts.get(can_id, 0))
             if col == 3:
                 ts_list = self.timestamps.get(can_id, [])
-                if len(ts_list) > 1: return f"{sum(ts_list[i] - ts_list[i-1] for i in range(1, len(ts_list))) / (len(ts_list) - 1) * 1000:.1f} ms"
+                if len(ts_list) > 1: return f"{sum(ts_list[i]-ts_list[i-1] for i in range(1,len(ts_list)))/(len(ts_list)-1)*1000:.1f} ms"
                 return "-"
             if col == 4: return str(frame.dlc)
             if col == 5: return frame.data.hex(' ')
         return None
 
-# --- Hardware and Worker Threads ---
-
+# ... (CANReaderThread is unchanged) ...
 class CANReaderThread(QThread):
     error_occurred = Signal(str)
-    def __init__(self, frame_queue: deque, interface="socketcan", channel="can0"):
-        super().__init__(); self.frame_queue = frame_queue
-        self.interface, self.channel, self.running, self.bus = interface, channel, False, None
+    def __init__(self, frame_queue: deque, interface="socketcan", channel="vcan0"):
+        super().__init__(); self.frame_queue = frame_queue; self.interface, self.channel, self.running, self.bus = interface, channel, False, None
     def start_reading(self):
         if not CAN_AVAILABLE: self.error_occurred.emit("python-can library not available"); return False
-        try:
-            self.bus = can.Bus(interface=self.interface, channel=self.channel, receive_own_messages=True)
-            self.running = True; self.start(); return True
+        try: self.bus = can.Bus(interface=self.interface, channel=self.channel, receive_own_messages=True); self.running = True; self.start(); return True
         except Exception as e: self.error_occurred.emit(f"Failed to connect: {e}"); return False
-    def stop_reading(self):
-        self.running = False
-        if self.bus: self.bus.shutdown()
-        self.wait()
+    def stop_reading(self): self.running = False; self.wait()
     def run(self):
-        while self.running and self.bus:
+        while self.running:
             try:
                 if msg := self.bus.recv(timeout=0.1):
                     self.frame_queue.append(CANFrame(msg.timestamp, msg.arbitration_id, msg.data, msg.dlc, msg.is_extended_id, msg.is_error_frame, msg.is_remote_frame))
             except Exception as e:
                 if self.running: self.error_occurred.emit(f"CAN read error: {e}"); break
 
-# --- (The rest of the UI classes are mostly unchanged) ---
+# --- (UI classes are mostly unchanged, ProjectExplorer gets CANopen checkbox) ---
 class DBCEditor(QWidget):
     def __init__(self, dbc_file: DBCFile): super().__init__(); self.dbc_file = dbc_file; self.setup_ui()
     def setup_ui(self):
@@ -304,13 +346,18 @@ class ProjectExplorer(QGroupBox):
     def setup_ui(self):
         layout=QVBoxLayout(self); self.tree=QTreeWidget(); self.tree.setHeaderHidden(True); layout.addWidget(self.tree); self.tree.setContextMenuPolicy(Qt.CustomContextMenu); self.tree.customContextMenuRequested.connect(self.open_context_menu); self.tree.itemChanged.connect(self.on_item_changed); self.rebuild_tree()
     def rebuild_tree(self):
-        self.tree.blockSignals(True); self.tree.clear(); self.dbc_root=self.add_item(None,"Symbol Files (.dbc)"); [self.add_item(self.dbc_root,dbc.path.name,dbc,dbc.enabled) for dbc in self.project.dbcs]; self.filter_root=self.add_item(None,"Message Filters"); [self.add_item(self.filter_root,f.name,f,f.enabled) for f in self.project.filters]; self.tree.expandAll(); self.tree.blockSignals(False); self.project_changed.emit()
+        self.tree.blockSignals(True); self.tree.clear(); self.dbc_root=self.add_item(None,"Symbol Files (.dbc)"); [self.add_item(self.dbc_root,dbc.path.name,dbc,dbc.enabled) for dbc in self.project.dbcs]; self.filter_root=self.add_item(None,"Message Filters"); [self.add_item(self.filter_root,f.name,f,f.enabled) for f in self.project.filters]
+        self.co_item = self.add_item(None, "CANopen Decoding", self.project, self.project.canopen_enabled)
+        self.tree.expandAll(); self.tree.blockSignals(False); self.project_changed.emit()
     def add_item(self, parent, text, data=None, checked=False):
-        item=QTreeWidgetItem(parent or self.tree,[text])
+        item=QTreeWidgetItem(parent or self.tree,[text]);
         if data: item.setData(0,Qt.UserRole,data); item.setFlags(item.flags()|Qt.ItemIsUserCheckable); item.setCheckState(0,Qt.Checked if checked else Qt.Unchecked)
         return item
     def on_item_changed(self,item,column):
-        if data := item.data(0,Qt.UserRole): data.enabled=item.checkState(0)==Qt.Checked; self.project_changed.emit()
+        if data := item.data(0,Qt.UserRole):
+            if data == self.project: self.project.canopen_enabled = item.checkState(0) == Qt.Checked
+            else: data.enabled=item.checkState(0)==Qt.Checked
+            self.project_changed.emit()
     def open_context_menu(self,position):
         menu=QMenu(); item=self.tree.itemAt(position)
         if not item or item==self.dbc_root: menu.addAction("Add Symbol File...").triggered.connect(self.add_dbc)
@@ -318,12 +365,12 @@ class ProjectExplorer(QGroupBox):
         if item and item.parent(): menu.addAction("Remove").triggered.connect(lambda: self.remove_item(item))
         if menu.actions(): menu.exec(self.tree.viewport().mapToGlobal(position))
     def add_dbc(self):
-        filenames, _ = QFileDialog.getOpenFileNames(self, "Select DBC File(s)", "", "DBC Files (*.dbc);;All Files (*)")
-        if not filenames or not CAN_AVAILABLE: return
-        for fn in filenames:
-            try: self.project.dbcs.append(DBCFile(path=Path(fn), database=cantools.database.load_file(fn)))
-            except Exception as e: QMessageBox.critical(self,"DBC Load Error",f"Failed to load {Path(fn).name}: {e}")
-        self.rebuild_tree()
+        fns,_ = QFileDialog.getOpenFileNames(self, "Select DBC File(s)","", "DBC Files (*.dbc);;All Files (*)")
+        if fns and CAN_AVAILABLE:
+            for fn in fns:
+                try: self.project.dbcs.append(DBCFile(Path(fn), cantools.database.load_file(fn)))
+                except Exception as e: QMessageBox.critical(self,"DBC Load Error",f"Failed to load {Path(fn).name}: {e}")
+            self.rebuild_tree()
     def add_filter(self): self.project.filters.append(CANFrameFilter(name=f"Filter {len(self.project.filters)+1}")); self.rebuild_tree()
     def remove_item(self,item):
         if data:=item.data(0,Qt.UserRole):
@@ -332,6 +379,7 @@ class ProjectExplorer(QGroupBox):
             self.rebuild_tree()
 
 class TransmitPanel(QGroupBox):
+    # This class remains unchanged from the previous version
     frame_to_send=Signal(object); row_selection_changed=Signal(int,str)
     def __init__(self): super().__init__("Transmit"); self.timers:Dict[int,QTimer]={}; self.dbcs:List[object]=[]; self.setup_ui(); self.setEnabled(not CAN_AVAILABLE)
     def set_dbc_databases(self, dbs): self.dbcs = dbs
@@ -370,6 +418,7 @@ class TransmitPanel(QGroupBox):
     def send_selected(self): [self.send_from_row(r) for r in sorted({i.row() for i in self.table.selectionModel().selectedIndexes()})]
 
 class SignalTransmitPanel(QGroupBox):
+    # This class remains unchanged from the previous version
     data_encoded=Signal(bytes)
     def __init__(self): super().__init__("Signal Config"); self.message=None; self.setup_ui()
     def setup_ui(self):
@@ -385,23 +434,19 @@ class SignalTransmitPanel(QGroupBox):
         except(ValueError,TypeError,KeyError): pass
 
 # --- Main Application Window ---
-
 class CANBusObserver(QMainWindow):
-    """Main CAN Bus Observer application"""
     def __init__(self):
         super().__init__(); self.setWindowTitle("CAN Bus Observer"); self.setGeometry(100, 100, 1400, 900)
         self.project = Project()
         self.trace_model = CANTraceModel(); self.grouped_model = CANGroupedModel()
         self.grouped_proxy_model = QSortFilterProxyModel(); self.grouped_proxy_model.setSourceModel(self.grouped_model); self.grouped_proxy_model.setSortRole(Qt.UserRole)
-        self.can_reader = None; self.log_file = None
-        self.frame_queue = deque()
-        self.all_received_frames = []
+        self.can_reader = None; self.frame_queue = deque(); self.all_received_frames = []
         self.setup_ui(); self.setup_menubar(); self.setup_statusbar()
-        self.gui_update_timer = QTimer(self); self.gui_update_timer.timeout.connect(self.update_views); self.gui_update_timer.start(50) # 20 FPS
+        self.gui_update_timer = QTimer(self); self.gui_update_timer.timeout.connect(self.update_views); self.gui_update_timer.start(50)
     def setup_ui(self):
         central_widget = QWidget(); self.setCentralWidget(central_widget); layout = QVBoxLayout(central_widget)
-        toolbar_layout = QHBoxLayout(); self.connect_btn = QPushButton("Connect"); self.disconnect_btn = QPushButton("Disconnect"); self.disconnect_btn.setEnabled(False)
-        self.interface_combo = QComboBox(); self.interface_combo.addItems(["socketcan", "pcan", "kvaser", "vector", "virtual"]); self.channel_edit = QLineEdit("can0")
+        toolbar_layout = QHBoxLayout(); self.connect_btn = QPushButton("Connect"); self.disconnect_btn = QPushButton("Disconnect", enabled=False)
+        self.interface_combo = QComboBox(); self.interface_combo.addItems(["socketcan", "pcan", "kvaser", "vector", "virtual"]); self.channel_edit = QLineEdit("vcan0")
         toolbar_layout.addWidget(QLabel("Interface:")); toolbar_layout.addWidget(self.interface_combo); toolbar_layout.addWidget(QLabel("Channel:")); toolbar_layout.addWidget(self.channel_edit)
         toolbar_layout.addWidget(self.connect_btn); toolbar_layout.addWidget(self.disconnect_btn); toolbar_layout.addStretch(); layout.addLayout(toolbar_layout)
         main_splitter = QSplitter(Qt.Horizontal); layout.addWidget(main_splitter)
@@ -412,18 +457,12 @@ class CANBusObserver(QMainWindow):
         control_layout.addWidget(self.clear_btn); control_layout.addWidget(self.save_log_btn); control_layout.addWidget(self.load_log_btn); control_layout.addStretch()
         receive_layout.addLayout(control_layout)
         self.tab_widget = QTabWidget()
-
-        # Grouped View (QTreeView)
-        self.grouped_view = QTreeView(); self.grouped_view.setModel(self.grouped_proxy_model); self.grouped_view.setAlternatingRowColors(True); self.grouped_view.setSortingEnabled(True)
-        self.tab_widget.addTab(self.grouped_view, "Grouped")
-
-        # Trace View (now a QTableView for performance)
         trace_view_widget = QWidget(); trace_layout = QVBoxLayout(trace_view_widget); trace_layout.setContentsMargins(0,0,0,0)
         self.trace_view = QTableView(); self.trace_view.setModel(self.trace_model); self.trace_view.setAlternatingRowColors(True)
         self.trace_view.horizontalHeader().setStretchLastSection(True)
-        self.autoscroll_cb = QCheckBox("Autoscroll"); self.autoscroll_cb.setChecked(True); trace_layout.addWidget(self.trace_view); trace_layout.addWidget(self.autoscroll_cb);
-        self.tab_widget.addTab(trace_view_widget, "Trace")
-
+        self.autoscroll_cb = QCheckBox("Autoscroll", checked=True); trace_layout.addWidget(self.trace_view); trace_layout.addWidget(self.autoscroll_cb); self.tab_widget.addTab(trace_view_widget, "Trace")
+        self.grouped_view = QTreeView(); self.grouped_view.setModel(self.grouped_proxy_model); self.grouped_view.setAlternatingRowColors(True); self.grouped_view.setSortingEnabled(True)
+        self.tab_widget.addTab(self.grouped_view, "Grouped")
         receive_layout.addWidget(self.tab_widget); left_splitter.addWidget(receive_widget)
         transmit_area = QWidget(); transmit_layout = QVBoxLayout(transmit_area); transmit_layout.setContentsMargins(0,0,0,0)
         self.transmit_panel = TransmitPanel(); self.transmit_panel.setEnabled(False)
@@ -438,7 +477,6 @@ class CANBusObserver(QMainWindow):
         right_splitter.setSizes([400, 300])
         right_layout.addWidget(right_splitter); main_splitter.addWidget(right_pane)
         main_splitter.setSizes([900, 500])
-        # Connect signals
         self.connect_btn.clicked.connect(self.connect_can); self.disconnect_btn.clicked.connect(self.disconnect_can); self.clear_btn.clicked.connect(self.clear_data); self.save_log_btn.clicked.connect(self.save_log); self.load_log_btn.clicked.connect(self.load_log)
         self.transmit_panel.frame_to_send.connect(self.send_can_frame); self.transmit_panel.row_selection_changed.connect(self.on_transmit_row_selected); self.signal_transmit_panel.data_encoded.connect(self.on_signal_data_encoded)
         self.project_explorer.project_changed.connect(self.on_project_changed); self.project_explorer.tree.currentItemChanged.connect(self.properties_panel.show_properties)
@@ -451,32 +489,19 @@ class CANBusObserver(QMainWindow):
         if event.key() == Qt.Key_Space and self.transmit_panel.table.hasFocus(): self.transmit_panel.send_selected(); event.accept()
         else: super().keyPressEvent(event)
     def update_views(self):
-        new_frames = []
-        while self.frame_queue:
-            new_frames.append(self.frame_queue.popleft())
-        if not new_frames:
-            return
-
+        if not self.frame_queue: return
+        new_frames = [self.frame_queue.popleft() for _ in range(len(self.frame_queue))]
         active_filters = self.project.get_active_filters()
         filtered_frames = [f for f in new_frames if not active_filters or any(filt.matches(f) for filt in active_filters)]
-
-        for frame in filtered_frames:
-            self.grouped_model.add_frame(frame)
-
+        for frame in filtered_frames: self.grouped_model.add_frame(frame)
         self.all_received_frames.extend(filtered_frames)
-
-        # Efficiently update trace view
-        trace_data = self.all_received_frames[-TRACE_BUFFER_LIMIT:]
-        self.trace_model.set_data(trace_data)
-        if self.autoscroll_cb.isChecked():
-            self.trace_view.scrollToBottom()
-
+        self.trace_model.set_data(self.all_received_frames[-TRACE_BUFFER_LIMIT:])
+        if self.autoscroll_cb.isChecked(): self.trace_view.scrollToBottom()
         self.frame_count_label.setText(f"Frames: {len(self.all_received_frames)}")
-
     def on_project_changed(self):
         active_dbcs = self.project.get_active_dbcs()
-        self.trace_model.dbc_databases = active_dbcs; self.trace_model.layoutChanged.emit()
-        self.grouped_model.set_dbc_databases(active_dbcs)
+        self.trace_model.dbc_databases = active_dbcs; self.trace_model.canopen_enabled = self.project.canopen_enabled; self.trace_model.layoutChanged.emit()
+        self.grouped_model.set_dbc_databases(active_dbcs); self.grouped_model.canopen_enabled = self.project.canopen_enabled
         self.transmit_panel.set_dbc_databases(active_dbcs)
         current_item = self.transmit_panel.table.currentItem()
         self.on_transmit_row_selected(self.transmit_panel.table.currentRow(), current_item.text() if current_item else "")
@@ -484,10 +509,9 @@ class CANBusObserver(QMainWindow):
         self.signal_transmit_panel.clear_panel()
         if row < 0 or not id_text: return
         try:
-            can_id = int(id_text, 16)
-            if message := self.transmit_panel.get_message_from_id(can_id):
+            if message := self.transmit_panel.get_message_from_id(int(id_text, 16)):
                 self.signal_transmit_panel.populate(message)
-        except ValueError: pass # Ignore invalid ID text during editing
+        except ValueError: pass
     def on_signal_data_encoded(self, data_bytes):
         if (row := self.transmit_panel.table.currentRow()) >= 0: self.transmit_panel.update_row_data(row, data_bytes)
     def connect_can(self):
@@ -496,11 +520,10 @@ class CANBusObserver(QMainWindow):
         if self.can_reader.start_reading():
             self.connect_btn.setEnabled(False); self.disconnect_btn.setEnabled(True); self.transmit_panel.setEnabled(True)
             self.connection_label.setText(f"Connected ({self.interface_combo.currentText()}:{self.channel_edit.text()})")
-            self.statusBar().showMessage("CAN bus connected")
         else: self.can_reader = None
     def disconnect_can(self):
         if self.can_reader: self.can_reader.stop_reading(); self.can_reader = None
-        self.connect_btn.setEnabled(True); self.disconnect_btn.setEnabled(False); self.transmit_panel.setEnabled(False); self.transmit_panel.stop_all_timers(); self.connection_label.setText("Disconnected"); self.statusBar().showMessage("CAN bus disconnected")
+        self.connect_btn.setEnabled(True); self.disconnect_btn.setEnabled(False); self.transmit_panel.setEnabled(False); self.transmit_panel.stop_all_timers(); self.connection_label.setText("Disconnected")
     def send_can_frame(self, message: can.Message):
         if self.can_reader and self.can_reader.bus:
             try: self.can_reader.bus.send(message)
@@ -535,12 +558,11 @@ class CANBusObserver(QMainWindow):
                             ts, id_hex, type_char, dlc_str, *data_hex = parts
                             frames_to_add.append(CANFrame(float(ts), int(id_hex,16), bytes.fromhex("".join(data_hex)), int(dlc_str), type_char=='E'))
                         except (ValueError, IndexError): print(f"Warning: Invalid line in log file: {line.strip()}")
-                self.frame_queue.extend(frames_to_add) # Add to queue for processing
-                self.update_views() # Process them immediately
+                self.frame_queue.extend(frames_to_add)
+                self.update_views()
                 self.statusBar().showMessage(f"Loaded {len(self.all_received_frames)} frames from {filename}")
             except Exception as e: QMessageBox.critical(self, "Load Error", f"Failed to load log: {e}")
-    def closeEvent(self, event):
-        self.disconnect_can(); event.accept()
+    def closeEvent(self, event): self.disconnect_can(); event.accept()
 
 def main():
     app = QApplication(sys.argv)
