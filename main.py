@@ -91,14 +91,29 @@ class Project:
 class CANopenDecoder:
     @staticmethod
     def decode(frame: CANFrame) -> Optional[Dict]:
-        cob_id_base = frame.arbitration_id & 0x780
-        node_id = frame.arbitration_id & 0x7F
-        if node_id == 0: return None
+        """
+        Decodes a CAN frame according to CiA 301 specification for common objects.
+        """
+        cob_id = frame.arbitration_id
 
-        if cob_id_base == 0x580: return CANopenDecoder._sdo_tx(frame.data, node_id)
-        if cob_id_base == 0x600: return CANopenDecoder._sdo_rx(frame.data, node_id)
-        if frame.arbitration_id == 0x000: return CANopenDecoder._nmt(frame.data)
-        # Other COB-IDs can be added here (PDO, EMCY, etc.)
+        # Handle Broadcast Objects (NMT, SYNC, TIME)
+        if cob_id == 0x000: return CANopenDecoder._nmt(frame.data)
+        if cob_id == 0x080: return CANopenDecoder._sync()
+        if cob_id == 0x100: return CANopenDecoder._time(frame.data)
+
+        # Handle Peer-to-Peer Objects
+        node_id = cob_id & 0x7F
+        if node_id == 0: return None # Invalid node ID for these objects
+
+        function_code = cob_id & 0x780 # Mask out the Node ID to get the base function
+
+        if function_code == 0x80: return CANopenDecoder._emcy(frame.data, node_id)
+        if function_code in [0x180, 0x280, 0x380, 0x480]: return CANopenDecoder._pdo("TX", function_code, node_id)
+        if function_code in [0x200, 0x300, 0x400, 0x500]: return CANopenDecoder._pdo("RX", function_code, node_id)
+        if function_code == 0x580: return CANopenDecoder._sdo("TX", frame.data, node_id) # Server -> Client
+        if function_code == 0x600: return CANopenDecoder._sdo("RX", frame.data, node_id) # Client -> Server
+        if function_code == 0x700: return CANopenDecoder._heartbeat(frame.data, node_id)
+
         return None
 
     @staticmethod
@@ -107,41 +122,67 @@ class CANopenDecoder:
         cs_map = {1: "Start", 2: "Stop", 128: "Pre-Operational", 129: "Reset Node", 130: "Reset Comm"}
         cs, nid = data[0], data[1]
         target = f"Node {nid}" if nid != 0 else "All Nodes"
-        return {"Type": "NMT", "Command": cs_map.get(cs, "Unknown"), "Target": target}
+        return { "CANopen Type": "NMT", "Command": cs_map.get(cs, "Unknown"), "Target": target}
 
     @staticmethod
-    def _sdo_tx(data: bytes, node_id: int) -> Dict:
-        return CANopenDecoder._sdo("SDO TX", data, node_id)
+    def _sync() -> Dict:
+        return {"CANopen Type": "SYNC"}
 
     @staticmethod
-    def _sdo_rx(data: bytes, node_id: int) -> Dict:
-        return CANopenDecoder._sdo("SDO RX", data, node_id)
+    def _time(data: bytes) -> Dict:
+        return {"CANopen Type": "TIME", "Raw": data.hex(' ')}
+
+    @staticmethod
+    def _emcy(data: bytes, node_id: int) -> Dict:
+        if len(data) != 8: return {"CANopen Type": "EMCY", "CANopen Node": node_id, "Error": "Invalid Length"}
+        err_code, err_reg, _ = struct.unpack("<H B 5s", data)
+        return {"CANopen Type": "EMCY", "CANopen Node": node_id, "Code": f"0x{err_code:04X}", "Register": f"0x{err_reg:02X}"}
+
+    @staticmethod
+    def _pdo(direction: str, function_code: int, node_id: int) -> Dict:
+        # Calculate PDO number (1-4)
+        if direction == "TX":
+            pdo_num = (function_code - 0x180) // 0x100 + 1
+        else: # RX
+            pdo_num = (function_code - 0x200) // 0x100 + 1
+        return {"CANopen Type": f"PDO{pdo_num} {direction}", "CANopen Node": node_id}
 
     @staticmethod
     def _sdo(direction: str, data: bytes, node_id: int) -> Dict:
         if not data: return None
         cmd = data[0]
-        ccs = (cmd >> 5) & 0x7 # Client/server command specifier
 
-        base_info = {"Type": direction, "Node": node_id}
+        base_info = {"CANopen Type": f"SDO {direction}", "CANopen Node": node_id}
 
-        if ccs == 2: # Initiate Download
+        # Decode based on command specifier (first 3 bits)
+        specifier = (cmd >> 5) & 0x7
+
+        # Initiate Commands (contain Index/Subindex)
+        if specifier in [1, 2]: # Initiate Upload/Download
+            if len(data) < 4: return base_info.update({"Error": "Invalid SDO Initiate"})
+            command = "Initiate Upload" if specifier == 1 else "Initiate Download"
             idx, sub = struct.unpack_from("<HB", data, 1)
-            base_info.update({"Command": "Initiate Download", "Index": f"0x{idx:04X}", "Sub-Index": sub})
-        elif ccs == 1: # Initiate Upload
-            idx, sub = struct.unpack_from("<HB", data, 1)
-            base_info.update({"Command": "Initiate Upload", "Index": f"0x{idx:04X}", "Sub-Index": sub})
-        elif ccs == 3: # Abort
+            base_info.update({"Command": command, "Index": f"0x{idx:04X}", "Sub-Index": sub})
+        # Segment Commands
+        elif specifier in [0, 3]:
+            command = "Download Segment" if specifier == 0 else "Upload Segment"
+            base_info.update({"Command": command})
+        # Abort Command
+        elif specifier == 4:
+            if len(data) < 8: return base_info.update({"Error": "Invalid SDO Abort"})
             idx, sub, code = struct.unpack_from("<HBL", data, 1)
-            base_info.update({"Command": "Abort Transfer", "Index": f"0x{idx:04X}", "Sub-Index": sub, "Abort Code": f"0x{code:08X}"})
-        elif ccs == 0: # Segment Download
-            base_info.update({"Command": "Segment Download"})
-        elif ccs == 4: # Segment Upload
-            base_info.update({"Command": "Segment Upload"})
+            base_info.update({"Command": "Abort", "Index": f"0x{idx:04X}", "Sub-Index": sub, "Code": f"0x{code:08X}"})
         else:
-            base_info.update({"Command": f"Unknown ({cmd:#04x})"})
+             base_info.update({"Command": f"Unknown ({cmd:#04x})"})
 
         return base_info
+
+    @staticmethod
+    def _heartbeat(data: bytes, node_id: int) -> Dict:
+        if len(data) != 1: return None
+        state_map = {0: "Boot-up", 4: "Stopped", 5: "Operational", 127: "Pre-operational"}
+        state = data[0] & 0x7F
+        return {"CANopen Type": "Heartbeat", "CANopen Node": node_id, "State": state_map.get(state, f"Unknown ({state})")}
 
 # --- Models ---
 class CANTraceModel(QAbstractTableModel):
@@ -177,8 +218,8 @@ class CANTraceModel(QAbstractTableModel):
                 except (KeyError, ValueError): continue
         if self.canopen_enabled:
             if co_info := CANopenDecoder.decode(frame):
-                details = ", ".join(f"{k}={v}" for k, v in co_info.items() if k not in ["Protocol", "Type"])
-                decoded_parts.append(f"{co_info['Type']}: {details}")
+                details = ", ".join(f"{k}={v}" for k, v in co_info.items() if k not in ["CANopen Type"])
+                decoded_parts.append(f"CANopen {co_info['CANopen Type']}: {details}")
         return " | ".join(decoded_parts)
 
 class CANGroupedModel(QAbstractItemModel):
@@ -229,16 +270,18 @@ class CANGroupedModel(QAbstractItemModel):
         item.children_populated = True
         self.endInsertRows()
     def _decode_frame_to_signals(self, frame: CANFrame) -> List[Dict]:
+        sigs = []
         if self.canopen_enabled:
-            if co_info := CANopenDecoder.decode(frame): return [{"name": k, "value": v, "unit": ""} for k,v in co_info.items()]
+            if co_info := CANopenDecoder.decode(frame):
+                sigs += [{"name": k, "value": v, "unit": ""} for k,v in co_info.items()]
         if CAN_AVAILABLE:
             for db in self.dbc_databases:
                 try:
                     msg_def = db.get_message_by_frame_id(frame.arbitration_id)
                     decoded = db.decode_message(frame.arbitration_id, frame.data, decode_choices=False)
-                    return [{'name':s.name,'value':decoded.get(s.name,'N/A'),'unit':s.unit or ''} for s in msg_def.signals]
+                    sigs += [{'name':s.name,'value':decoded.get(s.name,'N/A'),'unit':s.unit or ''} for s in msg_def.signals]
                 except (KeyError, ValueError): continue
-        return []
+        return sigs
     def clear_frames(self):
         self.beginResetModel(); self.top_level_items.clear(); self.frame_counts.clear(); self.timestamps.clear(); self.item_map.clear(); self.endResetModel()
     def add_frame(self, frame: CANFrame):
@@ -289,7 +332,7 @@ class CANGroupedModel(QAbstractItemModel):
 # ... (CANReaderThread is unchanged) ...
 class CANReaderThread(QThread):
     error_occurred = Signal(str)
-    def __init__(self, frame_queue: deque, interface="socketcan", channel="vcan0"):
+    def __init__(self, frame_queue: deque, interface="socketcan", channel="can0"):
         super().__init__(); self.frame_queue = frame_queue; self.interface, self.channel, self.running, self.bus = interface, channel, False, None
     def start_reading(self):
         if not CAN_AVAILABLE: self.error_occurred.emit("python-can library not available"); return False
@@ -446,7 +489,7 @@ class CANBusObserver(QMainWindow):
     def setup_ui(self):
         central_widget = QWidget(); self.setCentralWidget(central_widget); layout = QVBoxLayout(central_widget)
         toolbar_layout = QHBoxLayout(); self.connect_btn = QPushButton("Connect"); self.disconnect_btn = QPushButton("Disconnect", enabled=False)
-        self.interface_combo = QComboBox(); self.interface_combo.addItems(["socketcan", "pcan", "kvaser", "vector", "virtual"]); self.channel_edit = QLineEdit("vcan0")
+        self.interface_combo = QComboBox(); self.interface_combo.addItems(["socketcan", "pcan", "kvaser", "vector", "virtual"]); self.channel_edit = QLineEdit("can0")
         toolbar_layout.addWidget(QLabel("Interface:")); toolbar_layout.addWidget(self.interface_combo); toolbar_layout.addWidget(QLabel("Channel:")); toolbar_layout.addWidget(self.channel_edit)
         toolbar_layout.addWidget(self.connect_btn); toolbar_layout.addWidget(self.disconnect_btn); toolbar_layout.addStretch(); layout.addLayout(toolbar_layout)
         main_splitter = QSplitter(Qt.Horizontal); layout.addWidget(main_splitter)
