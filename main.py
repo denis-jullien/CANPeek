@@ -198,18 +198,28 @@ class CANGroupedModel(HierarchicalCANModel):
         else:
             display_item = self.item_map[can_id]
             display_item.data_source = frame # Update to latest frame
-            self.dataChanged.emit(self.index(display_item.row_in_parent, 0), self.index(display_item.row_in_parent, self.columnCount()-1))
-        # Update children (signals)
-        self.layoutAboutToBeChanged.emit([self], QAbstractItemModel.VerticalSortHint)
-        display_item.children.clear()
-        for i, sig_data in enumerate(self._decode_frame_to_signals(frame)):
-            display_item.children.append(DisplayItem(parent=display_item, data_source=sig_data, is_signal=True, row_in_parent=i))
-        change_parent_index = self.createIndex(display_item.row_in_parent, 0, display_item)
-        self.layoutChanged.emit([self], QAbstractItemModel.VerticalSortHint)
+        # Update children (signals) and notify view
+        parent_index = self.createIndex(display_item.row_in_parent, 0, display_item)
+        if display_item.children:
+             self.beginRemoveRows(parent_index, 0, len(display_item.children) - 1)
+             display_item.children.clear()
+             self.endRemoveRows()
+
+        decoded_signals = self._decode_frame_to_signals(frame)
+        if decoded_signals:
+            self.beginInsertRows(parent_index, 0, len(decoded_signals) - 1)
+            for i, sig_data in enumerate(decoded_signals):
+                display_item.children.append(DisplayItem(parent=display_item, data_source=sig_data, is_signal=True, row_in_parent=i))
+            self.endInsertRows()
+
+        # Notify that parent data has changed (count, data, etc.)
+        self.dataChanged.emit(parent_index, self.index(display_item.row_in_parent, self.columnCount() - 1, QModelIndex()))
+
         # Update stats
         self.frame_counts[can_id] += 1
         self.timestamps[can_id].append(frame.timestamp)
         if len(self.timestamps[can_id]) > 10: self.timestamps[can_id].pop(0)
+
     def data(self, index, role):
         if not index.isValid(): return None
         item: DisplayItem = index.internalPointer()
