@@ -30,7 +30,7 @@ The goal was rapid prototyping, not pristine architecture. Use it, improve it, r
 
 ## Screenshots
 
-![screenshot](https://raw.githubusercontent.com/denis-jullien/CANPeek/master/screensht.png)
+![screenshot](https://raw.githubusercontent.com/denis-jullien/CANPeek/refs/heads/master/screenshot.png)
 
 ## Installation
 
