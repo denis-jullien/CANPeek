@@ -338,6 +338,7 @@ class CANReaderThread(QThread):
         """Send frame from within the thread context"""
         if self.bus and self.running:
             try:
+                print(f"Sending message: {message}")
                 self.bus.send(message)
             except Exception as e:
                 self.error_occurred.emit(f"Send error: {e}")
