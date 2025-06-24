@@ -4,6 +4,7 @@ CAN Bus Observer GUI - Similar to PCAN-Explorer
 Features:
 - Project-based configuration with Tree View
 - Multi-DBC and Multi-Filter support
+- DBC content viewer
 - Frame view grouped by ID or chronological trace
 - DBC decoding and signal-based transmitting
 - CAN log file saving/loading
@@ -228,6 +229,32 @@ class CANReaderThread(QThread):
                 if self.running: self.error_occurred.emit(f"CAN read error: {e}"); break
 
 # --- UI Components ---
+class DBCEditor(QWidget):
+    """Widget for displaying the contents of a DBC file."""
+    def __init__(self, dbc_file: DBCFile):
+        super().__init__()
+        self.dbc_file = dbc_file
+        self.setup_ui()
+
+    def setup_ui(self):
+        main_layout = QVBoxLayout(self); main_layout.setContentsMargins(0,0,0,0)
+        group = QGroupBox(f"DBC Content: {self.dbc_file.path.name}"); layout = QVBoxLayout(group); main_layout.addWidget(group)
+        self.table = QTableWidget(); self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setColumnCount(4); self.table.setHorizontalHeaderLabels(["Message", "ID (hex)", "DLC", "Signals"])
+        layout.addWidget(self.table)
+        self.populate_table()
+        self.table.resizeColumnsToContents()
+
+    def populate_table(self):
+        messages = sorted(self.dbc_file.database.messages, key=lambda m: m.frame_id)
+        self.table.setRowCount(len(messages))
+        for row, msg in enumerate(messages):
+            signals_str = ", ".join(s.name for s in msg.signals)
+            self.table.setItem(row, 0, QTableWidgetItem(msg.name))
+            self.table.setItem(row, 1, QTableWidgetItem(f"0x{msg.frame_id:X}"))
+            self.table.setItem(row, 2, QTableWidgetItem(str(msg.length)))
+            self.table.setItem(row, 3, QTableWidgetItem(signals_str))
+
 class FilterEditor(QWidget):
     """Widget for editing a CANFrameFilter object."""
     filter_changed = Signal()
@@ -277,14 +304,12 @@ class PropertiesPanel(QWidget):
             editor = FilterEditor(data)
             editor.filter_changed.connect(lambda: item.setText(0, data.name)) # Update tree name
             self.current_widget = editor
-            self.layout.addWidget(self.current_widget)
         elif isinstance(data, DBCFile):
-            group = QGroupBox("DBC Properties"); layout = QFormLayout(group); self.current_widget = group
-            layout.addRow("File Path:", QLineEdit(str(data.path.resolve()))); layout.itemAt(1, QFormLayout.FieldRole).widget().setReadOnly(True)
-            layout.addRow("Messages:", QLabel(str(len(data.database.messages))))
-            self.layout.addWidget(self.current_widget)
+            self.current_widget = DBCEditor(data)
         else: # No item or an unconfigurable one
             self.layout.addWidget(self.placeholder); self.placeholder.show()
+            return
+        self.layout.addWidget(self.current_widget)
     def clear(self):
         if self.current_widget: self.current_widget.deleteLater(); self.current_widget = None
         self.placeholder.hide()
@@ -348,10 +373,8 @@ class ProjectExplorer(QGroupBox):
         self.rebuild_tree()
 
 class TransmitPanel(QGroupBox):
-    # This class and its children (SignalTransmitPanel) remain largely the same as before.
-    # The main difference is that it now gets the DBC database from the main window.
-    frame_to_send = Signal(object)  # can.Message
-    row_selection_changed = Signal(int, str) # row, id_text
+    frame_to_send = Signal(object)
+    row_selection_changed = Signal(int, str)
     def __init__(self):
         super().__init__("Transmit"); self.timers: Dict[int, QTimer] = {}; self.dbcs: List[object] = []
         self.setup_ui()
@@ -362,9 +385,6 @@ class TransmitPanel(QGroupBox):
             try: return db.get_message_by_frame_id(can_id)
             except KeyError: continue
         return None
-    # ... rest of TransmitPanel and SignalTransmitPanel methods from previous step ...
-    # This is a placeholder for brevity, the full code will be in the final block.
-    # The setup_ui, add_frame, _setup_row_widgets, etc. methods are unchanged.
     def setup_ui(self):
         layout = QVBoxLayout(self)
         control_layout = QHBoxLayout()
