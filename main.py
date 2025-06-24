@@ -45,7 +45,11 @@ except ImportError:
     class can:
         class Message: pass
         class Bus: pass
-    class cantools: pass
+    class cantools:
+        class database:
+            @staticmethod
+            def load_file(filename):
+                raise ImportError("cantools library is not installed.")
 
 
 @dataclass
@@ -274,12 +278,21 @@ class CANTraceModel(QAbstractTableModel):
         decoded_parts = []
 
         # DBC decoding
-        if self.dbc_database:
+        if self.dbc_database and CAN_AVAILABLE:
             try:
-                message = self.dbc_database.get_message_by_name_or_arbitration_id(frame.arbitration_id)
-                decoded = self.dbc_database.decode_message(frame.arbitration_id, frame.data)
-                decoded_parts.append(f"DBC: {message.name} {decoded}")
-            except:
+                # Get the message definition from the database
+                message = self.dbc_database.get_message_by_frame_id(frame.arbitration_id)
+                # Decode the data bytes into physical values
+                decoded_signals = self.dbc_database.decode_message(frame.arbitration_id, frame.data)
+                # Format the signals into a readable string
+                signal_strs = [f"{name}={value}" for name, value in decoded_signals.items()]
+                decoded_parts.append(f"DBC: {message.name} {' '.join(signal_strs)}")
+            except KeyError:
+                # This is expected if the frame ID is not in the DBC file.
+                pass
+            except Exception as e:
+                # Log other, unexpected errors to the console for debugging
+                print(f"DBC decoding error for ID 0x{frame.arbitration_id:X}: {e}")
                 pass
 
         # CANopen decoding
@@ -368,11 +381,11 @@ class CANGroupedModel(QAbstractTableModel):
             if col == 0:  # ID
                 return f"0x{can_id:X}"
             elif col == 1:  # Name
-                if self.dbc_database:
+                if self.dbc_database and CAN_AVAILABLE:
                     try:
-                        message = self.dbc_database.get_message_by_name_or_arbitration_id(can_id)
+                        message = self.dbc_database.get_message_by_frame_id(can_id)
                         return message.name
-                    except:
+                    except KeyError:
                         pass
                 return ""
             elif col == 2:  # DLC
@@ -403,11 +416,15 @@ class CANGroupedModel(QAbstractTableModel):
         # DBC decoding
         if self.dbc_database and CAN_AVAILABLE:
             try:
-                message = self.dbc_database.get_message_by_name_or_arbitration_id(frame.arbitration_id)
-                decoded = self.dbc_database.decode_message(frame.arbitration_id, frame.data)
-                signal_strs = [f"{name}={value}" for name, value in decoded.items()]
+                decoded_signals = self.dbc_database.decode_message(frame.arbitration_id, frame.data)
+                signal_strs = [f"{name}={value}" for name, value in decoded_signals.items()]
                 decoded_parts.append(" ".join(signal_strs))
-            except:
+            except KeyError:
+                # This is expected if the frame ID is not in the DBC file.
+                pass
+            except Exception as e:
+                # Log other, unexpected errors to the console for debugging
+                print(f"DBC decoding error for ID 0x{frame.arbitration_id:X}: {e}")
                 pass
 
         # CANopen decoding
@@ -945,6 +962,9 @@ class CANBusObserver(QMainWindow):
             self.statusBar().showMessage(f"DBC loaded: {message_count} messages")
         except Exception as e:
             QMessageBox.critical(self, "DBC Load Error", f"Failed to load DBC file: {str(e)}")
+            self.dbc_database = None # Ensure it's cleared on failure
+            self.trace_model.set_dbc_database(None)
+            self.grouped_model.set_dbc_database(None)
 
     def toggle_canopen(self, enabled):
         self.trace_model.set_canopen_enabled(enabled)
