@@ -29,13 +29,14 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QTabWidget, QPushButton, QLabel,
     QLineEdit, QCheckBox, QComboBox, QSpinBox, QSplitter,
     QGroupBox, QFormLayout, QHeaderView, QFileDialog, QMessageBox,
-    QStatusBar, QMenuBar, QMenu, QTreeView, QTreeWidget, QTreeWidgetItem, QTableView
+    QStatusBar, QMenuBar, QMenu, QTreeView, QTreeWidget, QTreeWidgetItem, QTableView, QToolBar
 )
 from PySide6.QtCore import (
     QThread, QTimer, Signal, QObject, Qt, QAbstractItemModel, QAbstractTableModel,
     QModelIndex, QSortFilterProxyModel
 )
-from PySide6.QtGui import QAction, QKeyEvent
+from PySide6.QtGui import QAction, QKeyEvent, QIcon
+from PySide6.QtWidgets import QStyle
 
 import qdarktheme
 # Try importing CAN libraries
@@ -600,41 +601,122 @@ class SignalTransmitPanel(QGroupBox):
         except(ValueError,TypeError,KeyError): pass
 
 # --- Main Application Window ---
+
 class CANBusObserver(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle("CANPeek"); self.setGeometry(100, 100, 1400, 900)
+        super().__init__()
+        self.setWindowTitle("CAN Bus Observer") # Renamed from CANPeek
+        self.setGeometry(100, 100, 1400, 900)
         self.project = Project()
-        self.trace_model = CANTraceModel(); self.grouped_model = CANGroupedModel()
-        self.grouped_proxy_model = QSortFilterProxyModel(); self.grouped_proxy_model.setSourceModel(self.grouped_model); self.grouped_proxy_model.setSortRole(Qt.UserRole)
-        self.can_reader = None; self.frame_batch = []; self.all_received_frames = []
-        self.setup_ui(); self.setup_menubar(); self.setup_statusbar()
-        self.gui_update_timer = QTimer(self); self.gui_update_timer.timeout.connect(self.update_views); self.gui_update_timer.start(50)
-    def setup_ui(self):
-        central_widget = QWidget(); self.setCentralWidget(central_widget); layout = QVBoxLayout(central_widget)
-        ### MODIFIED ### - Toolbar no longer has connection input fields
-        toolbar_layout = QHBoxLayout()
-        self.connect_btn = QPushButton("Connect")
-        self.disconnect_btn = QPushButton("Disconnect", enabled=False)
-        toolbar_layout.addWidget(self.connect_btn)
-        toolbar_layout.addWidget(self.disconnect_btn)
-        toolbar_layout.addStretch()
-        layout.addLayout(toolbar_layout)
+        self.trace_model = CANTraceModel()
+        self.grouped_model = CANGroupedModel()
+        self.grouped_proxy_model = QSortFilterProxyModel()
+        self.grouped_proxy_model.setSourceModel(self.grouped_model)
+        self.grouped_proxy_model.setSortRole(Qt.UserRole)
+        self.can_reader = None
+        self.frame_batch = []
+        self.all_received_frames = []
 
-        main_splitter = QSplitter(Qt.Horizontal); layout.addWidget(main_splitter)
-        left_pane = QWidget(); left_layout = QVBoxLayout(left_pane); left_layout.setContentsMargins(0,0,0,0)
+        ### MODIFIED ### - Setup actions first, then UI components
+        self.setup_actions()
+        self.setup_ui()
+        self.setup_toolbar() # Call the new toolbar setup
+        self.setup_menubar()
+        self.setup_statusbar()
+        self.gui_update_timer = QTimer(self)
+        self.gui_update_timer.timeout.connect(self.update_views)
+        self.gui_update_timer.start(50)
+
+    ### NEW ### - Centralized action creation
+    def setup_actions(self):
+        """Create all QAction objects for the application."""
+        # Use standard icons from the current theme
+        style = self.style()
+        
+        # Connection actions
+        self.connect_action = QAction(style.standardIcon(QStyle.SP_DialogYesButton), "&Connect", self)
+        self.connect_action.setStatusTip("Connect to the configured CAN bus")
+        self.connect_action.triggered.connect(self.connect_can)
+
+        self.disconnect_action = QAction(style.standardIcon(QStyle.SP_DialogNoButton), "&Disconnect", self)
+        self.disconnect_action.setStatusTip("Disconnect from the CAN bus")
+        self.disconnect_action.triggered.connect(self.disconnect_can)
+        self.disconnect_action.setEnabled(False) # Initially disabled
+
+        # Data actions
+        self.clear_action = QAction(style.standardIcon(QStyle.SP_TrashIcon), "&Clear Data", self)
+        self.clear_action.setStatusTip("Clear all received frames from the views")
+        self.clear_action.triggered.connect(self.clear_data)
+
+        self.save_log_action = QAction(style.standardIcon(QStyle.SP_DialogSaveButton), "&Save Log...", self)
+        self.save_log_action.setStatusTip("Save all received frames to a log file")
+        self.save_log_action.triggered.connect(self.save_log)
+
+        self.load_log_action = QAction(style.standardIcon(QStyle.SP_DialogOpenButton), "&Load Log...", self)
+        self.load_log_action.setStatusTip("Load frames from a log file")
+        self.load_log_action.triggered.connect(self.load_log)
+        
+        self.exit_action = QAction("&Exit", self)
+        self.exit_action.setStatusTip("Exit the application")
+        self.exit_action.triggered.connect(self.close)
+
+    ### NEW ### - Toolbar setup
+    def setup_toolbar(self):
+        """Create and populate the main application toolbar."""
+        toolbar = QToolBar("Main Toolbar")
+        self.addToolBar(toolbar)
+
+        toolbar.addAction(self.connect_action)
+        toolbar.addAction(self.disconnect_action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.clear_action)
+        toolbar.addAction(self.save_log_action)
+        toolbar.addAction(self.load_log_action)
+
+    def setup_ui(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+
+        ### MODIFIED ### - The top toolbar layout is now completely removed.
+        # The main splitter is added directly to the central widget's layout.
+
+        main_splitter = QSplitter(Qt.Horizontal)
+        layout.addWidget(main_splitter)
+
+        left_pane = QWidget()
+        left_layout = QVBoxLayout(left_pane)
+        left_layout.setContentsMargins(0, 0, 0, 0)
         left_splitter = QSplitter(Qt.Vertical)
-        receive_widget = QWidget(); receive_layout = QVBoxLayout(receive_widget); receive_layout.setContentsMargins(0,0,0,0)
-        control_layout = QHBoxLayout(); self.clear_btn = QPushButton("Clear"); self.save_log_btn = QPushButton("Save Log"); self.load_log_btn = QPushButton("Load Log")
-        control_layout.addWidget(self.clear_btn); control_layout.addWidget(self.save_log_btn); control_layout.addWidget(self.load_log_btn); control_layout.addStretch()
-        receive_layout.addLayout(control_layout)
+
+        receive_widget = QWidget()
+        receive_layout = QVBoxLayout(receive_widget)
+        receive_layout.setContentsMargins(0, 0, 0, 0)
+
+        ### MODIFIED ### - The control layout with buttons is removed.
+        # The tab widget is now the first thing in the receive_layout.
         self.tab_widget = QTabWidget()
-        trace_view_widget = QWidget(); trace_layout = QVBoxLayout(trace_view_widget); trace_layout.setContentsMargins(0,0,0,0)
-        self.trace_view = QTableView(); self.trace_view.setModel(self.trace_model); self.trace_view.setAlternatingRowColors(True)
+        trace_view_widget = QWidget()
+        trace_layout = QVBoxLayout(trace_view_widget)
+        trace_layout.setContentsMargins(0, 0, 0, 0)
+        self.trace_view = QTableView()
+        self.trace_view.setModel(self.trace_model)
+        self.trace_view.setAlternatingRowColors(True)
         self.trace_view.horizontalHeader().setStretchLastSection(True)
-        self.autoscroll_cb = QCheckBox("Autoscroll", checked=True); trace_layout.addWidget(self.trace_view); trace_layout.addWidget(self.autoscroll_cb); self.tab_widget.addTab(trace_view_widget, "Trace")
-        self.grouped_view = QTreeView(); self.grouped_view.setModel(self.grouped_proxy_model); self.grouped_view.setAlternatingRowColors(True); self.grouped_view.setSortingEnabled(True)
+        self.autoscroll_cb = QCheckBox("Autoscroll", checked=True)
+        trace_layout.addWidget(self.trace_view)
+        trace_layout.addWidget(self.autoscroll_cb)
+        self.tab_widget.addTab(trace_view_widget, "Trace")
+
+        self.grouped_view = QTreeView()
+        self.grouped_view.setModel(self.grouped_proxy_model)
+        self.grouped_view.setAlternatingRowColors(True)
+        self.grouped_view.setSortingEnabled(True)
         self.tab_widget.addTab(self.grouped_view, "Grouped")
-        receive_layout.addWidget(self.tab_widget); left_splitter.addWidget(receive_widget)
+        receive_layout.addWidget(self.tab_widget) # Add tab widget to layout
+        left_splitter.addWidget(receive_widget)
+
+        # ... (rest of the setup_ui method remains the same)
         transmit_area = QWidget(); transmit_layout = QVBoxLayout(transmit_area); transmit_layout.setContentsMargins(0,0,0,0)
         self.transmit_panel = TransmitPanel(); self.transmit_panel.setEnabled(False)
         self.signal_transmit_panel = SignalTransmitPanel(); self.signal_transmit_panel.setVisible(False)
@@ -644,21 +726,38 @@ class CANBusObserver(QMainWindow):
         right_pane = QWidget(); right_layout = QVBoxLayout(right_pane); right_layout.setContentsMargins(0,0,0,0)
         right_splitter = QSplitter(Qt.Vertical)
         self.project_explorer = ProjectExplorer(self.project)
-        ### MODIFIED ### - Pass project and explorer to PropertiesPanel
         self.properties_panel = PropertiesPanel(self.project, self.project_explorer)
         right_splitter.addWidget(self.project_explorer)
         right_splitter.addWidget(self.properties_panel)
         right_splitter.setSizes([400, 300])
         right_layout.addWidget(right_splitter); main_splitter.addWidget(right_pane)
         main_splitter.setSizes([900, 500])
-        self.connect_btn.clicked.connect(self.connect_can); self.disconnect_btn.clicked.connect(self.disconnect_can); self.clear_btn.clicked.connect(self.clear_data); self.save_log_btn.clicked.connect(self.save_log); self.load_log_btn.clicked.connect(self.load_log)
-        self.transmit_panel.frame_to_send.connect(self.send_can_frame); self.transmit_panel.row_selection_changed.connect(self.on_transmit_row_selected); self.signal_transmit_panel.data_encoded.connect(self.on_signal_data_encoded)
+        
+        ### MODIFIED ### - Button connections are now handled by QActions
+        # self.connect_btn.clicked.connect(self.connect_can) ... etc are removed.
+        
+        self.transmit_panel.frame_to_send.connect(self.send_can_frame)
+        self.transmit_panel.row_selection_changed.connect(self.on_transmit_row_selected)
+        self.signal_transmit_panel.data_encoded.connect(self.on_signal_data_encoded)
         self.project_explorer.project_changed.connect(self.on_project_changed)
-        ### MODIFIED ### - Connect explorer selection to properties panel
         self.project_explorer.tree.currentItemChanged.connect(self.properties_panel.show_properties)
-        if not CAN_AVAILABLE: self.connect_btn.setEnabled(False); self.connect_btn.setText("Connect (lib missing)"); self.statusBar().showMessage("python-can or cantools not found. Functionality limited.")
+        
+        if not CAN_AVAILABLE:
+            self.connect_action.setEnabled(False)
+            self.connect_action.setText("Connect (lib missing)")
+            self.statusBar().showMessage("python-can or cantools not found. Functionality limited.")
+
+
+    ### MODIFIED ### - Use the pre-made actions
     def setup_menubar(self):
-        menubar=self.menuBar(); file_menu=menubar.addMenu("File"); load_action=QAction("Load Log...",self); load_action.triggered.connect(self.load_log); file_menu.addAction(load_action); save_action=QAction("Save Log...",self); save_action.triggered.connect(self.save_log); file_menu.addAction(save_action); file_menu.addSeparator(); exit_action=QAction("Exit",self); exit_action.triggered.connect(self.close); file_menu.addAction(exit_action)
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu("&File")
+        
+        file_menu.addAction(self.load_log_action)
+        file_menu.addAction(self.save_log_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.exit_action)
+
     def setup_statusbar(self):
         self.statusBar().showMessage("Ready"); self.frame_count_label = QLabel("Frames: 0"); self.connection_label = QLabel("Disconnected"); self.statusBar().addPermanentWidget(self.frame_count_label); self.statusBar().addPermanentWidget(self.connection_label)
     def keyPressEvent(self, event: QKeyEvent):
@@ -739,6 +838,7 @@ class CANBusObserver(QMainWindow):
     
     ### MODIFIED ### - Use project settings for connection
     def connect_can(self):
+        # ... (logic to create CANReaderThread is the same)
         self.can_reader = CANReaderThread(
             self.project.can_interface,
             self.project.can_channel,
@@ -746,9 +846,10 @@ class CANBusObserver(QMainWindow):
         )
         self.can_reader.frame_received.connect(self._process_frame)
         self.can_reader.error_occurred.connect(self.on_can_error)
+
         if self.can_reader.start_reading():
-            self.connect_btn.setEnabled(False)
-            self.disconnect_btn.setEnabled(True)
+            self.connect_action.setEnabled(False)
+            self.disconnect_action.setEnabled(True)
             self.transmit_panel.setEnabled(True)
             self.connection_label.setText(f"Connected ({self.project.can_interface}:{self.project.can_channel} @ {self.project.can_bitrate/1000:.0f} kbps)")
         else:
@@ -759,8 +860,9 @@ class CANBusObserver(QMainWindow):
             self.can_reader.stop_reading()
             self.can_reader.deleteLater()
             self.can_reader = None
-        self.connect_btn.setEnabled(True)
-        self.disconnect_btn.setEnabled(False)
+        
+        self.connect_action.setEnabled(True)
+        self.disconnect_action.setEnabled(False)
         self.transmit_panel.setEnabled(False)
         self.transmit_panel.stop_all_timers()
         self.connection_label.setText("Disconnected")
