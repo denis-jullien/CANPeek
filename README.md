@@ -15,8 +15,7 @@ While the app works and provides a full-featured CAN bus GUI, you may find:
 
 > ⚠️ This is **AI slop** — but useful slop.
 
-The goal was rapid prototyping, not pristine architecture. Use it, improve it, rewrite parts of it — all contributions are welcome. AI also wrote this README and didnt 
-
+The goal was rapid prototyping, not pristine architecture. Use it, improve it, rewrite parts of it — all contributions are welcome.
 
 ## Features
 

@@ -15,7 +15,7 @@ import sys
 import time
 import struct
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
 from dataclasses import dataclass, field
 from pathlib import Path
 from functools import partial
@@ -54,6 +54,10 @@ except ImportError:
             def load_file(filename):
                 raise ImportError("cantools library is not installed.")
 
+# ### NEW ### Forward reference for type hinting
+if TYPE_CHECKING:
+    from __main__ import ProjectExplorer
+
 # --- Data Structures ---
 TRACE_BUFFER_LIMIT = 5000
 
@@ -87,6 +91,11 @@ class Project:
     dbcs: List[DBCFile] = field(default_factory=list)
     filters: List[CANFrameFilter] = field(default_factory=list)
     canopen_enabled: bool = True
+    ### MODIFIED ### - Add connection settings to the project
+    can_interface: str = "socketcan"
+    can_channel: str = "can0"
+    can_bitrate: int = 500000
+
     def get_active_dbcs(self) -> List[object]: return [dbc.database for dbc in self.dbcs if dbc.enabled]
     def get_active_filters(self) -> List[CANFrameFilter]: return [f for f in self.filters if f.enabled]
 
@@ -252,44 +261,26 @@ class CANGroupedModel(QAbstractItemModel):
     def clear_frames(self):
         self.beginResetModel(); self.top_level_items.clear(); self.frame_counts.clear(); self.timestamps.clear(); self.item_map.clear(); self.endResetModel()
     def update_frames(self, frames: List[CANFrame]):
-        """
-        Process a batch of frames, updating the model's internal state.
-        This is much more efficient and thread-safe than adding one by one.
-        """
         if not frames:
             return
-
-        # Tell the view that we are about to perform a major change.
-        # This is the key to preventing crashes. It stops the view from
-        # trying to read the model while we are modifying it.
         self.beginResetModel()
-
         for frame in frames:
             can_id = frame.arbitration_id
-            
-            # Update frame counts and timestamps
             self.frame_counts[can_id] = self.frame_counts.get(can_id, 0) + 1
             if can_id not in self.timestamps:
                 self.timestamps[can_id] = deque(maxlen=10)
             self.timestamps[can_id].append(frame.timestamp)
-
             if can_id not in self.item_map:
-                # This is a new CAN ID, create a new top-level item for it.
                 item = DisplayItem(parent=None, data_source=frame)
                 item.row_in_parent = len(self.top_level_items)
                 self.top_level_items.append(item)
                 self.item_map[can_id] = item
             else:
-                # This ID already exists, just update its data source and invalidate its children.
                 item = self.item_map[can_id]
                 item.data_source = frame
-                # If children were previously expanded, they need to be repopulated on next expansion.
                 if item.children_populated:
                     item.children.clear()
                     item.children_populated = False
-        
-        # Now that all internal data structures are updated, tell the view it can
-        # read the new state. The view will refresh itself completely.
         self.endResetModel()
     def data(self, index, role):
         if not index.isValid(): return None
@@ -319,26 +310,25 @@ class CANGroupedModel(QAbstractItemModel):
             if col == 5: return frame.data.hex(' ')
         return None
 
-# 1. Fix CANReaderThread to not access bus directly from main thread
 class CANReaderThread(QThread):
     frame_received = Signal(object)
     error_occurred = Signal(str)
-    send_frame = Signal(object)  # Add this signal
+    send_frame = Signal(object)
     
-    def __init__(self, interface: str, channel: str):
+    ### MODIFIED ### - Accept bitrate
+    def __init__(self, interface: str, channel: str, bitrate: int):
         super().__init__()
         self.interface = interface
         self.channel = channel
+        self.bitrate = bitrate
         self.running = False
-        self.bus = None  # Store bus in thread
+        self.bus = None
         self.daemon = True
-        self.send_frame.connect(self._send_frame_internal)  # Connect signal to internal method
+        self.send_frame.connect(self._send_frame_internal)
         
     def _send_frame_internal(self, message):
-        """Send frame from within the thread context"""
         if self.bus and self.running:
             try:
-                print(f"Sending message: {message}")
                 self.bus.send(message)
             except Exception as e:
                 self.error_occurred.emit(f"Send error: {e}")
@@ -353,19 +343,31 @@ class CANReaderThread(QThread):
     
     def stop_reading(self):
         self.running = False
-        self.wait(3000)  # Wait up to 3 seconds for thread to finish
+        self.wait(3000)
         
     def run(self):
         try:
-            self.bus = can.Bus(interface=self.interface, channel=self.channel, receive_own_messages=True)
+            ### MODIFIED ### - Use bitrate in bus creation
+            self.bus = can.Bus(
+                interface=self.interface,
+                channel=self.channel,
+                bitrate=self.bitrate,
+                receive_own_messages=True
+            )
             while self.running:
                 msg = self.bus.recv(timeout=0.1)
-                if msg and self.running:  # Check running again after recv
+                if msg and self.running:
                     frame = CANFrame(
                         msg.timestamp, msg.arbitration_id, msg.data, msg.dlc,
                         msg.is_extended_id, msg.is_error_frame, msg.is_remote_frame
                     )
                     self.frame_received.emit(frame)
+        except can.CanOperationError as e:
+            if self.running:
+                if e.error_code == 100:
+                    self.error_occurred.emit("CAN bus not up or not configured correctly")
+                else:
+                    self.error_occurred.emit(f"CAN bus error: {e}")
         except Exception as e:
             if self.running:
                 self.error_occurred.emit(f"CAN reader error: {e}")
@@ -401,14 +403,80 @@ class FilterEditor(QWidget):
         except ValueError: self.mask_edit.setText(f"0x{self.filter.mask:X}")
         self.filter.accept_standard=self.standard_cb.isChecked(); self.filter.accept_extended=self.extended_cb.isChecked(); self.filter.accept_data=self.data_cb.isChecked(); self.filter.accept_remote=self.remote_cb.isChecked(); self.filter_changed.emit()
 
+### NEW ### - Editor for Connection Settings
+class ConnectionEditor(QWidget):
+    project_changed = Signal()
+    def __init__(self, project: Project):
+        super().__init__()
+        self.project = project
+        self.setup_ui()
+
+    def setup_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        group = QGroupBox("Connection Properties")
+        layout = QFormLayout(group)
+        main_layout.addWidget(group)
+
+        self.interface_combo = QComboBox()
+        self.interface_combo.addItems(["socketcan", "pcan", "kvaser", "vector", "virtual"])
+        self.interface_combo.setCurrentText(self.project.can_interface)
+        layout.addRow("Interface:", self.interface_combo)
+
+        self.channel_edit = QLineEdit(self.project.can_channel)
+        layout.addRow("Channel:", self.channel_edit)
+
+        self.bitrate_spin = QSpinBox()
+        self.bitrate_spin.setRange(1000, 4000000)
+        self.bitrate_spin.setSingleStep(1000)
+        self.bitrate_spin.setValue(self.project.can_bitrate)
+        self.bitrate_spin.setSuffix(" bps")
+        layout.addRow("Bitrate:", self.bitrate_spin)
+        
+        self.interface_combo.currentTextChanged.connect(self._update_project)
+        self.channel_edit.editingFinished.connect(self._update_project)
+        self.bitrate_spin.valueChanged.connect(self._update_project)
+
+    def _update_project(self):
+        self.project.can_interface = self.interface_combo.currentText()
+        self.project.can_channel = self.channel_edit.text()
+        self.project.can_bitrate = self.bitrate_spin.value()
+        self.project_changed.emit()
+
 class PropertiesPanel(QWidget):
-    def __init__(self): super().__init__(); self.current_widget=None; self.layout=QVBoxLayout(self); self.layout.setContentsMargins(0,0,0,0); self.placeholder=QLabel("Select an item to see its properties."); self.placeholder.setAlignment(Qt.AlignCenter); self.layout.addWidget(self.placeholder)
+    ### MODIFIED ### - Accept project and explorer for context
+    def __init__(self, project: Project, explorer: 'ProjectExplorer'):
+        super().__init__()
+        self.project = project
+        self.explorer = explorer
+        self.current_widget = None
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.placeholder = QLabel("Select an item to see its properties.")
+        self.placeholder.setAlignment(Qt.AlignCenter)
+        self.layout.addWidget(self.placeholder)
+
+    ### MODIFIED ### - Show editor based on item data
     def show_properties(self, item: QTreeWidgetItem):
-        self.clear(); data=item.data(0,Qt.UserRole) if item else None
-        if isinstance(data, CANFrameFilter): editor=FilterEditor(data); editor.filter_changed.connect(lambda: item.setText(0,data.name)); self.current_widget=editor
-        elif isinstance(data, DBCFile): self.current_widget=DBCEditor(data)
-        else: self.layout.addWidget(self.placeholder); self.placeholder.show(); return
+        self.clear()
+        data = item.data(0, Qt.UserRole) if item else None
+
+        if data == "connection_settings":
+            editor = ConnectionEditor(self.project)
+            editor.project_changed.connect(self.explorer.rebuild_tree)
+            self.current_widget = editor
+        elif isinstance(data, CANFrameFilter):
+            editor = FilterEditor(data)
+            editor.filter_changed.connect(lambda: item.setText(0, data.name))
+            self.current_widget = editor
+        elif isinstance(data, DBCFile):
+            self.current_widget = DBCEditor(data)
+        else:
+            self.layout.addWidget(self.placeholder)
+            self.placeholder.show()
+            return
         self.layout.addWidget(self.current_widget)
+        
     def clear(self):
         if self.current_widget: self.current_widget.deleteLater(); self.current_widget=None
         self.placeholder.hide()
@@ -418,19 +486,46 @@ class ProjectExplorer(QGroupBox):
     def __init__(self, project: Project): super().__init__("Project Explorer"); self.project=project; self.setup_ui()
     def setup_ui(self):
         layout=QVBoxLayout(self); self.tree=QTreeWidget(); self.tree.setHeaderHidden(True); layout.addWidget(self.tree); self.tree.setContextMenuPolicy(Qt.CustomContextMenu); self.tree.customContextMenuRequested.connect(self.open_context_menu); self.tree.itemChanged.connect(self.on_item_changed); self.rebuild_tree()
+
+    ### MODIFIED ### - Rebuild tree to include connection settings
     def rebuild_tree(self):
-        self.tree.blockSignals(True); self.tree.clear(); self.dbc_root=self.add_item(None,"Symbol Files (.dbc)"); [self.add_item(self.dbc_root,dbc.path.name,dbc,dbc.enabled) for dbc in self.project.dbcs]; self.filter_root=self.add_item(None,"Message Filters"); [self.add_item(self.filter_root,f.name,f,f.enabled) for f in self.project.filters]
+        self.tree.blockSignals(True)
+        self.tree.clear()
+        
+        connection_text = f"Connection ({self.project.can_interface})"
+        self.add_item(None, connection_text, "connection_settings", checked=None)
+        
+        self.dbc_root = self.add_item(None, "Symbol Files (.dbc)")
+        [self.add_item(self.dbc_root, dbc.path.name, dbc, dbc.enabled) for dbc in self.project.dbcs]
+        
+        self.filter_root = self.add_item(None, "Message Filters")
+        [self.add_item(self.filter_root, f.name, f, f.enabled) for f in self.project.filters]
+
         self.co_item = self.add_item(None, "CANopen Decoding", self.project, self.project.canopen_enabled)
-        self.tree.expandAll(); self.tree.blockSignals(False); self.project_changed.emit()
-    def add_item(self, parent, text, data=None, checked=False):
-        item=QTreeWidgetItem(parent or self.tree,[text]);
-        if data: item.setData(0,Qt.UserRole,data); item.setFlags(item.flags()|Qt.ItemIsUserCheckable); item.setCheckState(0,Qt.Checked if checked else Qt.Unchecked)
+
+        self.tree.expandAll()
+        self.tree.blockSignals(False)
+        self.project_changed.emit()
+
+    ### MODIFIED ### - Allow non-checkable items
+    def add_item(self, parent, text, data=None, checked=None):
+        item = QTreeWidgetItem(parent or self.tree, [text])
+        if data:
+            item.setData(0, Qt.UserRole, data)
+        if checked is not None:
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
         return item
-    def on_item_changed(self,item,column):
-        if data := item.data(0,Qt.UserRole):
-            if data == self.project: self.project.canopen_enabled = item.checkState(0) == Qt.Checked
-            else: data.enabled=item.checkState(0)==Qt.Checked
+
+    ### MODIFIED ### - More robust item change handling
+    def on_item_changed(self, item, column):
+        if data := item.data(0, Qt.UserRole):
+            if data == self.project:  # This is the CANopen item
+                self.project.canopen_enabled = item.checkState(0) == Qt.Checked
+            elif isinstance(data, (DBCFile, CANFrameFilter)):
+                data.enabled = item.checkState(0) == Qt.Checked
             self.project_changed.emit()
+
     def open_context_menu(self,position):
         menu=QMenu(); item=self.tree.itemAt(position)
         if not item or item==self.dbc_root: menu.addAction("Add Symbol File...").triggered.connect(self.add_dbc)
@@ -507,7 +602,7 @@ class SignalTransmitPanel(QGroupBox):
 # --- Main Application Window ---
 class CANBusObserver(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle("CAN Bus Observer"); self.setGeometry(100, 100, 1400, 900)
+        super().__init__(); self.setWindowTitle("CANPeek"); self.setGeometry(100, 100, 1400, 900)
         self.project = Project()
         self.trace_model = CANTraceModel(); self.grouped_model = CANGroupedModel()
         self.grouped_proxy_model = QSortFilterProxyModel(); self.grouped_proxy_model.setSourceModel(self.grouped_model); self.grouped_proxy_model.setSortRole(Qt.UserRole)
@@ -516,10 +611,15 @@ class CANBusObserver(QMainWindow):
         self.gui_update_timer = QTimer(self); self.gui_update_timer.timeout.connect(self.update_views); self.gui_update_timer.start(50)
     def setup_ui(self):
         central_widget = QWidget(); self.setCentralWidget(central_widget); layout = QVBoxLayout(central_widget)
-        toolbar_layout = QHBoxLayout(); self.connect_btn = QPushButton("Connect"); self.disconnect_btn = QPushButton("Disconnect", enabled=False)
-        self.interface_combo = QComboBox(); self.interface_combo.addItems(["socketcan", "pcan", "kvaser", "vector", "virtual"]); self.channel_edit = QLineEdit("can0")
-        toolbar_layout.addWidget(QLabel("Interface:")); toolbar_layout.addWidget(self.interface_combo); toolbar_layout.addWidget(QLabel("Channel:")); toolbar_layout.addWidget(self.channel_edit)
-        toolbar_layout.addWidget(self.connect_btn); toolbar_layout.addWidget(self.disconnect_btn); toolbar_layout.addStretch(); layout.addLayout(toolbar_layout)
+        ### MODIFIED ### - Toolbar no longer has connection input fields
+        toolbar_layout = QHBoxLayout()
+        self.connect_btn = QPushButton("Connect")
+        self.disconnect_btn = QPushButton("Disconnect", enabled=False)
+        toolbar_layout.addWidget(self.connect_btn)
+        toolbar_layout.addWidget(self.disconnect_btn)
+        toolbar_layout.addStretch()
+        layout.addLayout(toolbar_layout)
+
         main_splitter = QSplitter(Qt.Horizontal); layout.addWidget(main_splitter)
         left_pane = QWidget(); left_layout = QVBoxLayout(left_pane); left_layout.setContentsMargins(0,0,0,0)
         left_splitter = QSplitter(Qt.Vertical)
@@ -543,14 +643,19 @@ class CANBusObserver(QMainWindow):
         left_layout.addWidget(left_splitter); main_splitter.addWidget(left_pane)
         right_pane = QWidget(); right_layout = QVBoxLayout(right_pane); right_layout.setContentsMargins(0,0,0,0)
         right_splitter = QSplitter(Qt.Vertical)
-        self.project_explorer = ProjectExplorer(self.project); right_splitter.addWidget(self.project_explorer)
-        self.properties_panel = PropertiesPanel(); right_splitter.addWidget(self.properties_panel)
+        self.project_explorer = ProjectExplorer(self.project)
+        ### MODIFIED ### - Pass project and explorer to PropertiesPanel
+        self.properties_panel = PropertiesPanel(self.project, self.project_explorer)
+        right_splitter.addWidget(self.project_explorer)
+        right_splitter.addWidget(self.properties_panel)
         right_splitter.setSizes([400, 300])
         right_layout.addWidget(right_splitter); main_splitter.addWidget(right_pane)
         main_splitter.setSizes([900, 500])
         self.connect_btn.clicked.connect(self.connect_can); self.disconnect_btn.clicked.connect(self.disconnect_can); self.clear_btn.clicked.connect(self.clear_data); self.save_log_btn.clicked.connect(self.save_log); self.load_log_btn.clicked.connect(self.load_log)
         self.transmit_panel.frame_to_send.connect(self.send_can_frame); self.transmit_panel.row_selection_changed.connect(self.on_transmit_row_selected); self.signal_transmit_panel.data_encoded.connect(self.on_signal_data_encoded)
-        self.project_explorer.project_changed.connect(self.on_project_changed); self.project_explorer.tree.currentItemChanged.connect(self.properties_panel.show_properties)
+        self.project_explorer.project_changed.connect(self.on_project_changed)
+        ### MODIFIED ### - Connect explorer selection to properties panel
+        self.project_explorer.tree.currentItemChanged.connect(self.properties_panel.show_properties)
         if not CAN_AVAILABLE: self.connect_btn.setEnabled(False); self.connect_btn.setText("Connect (lib missing)"); self.statusBar().showMessage("python-can or cantools not found. Functionality limited.")
     def setup_menubar(self):
         menubar=self.menuBar(); file_menu=menubar.addMenu("File"); load_action=QAction("Load Log...",self); load_action.triggered.connect(self.load_log); file_menu.addAction(load_action); save_action=QAction("Save Log...",self); save_action.triggered.connect(self.save_log); file_menu.addAction(save_action); file_menu.addSeparator(); exit_action=QAction("Exit",self); exit_action.triggered.connect(self.close); file_menu.addAction(exit_action)
@@ -559,11 +664,8 @@ class CANBusObserver(QMainWindow):
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key_Space and self.transmit_panel.table.hasFocus(): self.transmit_panel.send_selected(); event.accept()
         else: super().keyPressEvent(event)
-    # 6. Add thread-safe frame processing
     def _process_frame(self, frame: CANFrame):
-        """Thread-safe frame processing"""
         try:
-            # Just append to batch - don't do any Qt operations here
             self.frame_batch.append(frame)
         except Exception as e:
             print(f"Error processing frame: {e}")
@@ -582,40 +684,24 @@ class CANBusObserver(QMainWindow):
             if not filtered_frames:
                 return
 
-            # --- BEGIN NEW LOGIC: PRESERVE EXPANSION STATE ---
-            # 1. Save the CAN IDs of all currently expanded items.
-            # We use the proxy model because that's what the view sees.
             expanded_ids = set()
             proxy_model = self.grouped_proxy_model
             for row in range(proxy_model.rowCount()):
                 proxy_index = proxy_model.index(row, 0)
                 if self.grouped_view.isExpanded(proxy_index):
-                    # Map the proxy index back to the source model to get our stable CAN ID
                     source_index = proxy_model.mapToSource(proxy_index)
-                    # The UserRole holds the CAN ID for top-level items
                     can_id = self.grouped_model.data(source_index, Qt.UserRole)
                     if can_id is not None:
                         expanded_ids.add(can_id)
-            # --- END OF SAVE LOGIC ---
 
-
-            # Update the models. The grouped_model will call begin/endResetModel,
-            # which causes the view to collapse everything.
             self.grouped_model.update_frames(filtered_frames)
             self.all_received_frames.extend(filtered_frames)
 
-            # Keep trace buffer within limits
             if len(self.all_received_frames) > TRACE_BUFFER_LIMIT:
-                 # Slicing is faster for this than re-assigning a huge list
                  del self.all_received_frames[:-TRACE_BUFFER_LIMIT]
 
-            # The trace_model's set_data also uses begin/endResetModel
             self.trace_model.set_data(self.all_received_frames)
 
-
-            # --- BEGIN NEW LOGIC: RESTORE EXPANSION STATE ---
-            # 2. After the model has reset, iterate through the new items and
-            #    re-expand the ones that were expanded before.
             if expanded_ids:
                 for row in range(proxy_model.rowCount()):
                     proxy_index = proxy_model.index(row, 0)
@@ -623,8 +709,6 @@ class CANBusObserver(QMainWindow):
                     can_id = self.grouped_model.data(source_index, Qt.UserRole)
                     if can_id in expanded_ids:
                         self.grouped_view.setExpanded(proxy_index, True)
-            # --- END OF RESTORE LOGIC ---
-
 
             if self.autoscroll_cb.isChecked():
                 self.trace_view.scrollToBottom()
@@ -652,30 +736,37 @@ class CANBusObserver(QMainWindow):
         except ValueError: pass
     def on_signal_data_encoded(self, data_bytes):
         if (row := self.transmit_panel.table.currentRow()) >= 0: self.transmit_panel.update_row_data(row, data_bytes)
+    
+    ### MODIFIED ### - Use project settings for connection
     def connect_can(self):
-        self.can_reader = CANReaderThread(self.interface_combo.currentText(), self.channel_edit.text())
+        self.can_reader = CANReaderThread(
+            self.project.can_interface,
+            self.project.can_channel,
+            self.project.can_bitrate
+        )
         self.can_reader.frame_received.connect(self._process_frame)
         self.can_reader.error_occurred.connect(self.on_can_error)
         if self.can_reader.start_reading():
-            self.connect_btn.setEnabled(False); self.disconnect_btn.setEnabled(True); self.transmit_panel.setEnabled(True)
-            self.connection_label.setText(f"Connected ({self.interface_combo.currentText()}:{self.channel_edit.text()})")
-        else: self.can_reader = None
-    # 3. Fix disconnect_can method
+            self.connect_btn.setEnabled(False)
+            self.disconnect_btn.setEnabled(True)
+            self.transmit_panel.setEnabled(True)
+            self.connection_label.setText(f"Connected ({self.project.can_interface}:{self.project.can_channel} @ {self.project.can_bitrate/1000:.0f} kbps)")
+        else:
+            self.can_reader = None
+
     def disconnect_can(self):
         if self.can_reader:
-            self.can_reader.stop_reading()  # This now waits for thread to finish
-            self.can_reader.deleteLater()   # Properly clean up thread
+            self.can_reader.stop_reading()
+            self.can_reader.deleteLater()
             self.can_reader = None
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
         self.transmit_panel.setEnabled(False)
         self.transmit_panel.stop_all_timers()
         self.connection_label.setText("Disconnected")
-    # 2. Fix send_can_frame method in CANBusObserver
+
     def send_can_frame(self, message: can.Message):
-        """Send CAN frame using thread-safe signal"""
         if self.can_reader and self.can_reader.running:
-            # Use signal to send from correct thread context
             self.can_reader.send_frame.emit(message)
         else:
             QMessageBox.warning(self, "Not Connected", "Connect to a CAN bus before sending frames.")
@@ -711,19 +802,12 @@ class CANBusObserver(QMainWindow):
                 self.frame_batch.extend(frames_to_add); self.update_views()
                 self.statusBar().showMessage(f"Loaded {len(self.all_received_frames)} frames from {filename}")
             except Exception as e: QMessageBox.critical(self, "Load Error", f"Failed to load log: {e}")
-    # 4. Fix closeEvent to ensure proper cleanup
+
     def closeEvent(self, event):
-        # Stop timer first
         if hasattr(self, 'gui_update_timer'):
             self.gui_update_timer.stop()
-        
-        # Disconnect CAN with proper cleanup
         self.disconnect_can()
-        
-        # Process any remaining events
         QApplication.processEvents()
-        
-        # Accept the close event
         event.accept()
 
 def main():
