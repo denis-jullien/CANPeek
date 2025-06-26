@@ -26,6 +26,7 @@ import importlib
 import logging
 from contextlib import contextmanager
 from docstring_parser import parse
+import enum
 
 ### MODIFIED ### - Add QDockWidget, QToolBar, QStyle, QIcon
 from PySide6.QtWidgets import (
@@ -776,9 +777,9 @@ class CANReaderThread(QThread):
                 self.error_occurred.emit(
                     f"CAN bus error: {e}\n\nCheck connection settings and hardware."
                 )
-        except Exception as e:
-            if self.running:
-                self.error_occurred.emit(f"CAN reader error: {e}")
+        # except Exception as e:
+        #     if self.running:
+        #         self.error_occurred.emit(f"CAN reader error: {e}")
         finally:
             if self.bus:
                 try:
@@ -1019,8 +1020,10 @@ class ConnectionEditor(QWidget):
         self.project.can_interface = interface_name
         self.project.can_config.clear()
         self._rebuild_dynamic_fields(interface_name)
-        self._update_project()
+        # _rebuild_dynamic_fields now calls _update_project at the end
+        # self._update_project() # This call is now redundant
 
+    ### MODIFIED ### - Creates widgets based on parameter type (Enum, bool, int, str)
     def _rebuild_dynamic_fields(self, interface_name: str):
         # Fetch the parsed docstring data once
         parsed_doc = self.interface_manager.get_interface_docstring(interface_name)
@@ -1045,14 +1048,39 @@ class ConnectionEditor(QWidget):
 
         for name, info in params.items():
             default_value = self.project.can_config.get(name, info.get("default"))
+            expected_type = info["type"]
             widget = None
 
-            if info["type"] is bool:
+            # Check if the parameter's type is an Enum
+            is_enum = False
+            try:
+                if inspect.isclass(expected_type) and issubclass(expected_type, enum.Enum):
+                    is_enum = True
+            except TypeError:
+                pass  # Not a class, so cannot be an enum
+
+            if is_enum:
+                widget = QComboBox()
+                widget.setProperty("enum_class", expected_type)
+                members = list(expected_type)
+                widget.addItems([m.name for m in members])
+
+                # Set current value from saved config or default
+                current_value = default_value
+                if isinstance(current_value, enum.Enum):
+                    widget.setCurrentText(current_value.name)
+                elif isinstance(current_value, str):
+                    widget.setCurrentText(current_value)
+
+                widget.currentTextChanged.connect(self._update_project)
+
+            elif expected_type is bool:
                 widget = QCheckBox()
                 if default_value is not None:
                     widget.setChecked(bool(default_value))
                 widget.toggled.connect(self._update_project)
-            elif name == "bitrate":
+
+            elif name == "bitrate" and expected_type is int:
                 widget = QSpinBox()
                 widget.setRange(1000, 4000000)
                 widget.setSingleStep(1000)
@@ -1062,16 +1090,13 @@ class ConnectionEditor(QWidget):
                 widget.valueChanged.connect(self._update_project)
             else:
                 widget = QLineEdit()
-                if default_value is not None:
-                    widget.setText(str(default_value))
+                # Set text to empty if default is None, otherwise string representation
+                widget.setText(str(default_value) if default_value is not None else "")
                 widget.editingFinished.connect(self._update_project)
 
-            ### NEW: Set tooltip for the created widget ###
             if widget:
-                # Find the documentation for this specific parameter
                 tooltip_info = param_docs.get(name)
                 if tooltip_info and tooltip_info.get("description"):
-                    # Build a helpful tooltip string with type and description
                     tooltip_parts = []
                     type_name = tooltip_info.get("type_name")
                     if type_name:
@@ -1080,35 +1105,73 @@ class ConnectionEditor(QWidget):
                     tooltip_text = " ".join(tooltip_parts)
                     widget.setToolTip(tooltip_text)
 
-            # Add the widget to the layout
-            label_text = f"{name.replace('_', ' ').title()}:"
-            self.dynamic_layout.addRow(label_text, widget)
-            self.dynamic_widgets[name] = widget
+                label_text = f"{name.replace('_', ' ').title()}:"
+                self.dynamic_layout.addRow(label_text, widget)
+                self.dynamic_widgets[name] = widget
 
         self._update_project()
 
+    ### NEW ### - Helper function to robustly convert text input
+    def _convert_line_edit_text(self, text: str, param_info: Dict) -> Any:
+        """
+        Converts text from a QLineEdit to the appropriate type.
+        Handles optional values (empty string -> None) and hex/dec integers.
+        """
+        text = text.strip()
+        expected_type = param_info.get('type')
+        default_value = param_info.get('default')
+
+        # If parameter is optional (indicated by default=None), empty text becomes None
+        if not text and default_value is None:
+            return None
+
+        # Attempt type conversion based on inspection
+        if expected_type is int:
+            try:
+                return int(text)  # Try decimal first
+            except ValueError:
+                return int(text, 16)  # Fallback to hex
+        elif expected_type is float:
+            return float(text)
+        elif expected_type is bool:
+            return text.lower() in ('true', '1', 't', 'yes', 'y')
+
+        # Fallback for strings or other complex types we don't handle
+        return text
+
+    ### MODIFIED ### - Smarter value conversion based on widget type
     def _update_project(self):
         config = {}
+        params = self.interface_manager.get_interface_params(self.project.can_interface)
+        if not params:
+            params = {}
+
         for name, widget in self.dynamic_widgets.items():
+            param_info = params.get(name)
+            if not param_info:
+                continue
+
+            value = None
             try:
                 if isinstance(widget, QCheckBox):
-                    config[name] = widget.isChecked()
+                    value = widget.isChecked()
                 elif isinstance(widget, QSpinBox):
-                    config[name] = widget.value()
+                    value = widget.value()
+                elif isinstance(widget, QComboBox):
+                    enum_class = widget.property("enum_class")
+                    if enum_class:
+                        # Convert selected string back to the actual Enum member
+                        value = enum_class[widget.currentText()]
                 elif isinstance(widget, QLineEdit):
-                    text = widget.text()
-                    if text is None or text == "None":
-                        config[name] = None
-                    else:
-                        try:
-                            config[name] = int(text)
-                        except ValueError:
-                            try:
-                                config[name] = int(text, 16)
-                            except ValueError:
-                                config[name] = text
-            except Exception as e:
-                print(f"Warning: Could not get value for '{name}': {e}")
+                    value = self._convert_line_edit_text(widget.text(), param_info)
+
+            except (ValueError, TypeError, KeyError) as e:
+                print(f"Warning: Could not get value for '{name}'. Input may be invalid. Error: {e}")
+                # Skip adding this parameter to the config if conversion fails
+                continue
+
+            # Only add to config if a valid value was determined
+            config[name] = value
 
         self.project.can_interface = self.interface_combo.currentText()
         self.project.can_config = config
