@@ -81,7 +81,7 @@ import cantools
 
 # ### NEW ### Forward reference for type hinting
 if TYPE_CHECKING:
-    from __main__ import ProjectExplorer, CANInterfaceManager # <-- MODIFIED THIS LINE
+    from __main__ import ProjectExplorer, CANInterfaceManager  # <-- MODIFIED THIS LINE
 
 
 faulthandler.enable()
@@ -176,7 +176,9 @@ class Project:
 
     ### MODIFIED ### - Now accepts interface_manager to "hydrate" the config
     @classmethod
-    def from_dict(cls, data: Dict, interface_manager: "CANInterfaceManager") -> "Project":
+    def from_dict(
+        cls, data: Dict, interface_manager: "CANInterfaceManager"
+    ) -> "Project":
         project = cls()
         project.canopen_enabled = data.get("canopen_enabled", True)
         project.can_interface = data.get("can_interface", "virtual")
@@ -197,7 +199,9 @@ class Project:
 
                 is_enum = False
                 try:
-                    if inspect.isclass(expected_type) and issubclass(expected_type, enum.Enum):
+                    if inspect.isclass(expected_type) and issubclass(
+                        expected_type, enum.Enum
+                    ):
                         is_enum = True
                 except TypeError:
                     pass
@@ -207,12 +211,14 @@ class Project:
                         # Convert saved string name back to the actual Enum member
                         hydrated_config[key] = expected_type[value]
                     except KeyError:
-                        print(f"Warning: Stored enum member '{value}' for '{key}' is invalid. Using default.")
+                        print(
+                            f"Warning: Stored enum member '{value}' for '{key}' is invalid. Using default."
+                        )
                         hydrated_config[key] = param_info.get("default")
                 else:
                     hydrated_config[key] = value
         else:
-             hydrated_config = config_from_file
+            hydrated_config = config_from_file
 
         project.can_config = hydrated_config
         project.filters = [
@@ -1090,7 +1096,9 @@ class ConnectionEditor(QWidget):
             # Check if the parameter's type is an Enum
             is_enum = False
             try:
-                if inspect.isclass(expected_type) and issubclass(expected_type, enum.Enum):
+                if inspect.isclass(expected_type) and issubclass(
+                    expected_type, enum.Enum
+                ):
                     is_enum = True
             except TypeError:
                 pass  # Not a class, so cannot be an enum
@@ -1154,8 +1162,8 @@ class ConnectionEditor(QWidget):
         Handles optional values (empty string -> None) and hex/dec integers.
         """
         text = text.strip()
-        expected_type = param_info.get('type')
-        default_value = param_info.get('default')
+        expected_type = param_info.get("type")
+        default_value = param_info.get("default")
 
         # If parameter is optional (indicated by default=None), empty text becomes None
         if not text and default_value is None:
@@ -1170,7 +1178,7 @@ class ConnectionEditor(QWidget):
         elif expected_type is float:
             return float(text)
         elif expected_type is bool:
-            return text.lower() in ('true', '1', 't', 'yes', 'y')
+            return text.lower() in ("true", "1", "t", "yes", "y")
 
         # Fallback for strings or other complex types we don't handle
         return text
@@ -1202,7 +1210,9 @@ class ConnectionEditor(QWidget):
                     value = self._convert_line_edit_text(widget.text(), param_info)
 
             except (ValueError, TypeError, KeyError) as e:
-                print(f"Warning: Could not get value for '{name}'. Input may be invalid. Error: {e}")
+                print(
+                    f"Warning: Could not get value for '{name}'. Input may be invalid. Error: {e}"
+                )
                 # Skip adding this parameter to the config if conversion fails
                 continue
 
@@ -2121,7 +2131,7 @@ class CANBusObserver(QMainWindow):
                 data = json.load(f)
             self.disconnect_can()
             self.clear_data()
-            
+
             # ### MODIFIED ### - Pass self.interface_manager to the factory method
             self.project = Project.from_dict(
                 data.get("project", {}), self.interface_manager

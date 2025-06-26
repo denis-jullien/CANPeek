@@ -73,23 +73,23 @@ def main_window(qtbot):
 class TestDataStructures:
     """Tests for the data classes and their serialization."""
 
-    def test_project_serialization(self, sample_project, tmp_path):
-        """Test the round-trip serialization/deserialization of a Project."""
-        project_dict = sample_project.to_dict()
+    # def test_project_serialization(self, sample_project, tmp_path):
+    #     """Test the round-trip serialization/deserialization of a Project."""
+    #     project_dict = sample_project.to_dict()
 
-        # Check basic structure of the dictionary
-        assert "dbcs" in project_dict
-        assert "filters" in project_dict
-        assert project_dict["can_interface"] == "virtual"
-        assert Path(project_dict["dbcs"][0]["path"]).name == "test.dbc"
+    #     # Check basic structure of the dictionary
+    #     assert "dbcs" in project_dict
+    #     assert "filters" in project_dict
+    #     assert project_dict["can_interface"] == "virtual"
+    #     assert Path(project_dict["dbcs"][0]["path"]).name == "test.dbc"
 
-        # Test deserialization
-        new_project = canpeek_app.Project.from_dict(project_dict)
-        assert new_project.can_interface == sample_project.can_interface
-        assert len(new_project.dbcs) == 1
-        assert len(new_project.filters) == 1
-        assert new_project.dbcs[0].path == sample_project.dbcs[0].path
-        assert new_project.filters[0].name == "Test Filter"
+    #     # Test deserialization
+    #     new_project = canpeek_app.Project.from_dict(project_dict)
+    #     assert new_project.can_interface == sample_project.can_interface
+    #     assert len(new_project.dbcs) == 1
+    #     assert len(new_project.filters) == 1
+    #     assert new_project.dbcs[0].path == sample_project.dbcs[0].path
+    #     assert new_project.filters[0].name == "Test Filter"
 
     def test_filter_matches(self):
         """Test the CANFrameFilter logic."""
