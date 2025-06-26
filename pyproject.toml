@@ -1,12 +1,19 @@
 [project]
 name = "canpeek"
 version = "0.1.0"
-description = "Add your description here"
+description = "A simple CAN bus monitoring tool, with dbc support."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = [
     "cantools>=40.2.3",
     "pyqtdarktheme>=2.1.0",
     "pyside6>=6.9.1",
     "python-can>=4.5.0",
 ]
+
+[project.scripts]
+canpeek = "canpeek.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
