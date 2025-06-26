@@ -68,33 +68,8 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QAction, QKeyEvent
 
 
-# Try importing CAN libraries
-try:
-    import can
-    import cantools
-
-    CAN_AVAILABLE = True
-except ImportError:
-    CAN_AVAILABLE = False
-
-    class can:
-        class Message:
-            pass
-
-        class Bus:
-            pass
-
-        class CanOperationError(Exception):
-            def __init__(self, message, error_code=None):
-                super().__init__(message)
-                self.error_code = error_code
-
-    class cantools:
-        class database:
-            @staticmethod
-            def load_file(filename):
-                raise ImportError("cantools library is not installed.")
-
+import can
+import cantools
 
 # ### NEW ### Forward reference for type hinting
 if TYPE_CHECKING:
@@ -199,19 +174,19 @@ class Project:
             CANFrameFilter(**f_data) for f_data in data.get("filters", [])
         ]
 
-        if CAN_AVAILABLE:
-            for dbc_data in data.get("dbcs", []):
-                try:
-                    path = Path(dbc_data["path"])
-                    if not path.exists():
-                        raise FileNotFoundError(f"DBC file not found: {path}")
-                    db = cantools.database.load_file(path)
-                    project.dbcs.append(
-                        DBCFile(path, db, dbc_data.get("enabled", True))
-                    )
-                except Exception as e:
-                    print(f"Warning: Could not load DBC from project file: {e}")
-                    # Optionally, show a warning to the user here
+
+        for dbc_data in data.get("dbcs", []):
+            try:
+                path = Path(dbc_data["path"])
+                if not path.exists():
+                    raise FileNotFoundError(f"DBC file not found: {path}")
+                db = cantools.database.load_file(path)
+                project.dbcs.append(
+                    DBCFile(path, db, dbc_data.get("enabled", True))
+                )
+            except Exception as e:
+                print(f"Warning: Could not load DBC from project file: {e}")
+                # Optionally, show a warning to the user here
         return project
 
 
@@ -396,18 +371,17 @@ class CANTraceModel(QAbstractTableModel):
 
     def _decode_frame(self, frame: CANFrame) -> str:
         decoded_parts = []
-        if CAN_AVAILABLE:
-            for db in self.dbc_databases:
-                try:
-                    message = db.get_message_by_frame_id(frame.arbitration_id)
-                    decoded = db.decode_message(
-                        frame.arbitration_id, frame.data, decode_choices=False
-                    )
-                    s = [f"{n}={v}" for n, v in decoded.items()]
-                    decoded_parts.append(f"DBC: {message.name} {' '.join(s)}")
-                    return " | ".join(decoded_parts)
-                except (KeyError, ValueError):
-                    continue
+        for db in self.dbc_databases:
+            try:
+                message = db.get_message_by_frame_id(frame.arbitration_id)
+                decoded = db.decode_message(
+                    frame.arbitration_id, frame.data, decode_choices=False
+                )
+                s = [f"{n}={v}" for n, v in decoded.items()]
+                decoded_parts.append(f"DBC: {message.name} {' '.join(s)}")
+                return " | ".join(decoded_parts)
+            except (KeyError, ValueError):
+                continue
         if self.canopen_enabled:
             if co_info := CANopenDecoder.decode(frame):
                 details = ", ".join(
@@ -509,24 +483,23 @@ class CANGroupedModel(QAbstractItemModel):
                 sigs += [
                     {"name": k, "value": v, "unit": ""} for k, v in co_info.items()
                 ]
-        if CAN_AVAILABLE:
-            for db in self.dbc_databases:
-                try:
-                    msg_def = db.get_message_by_frame_id(frame.arbitration_id)
-                    decoded = db.decode_message(
-                        frame.arbitration_id, frame.data, decode_choices=False
-                    )
-                    sigs += [
-                        {
-                            "name": s.name,
-                            "value": decoded.get(s.name, "N/A"),
-                            "unit": s.unit or "",
-                        }
-                        for s in msg_def.signals
-                    ]
-                    break
-                except (KeyError, ValueError):
-                    continue
+        for db in self.dbc_databases:
+            try:
+                msg_def = db.get_message_by_frame_id(frame.arbitration_id)
+                decoded = db.decode_message(
+                    frame.arbitration_id, frame.data, decode_choices=False
+                )
+                sigs += [
+                    {
+                        "name": s.name,
+                        "value": decoded.get(s.name, "N/A"),
+                        "unit": s.unit or "",
+                    }
+                    for s in msg_def.signals
+                ]
+                break
+            except (KeyError, ValueError):
+                continue
         return sigs
 
     def clear_frames(self):
@@ -631,9 +604,6 @@ class CANReaderThread(QThread):
                 self.error_occurred.emit(f"Send error: {e}")
 
     def start_reading(self):
-        if not CAN_AVAILABLE:
-            self.error_occurred.emit("python-can library not available")
-            return False
         self.running = True
         self.start()
         return True
@@ -960,9 +930,9 @@ class ProjectExplorer(QGroupBox):
 
     def add_dbc(self):
         fns, _ = QFileDialog.getOpenFileNames(
-            self, "Select DBC File(s)", "", "DBC Files (*.dbc);;All Files (*)"
+            self, "Select DBC File(s)", "", "DBC, KCD, SYM, ARXML 3&4 and CDD Files (*.dbc *.arxml *.kcd *.sym *.cdd);;All Files (*)"
         )
-        if fns and CAN_AVAILABLE:
+        if fns:
             for fn in fns:
                 try:
                     self.project.dbcs.append(
@@ -1000,7 +970,7 @@ class TransmitPanel(QGroupBox):
         self.timers: Dict[int, QTimer] = {}
         self.dbcs: List[object] = []
         self.setup_ui()
-        self.setEnabled(not CAN_AVAILABLE)
+        self.setEnabled(False)
 
     def set_dbc_databases(self, dbs):
         self.dbcs = dbs
@@ -1269,6 +1239,22 @@ class CANBusObserver(QMainWindow):
         self.current_project_path: Optional[Path] = None
         self.project_dirty = False
 
+        ### NEW ### - Create log file filter string
+        file_loggers = {
+             "ASCWriter"  : ".asc",
+             "BLFWriter" : ".blf",
+             "CSVWriter" : ".csv",
+             "SqliteWriter" : ".db",
+             "CanutilsLogWriter" : ".log",
+             "TRCWriter" : ".trc" ,
+             "Printer" : ".txt",
+        }
+        sorted_loggers = sorted(file_loggers.items())
+        filters = [f"{ext} : {name} Log (*{ext})" for name, ext in sorted_loggers]
+        filters += [f"{ext}.gz : Compressed {name} Log (*{ext}.gz)" for name, ext in sorted_loggers]
+        self.log_file_filter = ";;".join(filters)
+        self.log_file_filter_open = f"All Supported ({" ".join(["*"+ext for _, ext in sorted_loggers])});;" + self.log_file_filter
+
         self.trace_model = CANTraceModel()
         self.grouped_model = CANGroupedModel()
         self.grouped_proxy_model = QSortFilterProxyModel()
@@ -1371,9 +1357,6 @@ class CANBusObserver(QMainWindow):
         trace_layout.addWidget(self.autoscroll_cb)
         self.tab_widget.addTab(trace_view_widget, "Trace")
 
-        if not CAN_AVAILABLE:
-            self.connect_action.setEnabled(False)
-            self.connect_action.setText("Connect (lib missing)")
 
     def setup_docks(self):
         self.project_explorer = ProjectExplorer(self.project)
@@ -1573,60 +1556,83 @@ class CANBusObserver(QMainWindow):
         self.trace_model.set_data([])
         self.frame_count_label.setText("Frames: 0")
 
+    ### MODIFIED ### - Replaced with python-can based log saving
     def save_log(self):
-        if not self.all_received_frames:
-            QMessageBox.information(self, "No Data", "No frames to save")
-            return
-        filename, _ = QFileDialog.getSaveFileName(
-            self, "Save CAN Log", "", "CAN Log Files (*.log);;All Files (*)"
-        )
-        if filename:
-            try:
-                with open(filename, "w") as f:
-                    f.write(
-                        "# CAN Bus Log File\n# Format: timestamp id is_ext dlc data\n"
-                    )
-                    for frame in self.all_received_frames:
-                        f.write(
-                            f"{frame.timestamp:.6f} {frame.arbitration_id:X} {'E' if frame.is_extended else 'S'} {frame.dlc} {frame.data.hex(' ')}\n"
-                        )
-                self.statusBar().showMessage(f"Log saved to {filename}")
-            except Exception as e:
-                QMessageBox.critical(self, "Save Error", f"Failed to save log: {e}")
 
-    def load_log(self):
-        filename, _ = QFileDialog.getOpenFileName(
-            self, "Load CAN Log", "", "CAN Log Files (*.log);;All Files (*)"
-        )
-        if filename:
-            try:
-                self.clear_data()
-                frames_to_add = []
-                with open(filename, "r") as f:
-                    for line in f:
-                        if line.startswith("#") or not line.strip():
-                            continue
-                        parts = line.split()
-                        try:
-                            ts, id_hex, type_char, dlc_str, *data_hex = parts
-                            frames_to_add.append(
-                                CANFrame(
-                                    float(ts),
-                                    int(id_hex, 16),
-                                    bytes.fromhex("".join(data_hex)),
-                                    int(dlc_str),
-                                    type_char == "E",
-                                )
-                            )
-                        except (ValueError, IndexError):
-                            print(f"Warning: Invalid line in log file: {line.strip()}")
-                self.frame_batch.extend(frames_to_add)
-                self.update_views()
-                self.statusBar().showMessage(
-                    f"Loaded {len(self.all_received_frames)} frames from {filename}"
+        if not self.all_received_frames:
+            QMessageBox.information(self, "No Data", "No frames to save.")
+            return
+
+        dialog = QFileDialog(self, "Save CAN Log", "", self.log_file_filter)
+        dialog.setDefaultSuffix("log")
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        if dialog.exec_():
+
+            filename = dialog.selectedFiles()[0]
+        else:
+            return
+
+
+        logger = None
+        try:
+            # Logger type is inferred from the file extension
+            logger = can.Logger(filename)
+            for frame in self.all_received_frames:
+                # Convert our internal CANFrame back to a can.Message
+                msg = can.Message(
+                    timestamp=frame.timestamp,
+                    arbitration_id=frame.arbitration_id,
+                    is_extended_id=frame.is_extended,
+                    is_remote_frame=frame.is_remote,
+                    is_error_frame=frame.is_error,
+                    dlc=frame.dlc,
+                    data=frame.data,
+                    channel=frame.channel,
                 )
-            except Exception as e:
-                QMessageBox.critical(self, "Load Error", f"Failed to load log: {e}")
+                logger.on_message_received(msg)
+            self.statusBar().showMessage(f"Log saved to {filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save log: {e}")
+        finally:
+            if logger:
+                logger.stop() # This is crucial to flush buffers and close the file
+
+    ### MODIFIED ### - Replaced with python-can based log loading
+    def load_log(self):
+
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Load CAN Log", "", self.log_file_filter_open
+        )
+        if not filename:
+            return
+
+        try:
+            self.clear_data()
+            frames_to_add = []
+            # CANLogReader infers file type from extension and works as an iterator
+            for msg in can.LogReader(filename):
+                # Convert can.Message to our internal CANFrame format
+                frames_to_add.append(
+                    CANFrame(
+                        timestamp=msg.timestamp,
+                        arbitration_id=msg.arbitration_id,
+                        data=msg.data,
+                        dlc=msg.dlc,
+                        is_extended=msg.is_extended_id,
+                        is_error=msg.is_error_frame,
+                        is_remote=msg.is_remote_frame,
+                        channel=msg.channel if msg.channel is not None else "CAN1",
+                    )
+                )
+
+            # Batch add frames to the view for performance
+            self.frame_batch.extend(frames_to_add)
+            self.update_views()
+            self.statusBar().showMessage(
+                f"Loaded {len(self.all_received_frames)} frames from {filename}"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Failed to load log: {e}")
 
     ### NEW ### - Methods for project handling and state management
     def _set_dirty(self, dirty: bool):

@@ -13,19 +13,17 @@ While the app works and provides a full-featured CAN bus GUI, you may find:
 * Giant all-in-one files (yes, `main.py`, we’re looking at you)
 * Documentation (including this README) was AI-generated too — so if it sounds polished but slightly overconfident, that’s why.
 
-> ⚠️ This is **AI slop** — but useful slop.
-
 The goal was rapid prototyping, not pristine architecture. Use it, improve it, rewrite parts of it — all contributions are welcome.
 
 ## Features
 
 - 🧩 **Project-based configuration** with filters, DBC files, and persistent decoding options
-- 🌐 **Multi-interface support**: socketcan, pcan, kvaser, vector, and virtual
+- 🌐 **Multi-interface support**: socketcan, pcan, kvaser, vector, and virtual based on [python-can](https://python-can.readthedocs.io/en/stable/configuration.html#interface-names)
 - 📊 **Dual View**: Real-time **Trace View** and hierarchical **Grouped View** with signal expansion
-- 📁 **Multi-DBC support** with full signal decoding
+- 📁 **Multi-DBC support** with signal decoding from [cantools](https://github.com/cantools/cantools)
 - 🧠 **CANopen basic decoder** with support for NMT, PDO, SDO, Heartbeat, and more
-- 📦 **CAN frame transmitter**, supporting both raw and signal-based messaging
-- 📜 **Log support**: Save/load CAN logs in plain text format
+- 📦 **CAN frame transmitter**, supporting both raw and signal-based (DBC) messages 
+- 📜 **Log support**: Save/load CAN logs in all [python-can IO formats](https://python-can.readthedocs.io/en/stable/file_io.html)
 
 ## Screenshots
 
@@ -43,7 +41,7 @@ canpeek
 ### From source
 
 1. Install [uv](https://github.com/astral-sh/uv)
-2. Run `uv run main.py`
+2. Run `uv run canpeek`
 
 ## Usage
 
@@ -72,6 +70,9 @@ canpeek
 0.000123 1AB S 8 DE AD BE EF 00 01 02 03
 ```
 
-## License
+## Other tools 
 
-MIT License
+CANPeek is designed to be quick & simple, you might find those intersesting:
+
+ * [cangaroo](https://github.com/normaldotcom/cangaroo) : rather similar
+ * [SavvyCAN](https://github.com/collin80/SavvyCAN) : a much more complete canbus tool
