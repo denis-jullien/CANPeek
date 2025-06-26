@@ -1005,14 +1005,11 @@ class ConnectionEditor(QWidget):
         self.interface_combo.setCurrentText(self.project.can_interface)
         self._rebuild_dynamic_fields(self.project.can_interface)
 
-    ### NEW ### - Method to show the documentation dialog
+    # Method to show the documentation dialog
     def _show_documentation_window(self):
         interface_name = self.interface_combo.currentText()
         docstring = self.interface_manager.get_interface_docstring(interface_name)
-
-        self.docs_window.set_content(
-            interface_name, docstring or "No documentation available."
-        )
+        self.docs_window.set_content(interface_name, docstring)
         self.docs_window.show()
         # Bring the window to the front
         self.docs_window.raise_()
@@ -1025,8 +1022,13 @@ class ConnectionEditor(QWidget):
         self._update_project()
 
     def _rebuild_dynamic_fields(self, interface_name: str):
-        # Show or hide the documentation button based on availability
-        has_docs = bool(self.interface_manager.get_interface_docstring(interface_name))
+        # Fetch the parsed docstring data once
+        parsed_doc = self.interface_manager.get_interface_docstring(interface_name)
+        param_docs = parsed_doc.get("params", {}) if parsed_doc else {}
+
+        has_docs = bool(
+            parsed_doc and (parsed_doc.get("description") or parsed_doc.get("params"))
+        )
         self.show_docs_button.setVisible(has_docs)
 
         # --- Clear and rebuild the dynamic input fields ---
@@ -1043,6 +1045,7 @@ class ConnectionEditor(QWidget):
 
         for name, info in params.items():
             default_value = self.project.can_config.get(name, info.get("default"))
+            widget = None
 
             if info["type"] is bool:
                 widget = QCheckBox()
@@ -1063,8 +1066,24 @@ class ConnectionEditor(QWidget):
                     widget.setText(str(default_value))
                 widget.editingFinished.connect(self._update_project)
 
+            ### NEW: Set tooltip for the created widget ###
+            if widget:
+                # Find the documentation for this specific parameter
+                tooltip_info = param_docs.get(name)
+                if tooltip_info and tooltip_info.get("description"):
+                    # Build a helpful tooltip string with type and description
+                    tooltip_parts = []
+                    type_name = tooltip_info.get("type_name")
+                    if type_name:
+                        tooltip_parts.append(f"({type_name})")
+                    tooltip_parts.append(tooltip_info["description"])
+                    tooltip_text = " ".join(tooltip_parts)
+                    widget.setToolTip(tooltip_text)
+
+            # Add the widget to the layout
+            label_text = f"{name.replace('_', ' ').title()}:"
+            self.dynamic_layout.addRow(label_text, widget)
             self.dynamic_widgets[name] = widget
-            self.dynamic_layout.addRow(f"{name.replace('_', ' ').title()}:", widget)
 
         self._update_project()
 
