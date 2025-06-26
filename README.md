@@ -33,15 +33,18 @@ The goal was rapid prototyping, not pristine architecture. Use it, improve it, r
 
 ### With pip
 
+The interfaces avaibility depends on modules and drivers available on your system. Use the extra [interfaces] to install optionals python modules.
+
+
 ```bash
-pip install canpeek
+pip install canpeek[interfaces]
 canpeek
 ```
 
 ### From source
 
 1. Install [uv](https://github.com/astral-sh/uv)
-2. Run `uv run canpeek`
+2. Run `uv run canpeek --extra interfaces`
 
 ## Usage
 

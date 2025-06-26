@@ -81,7 +81,7 @@ import cantools
 
 # ### NEW ### Forward reference for type hinting
 if TYPE_CHECKING:
-    from __main__ import ProjectExplorer
+    from __main__ import ProjectExplorer, CANInterfaceManager # <-- MODIFIED THIS LINE
 
 
 faulthandler.enable()
@@ -148,9 +148,7 @@ class Project:
     dbcs: List[DBCFile] = field(default_factory=list)
     filters: List[CANFrameFilter] = field(default_factory=list)
     canopen_enabled: bool = False
-    can_interface: str = "virtual"  # Default to virtual as it needs no drivers
-
-    ### MODIFIED ### - Use a dictionary for flexible config
+    can_interface: str = "virtual"
     can_config: Dict[str, Any] = field(default_factory=lambda: {"channel": "vcan0"})
 
     def get_active_dbcs(self) -> List[object]:
@@ -159,8 +157,13 @@ class Project:
     def get_active_filters(self) -> List[CANFrameFilter]:
         return [f for f in self.filters if f.enabled]
 
-    ### MODIFIED ### - Methods for project serialization with new can_config
     def to_dict(self) -> Dict:
+        serializable_can_config = {}
+        for key, value in self.can_config.items():
+            if isinstance(value, enum.Enum):
+                serializable_can_config[key] = value.name
+            else:
+                serializable_can_config[key] = value
         return {
             "dbcs": [
                 {"path": str(dbc.path), "enabled": dbc.enabled} for dbc in self.dbcs
@@ -168,20 +171,53 @@ class Project:
             "filters": [asdict(f) for f in self.filters],
             "canopen_enabled": self.canopen_enabled,
             "can_interface": self.can_interface,
-            "can_config": self.can_config,  # Save the new config dict
+            "can_config": serializable_can_config,
         }
 
+    ### MODIFIED ### - Now accepts interface_manager to "hydrate" the config
     @classmethod
-    def from_dict(cls, data: Dict) -> "Project":
+    def from_dict(cls, data: Dict, interface_manager: "CANInterfaceManager") -> "Project":
         project = cls()
         project.canopen_enabled = data.get("canopen_enabled", True)
         project.can_interface = data.get("can_interface", "virtual")
-        project.can_config = data.get("can_config", {})
 
+        # Hydrate the can_config: convert strings from file back to real objects (enums)
+        config_from_file = data.get("can_config", {})
+        hydrated_config = {}
+        param_defs = interface_manager.get_interface_params(project.can_interface)
+
+        if param_defs:
+            for key, value in config_from_file.items():
+                if key not in param_defs:
+                    hydrated_config[key] = value
+                    continue
+
+                param_info = param_defs[key]
+                expected_type = param_info.get("type")
+
+                is_enum = False
+                try:
+                    if inspect.isclass(expected_type) and issubclass(expected_type, enum.Enum):
+                        is_enum = True
+                except TypeError:
+                    pass
+
+                if is_enum and isinstance(value, str):
+                    try:
+                        # Convert saved string name back to the actual Enum member
+                        hydrated_config[key] = expected_type[value]
+                    except KeyError:
+                        print(f"Warning: Stored enum member '{value}' for '{key}' is invalid. Using default.")
+                        hydrated_config[key] = param_info.get("default")
+                else:
+                    hydrated_config[key] = value
+        else:
+             hydrated_config = config_from_file
+
+        project.can_config = hydrated_config
         project.filters = [
             CANFrameFilter(**f_data) for f_data in data.get("filters", [])
         ]
-
         for dbc_data in data.get("dbcs", []):
             try:
                 path = Path(dbc_data["path"])
@@ -777,9 +813,9 @@ class CANReaderThread(QThread):
                 self.error_occurred.emit(
                     f"CAN bus error: {e}\n\nCheck connection settings and hardware."
                 )
-        # except Exception as e:
-        #     if self.running:
-        #         self.error_occurred.emit(f"CAN reader error: {e}")
+        except Exception as e:
+            if self.running:
+                self.error_occurred.emit(f"CAN reader error: {e}")
         finally:
             if self.bus:
                 try:
@@ -2085,7 +2121,12 @@ class CANBusObserver(QMainWindow):
                 data = json.load(f)
             self.disconnect_can()
             self.clear_data()
-            self.project = Project.from_dict(data.get("project", {}))
+            
+            # ### MODIFIED ### - Pass self.interface_manager to the factory method
+            self.project = Project.from_dict(
+                data.get("project", {}), self.interface_manager
+            )
+
             self.project_explorer.set_project(self.project)
             self.transmit_panel.set_config(data.get("transmit_config", []))
             self.current_project_path = Path(path)
