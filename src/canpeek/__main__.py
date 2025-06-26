@@ -139,7 +139,7 @@ class CANFrameFilter:
 class Project:
     dbcs: List[DBCFile] = field(default_factory=list)
     filters: List[CANFrameFilter] = field(default_factory=list)
-    canopen_enabled: bool = True
+    canopen_enabled: bool = False
     can_interface: str = "socketcan"
     can_channel: str = "can0"
     can_bitrate: int = 500000
@@ -1638,7 +1638,7 @@ class CANBusObserver(QMainWindow):
     def _set_dirty(self, dirty: bool):
         if self.project_dirty != dirty:
             self.project_dirty = dirty
-            self._update_window_title()
+        self._update_window_title()
 
     def _update_window_title(self):
         title = "CANPeek - "
@@ -1711,10 +1711,11 @@ class CANBusObserver(QMainWindow):
             return self._save_project_as()
 
     def _save_project_as(self) -> bool:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Project As", "", "CANPeek Project (*.cpeek);;All Files (*)"
-        )
-        if path:
+        dialog = QFileDialog(self, "Save Project As", "", "CANPeek Project (*.cpeek);;All Files (*)")
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        dialog.setDefaultSuffix("cpeek")
+        if dialog.exec_():
+            path = dialog.selectedFiles()[0]
             self.current_project_path = Path(path)
             return self._save_project_to_path(self.current_project_path)
         return False
