@@ -1570,7 +1570,7 @@ class CANBusObserver(QMainWindow):
         dialog = QFileDialog(self, "Save CAN Log", "", self.log_file_filter)
         dialog.setDefaultSuffix("log")
         dialog.setAcceptMode(QFileDialog.AcceptSave)
-        if dialog.exec_():
+        if dialog.exec():
             filename = dialog.selectedFiles()[0]
         else:
             return
@@ -1717,7 +1717,7 @@ class CANBusObserver(QMainWindow):
         )
         dialog.setAcceptMode(QFileDialog.AcceptSave)
         dialog.setDefaultSuffix("cpeek")
-        if dialog.exec_():
+        if dialog.exec():
             path = dialog.selectedFiles()[0]
             self.current_project_path = Path(path)
             return self._save_project_to_path(self.current_project_path)

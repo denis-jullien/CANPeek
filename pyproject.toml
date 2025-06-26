@@ -21,5 +21,18 @@ build-backend = "hatchling.build"
 [tool.uv]
 dev-dependencies = [
     "pytest>=8.3.3",
+    "pytest-qt",
+    "pytest-mock",
     "ruff>=0.7.1",
 ]
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+# -ra: show extra test summary info for all but passed tests
+# --import-mode=importlib: modern import mode that's good practice
+addopts = "-ra --import-mode=importlib"
+testpaths = [
+    "tests",
+]
+# Needed for pytest-qt to know which Qt binding to use
+qt_api = "pyside6"
