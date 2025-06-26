@@ -1,6 +1,6 @@
 [project]
 name = "canpeek"
-version = "0.3.0"
+version = "0.4.0"
 description = "A simple CAN bus monitoring tool, with dbc support."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,6 +13,18 @@ dependencies = [
 
 [project.scripts]
 canpeek = "canpeek.__main__:main"
+
+[project.optional-dependencies]
+interfaces = [
+    "canalystii>=0.1",
+    "ics>=0.7.2",
+    "nixnet>=0.3.2",
+    "usb>=0.0.83.dev0",
+    "serial>=0.0.97", # You won't be able to use the serial can backend without the serial module installed!
+    "uptime>=3.0.1", # "uptime library not available, timestamps are relative to boot time and not to Epoch UTC" from python-can.interfaces.pcan
+    "filelock>=3.18.0", # Using ICS neoVI can backend without the filelock module installed may cause some issues!: No module named 'filelock'
+    "gs-usb>=0.3.0",
+]
 
 [build-system]
 requires = ["hatchling"]

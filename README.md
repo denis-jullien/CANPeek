@@ -60,15 +60,7 @@ canpeek
    * Manually from the **Transmit** tab
    * If the message id is in the DBC, a dedicated panel is available to edit signals values
 
-5. **Save / Load** CAN logs in simple `.log` format.
-
-## Log Format
-
-```text
-# CAN Bus Log File
-# Format: timestamp id is_ext dlc data
-0.000123 1AB S 8 DE AD BE EF 00 01 02 03
-```
+5. **Save / Load** CAN logs in multiples formats.
 
 ## Other tools 
 

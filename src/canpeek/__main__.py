@@ -21,6 +21,10 @@ from functools import partial
 from collections import deque
 import faulthandler
 import qdarktheme
+import inspect
+import importlib
+import logging
+from contextlib import contextmanager
 
 ### MODIFIED ### - Add QDockWidget, QToolBar, QStyle, QIcon
 from PySide6.QtWidgets import (
@@ -140,9 +144,10 @@ class Project:
     dbcs: List[DBCFile] = field(default_factory=list)
     filters: List[CANFrameFilter] = field(default_factory=list)
     canopen_enabled: bool = False
-    can_interface: str = "socketcan"
-    can_channel: str = "can0"
-    can_bitrate: int = 500000
+    can_interface: str = "virtual" # Default to virtual as it needs no drivers
+    
+    ### MODIFIED ### - Use a dictionary for flexible config
+    can_config: Dict[str, Any] = field(default_factory=lambda: {"channel": "vcan0"})
 
     def get_active_dbcs(self) -> List[object]:
         return [dbc.database for dbc in self.dbcs if dbc.enabled]
@@ -150,7 +155,7 @@ class Project:
     def get_active_filters(self) -> List[CANFrameFilter]:
         return [f for f in self.filters if f.enabled]
 
-    ### NEW ### - Methods for project serialization
+    ### MODIFIED ### - Methods for project serialization with new can_config
     def to_dict(self) -> Dict:
         return {
             "dbcs": [
@@ -159,17 +164,16 @@ class Project:
             "filters": [asdict(f) for f in self.filters],
             "canopen_enabled": self.canopen_enabled,
             "can_interface": self.can_interface,
-            "can_channel": self.can_channel,
-            "can_bitrate": self.can_bitrate,
+            "can_config": self.can_config, # Save the new config dict
         }
 
     @classmethod
     def from_dict(cls, data: Dict) -> "Project":
         project = cls()
         project.canopen_enabled = data.get("canopen_enabled", True)
-        project.can_interface = data.get("can_interface", "socketcan")
-        project.can_channel = data.get("can_channel", "can0")
-        project.can_bitrate = data.get("can_bitrate", 500000)
+        project.can_interface = data.get("can_interface", "virtual")
+        project.can_config = data.get("can_config", {})
+
         project.filters = [
             CANFrameFilter(**f_data) for f_data in data.get("filters", [])
         ]
@@ -183,10 +187,104 @@ class Project:
                 project.dbcs.append(DBCFile(path, db, dbc_data.get("enabled", True)))
             except Exception as e:
                 print(f"Warning: Could not load DBC from project file: {e}")
-                # Optionally, show a warning to the user here
         return project
 
+### NEW ### - A custom logging handler to capture log records in a list
+class LogCaptureHandler(logging.Handler):
+    """A logging handler that captures records to a list."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.records = []
 
+    def emit(self, record):
+        self.records.append(record)
+
+### NEW ### - A context manager to temporarily capture logs from a specific logger
+@contextmanager
+def capture_logs(logger_name: str):
+    """
+    A context manager to temporarily capture logs of level WARNING or higher
+    from the specified logger.
+    """
+    log_handler = LogCaptureHandler()
+    target_logger = logging.getLogger(logger_name)
+    
+    # Store the original state to restore it later
+    original_handlers = target_logger.handlers[:]
+    original_level = target_logger.level
+    
+    try:
+        # Clear existing handlers and set a low level to catch everything
+        target_logger.handlers.clear()
+        target_logger.addHandler(log_handler)
+        target_logger.setLevel(logging.WARNING) # We only care about warnings and errors
+        
+        yield log_handler # Pass the handler to the 'with' block
+        
+    finally:
+        # Restore the logger to its original state, no matter what
+        target_logger.handlers = original_handlers
+        target_logger.setLevel(original_level)
+
+# A manager to dynamically and safely find and inspect python-can interfaces
+class CANInterfaceManager:
+    """
+    Dynamically discovers available python-can interfaces and their
+    required configuration parameters. It safely inspects Bus classes and
+    filters out any that produce warnings or errors during discovery.
+    """
+    def __init__(self):
+        self._interfaces = self._discover_interfaces()
+
+    def _discover_interfaces(self):
+        interfaces = {}
+        for name, (module_name, class_name) in can.interfaces.BACKENDS.items():
+            try:
+                ### MODIFIED ### - Use the context manager to watch for warnings
+                with capture_logs('can') as log_handler:
+                    # Attempt to import and inspect the interface
+                    module = importlib.import_module(module_name)
+                    bus_class = getattr(module, class_name)
+                    sig = inspect.signature(bus_class.__init__)
+                    
+                    # After import/inspect, check if any warnings were logged
+                    if log_handler.records:
+                        # A warning was detected. This interface is not fully supported.
+                        first_warning = log_handler.records[0].getMessage()
+                        print(f"Info: Skipping interface '{name}' due to warning: {first_warning}")
+                        continue # Skip to the next interface
+
+                # If we get here, no warnings were issued. Now we can extract params.
+                params = {}
+                for param in sig.parameters.values():
+                    if param.name in ['self', 'args', 'kwargs', 'receive_own_messages']:
+                        continue
+                    param_info = {
+                        'default': param.default if param.default is not inspect.Parameter.empty else None,
+                        'type': param.annotation if param.annotation is not inspect.Parameter.empty else type(param.default)
+                    }
+                    params[param.name] = param_info
+
+                # The interface is clean, add it to the list
+                interfaces[name] = {'class': bus_class, 'params': params}
+
+            except (ImportError, AttributeError, OSError, TypeError) as e:
+                # Catches hard crashes (missing dependencies, platform incompatibility)
+                # that the logger might not even get to warn about.
+                print(f"Info: Skipping interface '{name}' due to error on load: {e}")
+            except Exception as e:
+                # A general catch-all for any other unexpected error.
+                print(f"Warning: Could not load or inspect CAN interface '{name}': {e}")
+        
+        # Sort the final, clean list of interfaces alphabetically
+        return dict(sorted(interfaces.items()))
+
+    def get_available_interfaces(self) -> List[str]:
+        return list(self._interfaces.keys())
+
+    def get_interface_params(self, name: str) -> Optional[Dict]:
+        return self._interfaces.get(name, {}).get('params')
+    
 # --- Decoders ---
 class CANopenDecoder:
     @staticmethod
@@ -582,12 +680,11 @@ class CANReaderThread(QThread):
     error_occurred = Signal(str)
     send_frame = Signal(object)
 
-    ### MODIFIED ### - Accept bitrate
-    def __init__(self, interface: str, channel: str, bitrate: int):
+    ### MODIFIED ### - Accept a flexible config dictionary
+    def __init__(self, interface: str, config: Dict[str, Any]):
         super().__init__()
         self.interface = interface
-        self.channel = channel
-        self.bitrate = bitrate
+        self.config = config
         self.running = False
         self.bus = None
         self.daemon = True
@@ -611,11 +708,11 @@ class CANReaderThread(QThread):
 
     def run(self):
         try:
+            ### MODIFIED ### - Pass the config dict directly to the Bus
             self.bus = can.Bus(
                 interface=self.interface,
-                channel=self.channel,
-                bitrate=self.bitrate,
                 receive_own_messages=True,
+                **self.config
             )
             while self.running:
                 msg = self.bus.recv(timeout=0.1)
@@ -632,12 +729,7 @@ class CANReaderThread(QThread):
                     self.frame_received.emit(frame)
         except can.CanOperationError as e:
             if self.running:
-                if e.error_code == 100:
-                    self.error_occurred.emit(
-                        "CAN bus not up or not configured correctly"
-                    )
-                else:
-                    self.error_occurred.emit(f"CAN bus error: {e}")
+                self.error_occurred.emit(f"CAN bus error: {e}\n\nCheck connection settings and hardware.")
         except Exception as e:
             if self.running:
                 self.error_occurred.emit(f"CAN reader error: {e}")
@@ -757,56 +849,124 @@ class FilterEditor(QWidget):
         self.filter_changed.emit()
 
 
-### NEW ### - Editor for Connection Settings
+### MODIFIED ### - Fully dynamic editor for connection settings
 class ConnectionEditor(QWidget):
     project_changed = Signal()
 
-    def __init__(self, project: Project):
+    def __init__(self, project: Project, interface_manager: CANInterfaceManager):
         super().__init__()
         self.project = project
+        self.interface_manager = interface_manager
+        self.dynamic_widgets = {}  # To hold the dynamically created input fields
         self.setup_ui()
 
     def setup_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         group = QGroupBox("Connection Properties")
-        layout = QFormLayout(group)
+        self.form_layout = QFormLayout(group)
         main_layout.addWidget(group)
 
         self.interface_combo = QComboBox()
-        self.interface_combo.addItems(
-            ["socketcan", "pcan", "kvaser", "vector", "virtual"]
-        )
+        self.interface_combo.addItems(self.interface_manager.get_available_interfaces())
         self.interface_combo.setCurrentText(self.project.can_interface)
-        layout.addRow("Interface:", self.interface_combo)
+        self.form_layout.addRow("Interface:", self.interface_combo)
+        
+        # A container widget for the dynamic fields
+        self.dynamic_fields_container = QWidget()
+        self.dynamic_layout = QFormLayout(self.dynamic_fields_container)
+        self.dynamic_layout.setContentsMargins(0, 0, 0, 0)
+        self.form_layout.addRow(self.dynamic_fields_container)
 
-        self.channel_edit = QLineEdit(self.project.can_channel)
-        layout.addRow("Channel:", self.channel_edit)
+        self.interface_combo.currentTextChanged.connect(self._on_interface_changed)
+        
+        # Initial population of the dynamic fields
+        self._rebuild_dynamic_fields(self.project.can_interface)
 
-        self.bitrate_spin = QSpinBox()
-        self.bitrate_spin.setRange(1000, 4000000)
-        self.bitrate_spin.setSingleStep(1000)
-        self.bitrate_spin.setValue(self.project.can_bitrate)
-        self.bitrate_spin.setSuffix(" bps")
-        layout.addRow("Bitrate:", self.bitrate_spin)
+    def _on_interface_changed(self, interface_name: str):
+        # Update the project and clear the old config
+        self.project.can_interface = interface_name
+        self.project.can_config.clear() 
+        self._rebuild_dynamic_fields(interface_name)
+        # Manually trigger an update since clearing the config is a change
+        self._update_project()
 
-        self.interface_combo.currentTextChanged.connect(self._update_project)
-        self.channel_edit.editingFinished.connect(self._update_project)
-        self.bitrate_spin.valueChanged.connect(self._update_project)
+    def _rebuild_dynamic_fields(self, interface_name: str):
+        # Clear existing dynamic widgets
+        while self.dynamic_layout.count():
+            item = self.dynamic_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.dynamic_widgets.clear()
 
+        params = self.interface_manager.get_interface_params(interface_name)
+        if not params:
+            return
+
+        # Create new widgets based on introspection
+        for name, info in params.items():
+            default_value = self.project.can_config.get(name, info.get('default'))
+            
+            # Choose widget based on parameter type hint or default value type
+            if info['type'] is bool:
+                widget = QCheckBox()
+                if default_value is not None:
+                    widget.setChecked(bool(default_value))
+                widget.toggled.connect(self._update_project)
+            elif name == 'bitrate':
+                widget = QSpinBox()
+                widget.setRange(1000, 4000000)
+                widget.setSingleStep(1000)
+                widget.setSuffix(" bps")
+                if default_value is not None:
+                    widget.setValue(int(default_value))
+                widget.valueChanged.connect(self._update_project)
+            else: # Default to QLineEdit for str, int, etc.
+                widget = QLineEdit()
+                if default_value is not None:
+                    widget.setText(str(default_value))
+                widget.editingFinished.connect(self._update_project)
+            
+            self.dynamic_widgets[name] = widget
+            self.dynamic_layout.addRow(f"{name.replace('_', ' ').title()}:", widget)
+        
+        # Ensure the UI reflects the potentially new default values
+        self._update_project() 
+        
     def _update_project(self):
+        # Gather all values from the dynamic widgets
+        config = {}
+        for name, widget in self.dynamic_widgets.items():
+            try:
+                if isinstance(widget, QCheckBox):
+                    config[name] = widget.isChecked()
+                elif isinstance(widget, QSpinBox):
+                    config[name] = widget.value()
+                elif isinstance(widget, QLineEdit):
+                    # Try to convert to int if possible, otherwise keep as string
+                    text = widget.text()
+                    try:
+                        config[name] = int(text)
+                    except ValueError:
+                        try:
+                            config[name] = int(text, 16)
+                        except ValueError:
+                           config[name] = text
+            except Exception as e:
+                print(f"Warning: Could not get value for '{name}': {e}")
+        
         self.project.can_interface = self.interface_combo.currentText()
-        self.project.can_channel = self.channel_edit.text()
-        self.project.can_bitrate = self.bitrate_spin.value()
+        self.project.can_config = config
         self.project_changed.emit()
 
 
 class PropertiesPanel(QWidget):
-    ### MODIFIED ### - Accept project and explorer for context
-    def __init__(self, project: Project, explorer: "ProjectExplorer"):
+    ### MODIFIED ### - Accept interface_manager in constructor
+    def __init__(self, project: Project, explorer: "ProjectExplorer", interface_manager: "CANInterfaceManager"):
         super().__init__()
         self.project = project
         self.explorer = explorer
+        self.interface_manager = interface_manager # Store the manager
         self.current_widget = None
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
@@ -814,19 +974,19 @@ class PropertiesPanel(QWidget):
         self.placeholder.setAlignment(Qt.AlignCenter)
         self.layout.addWidget(self.placeholder)
 
-    ### MODIFIED ### - Show editor based on item data
+    ### MODIFIED ### - Use the stored interface_manager
     def show_properties(self, item: QTreeWidgetItem):
         self.clear()
         data = item.data(0, Qt.UserRole) if item else None
 
         if data == "connection_settings":
-            editor = ConnectionEditor(self.project)
+            # Now self.interface_manager exists and can be passed
+            editor = ConnectionEditor(self.project, self.interface_manager)
             editor.project_changed.connect(self.explorer.rebuild_tree)
             self.current_widget = editor
         elif isinstance(data, CANFrameFilter):
             editor = FilterEditor(data)
             editor.filter_changed.connect(lambda: item.setText(0, data.name))
-            # ### NEW ### Propagate change signal to mark project as dirty
             editor.filter_changed.connect(self.explorer.project_changed.emit)
             self.current_widget = editor
         elif isinstance(data, DBCFile):
@@ -1234,12 +1394,14 @@ class CANBusObserver(QMainWindow):
         self.setWindowTitle("CANPeek")
         self.setGeometry(100, 100, 1400, 900)
 
-        ### NEW ### - Project state attributes
+        self.interface_manager = CANInterfaceManager()
+
+        # Project state attributes
         self.project = Project()
         self.current_project_path: Optional[Path] = None
         self.project_dirty = False
 
-        ### NEW ### - Create log file filter string
+        # Create log file filter string
         file_loggers = {
             "ASCWriter": ".asc",
             "BLFWriter": ".blf",
@@ -1369,7 +1531,10 @@ class CANBusObserver(QMainWindow):
         explorer_dock.setObjectName("ProjectExplorerDock")
         explorer_dock.setWidget(self.project_explorer)
         self.addDockWidget(Qt.RightDockWidgetArea, explorer_dock)
-        self.properties_panel = PropertiesPanel(self.project, self.project_explorer)
+
+        ### MODIFIED ### - Pass the interface_manager during instantiation
+        self.properties_panel = PropertiesPanel(self.project, self.project_explorer, self.interface_manager)
+
         properties_dock = QDockWidget("Properties", self)
         properties_dock.setObjectName("PropertiesDock")
         properties_dock.setWidget(self.properties_panel)
@@ -1514,10 +1679,10 @@ class CANBusObserver(QMainWindow):
             self.transmit_panel.update_row_data(row, data_bytes)
 
     def connect_can(self):
+        ### MODIFIED ### - Pass the flexible config dictionary to the thread
         self.can_reader = CANReaderThread(
             self.project.can_interface,
-            self.project.can_channel,
-            self.project.can_bitrate,
+            self.project.can_config,
         )
         self.can_reader.frame_received.connect(self._process_frame)
         self.can_reader.error_occurred.connect(self.on_can_error)
@@ -1525,8 +1690,10 @@ class CANBusObserver(QMainWindow):
             self.connect_action.setEnabled(False)
             self.disconnect_action.setEnabled(True)
             self.transmit_panel.setEnabled(True)
+            # Create a nice string for the status bar
+            config_str = ", ".join(f"{k}={v}" for k, v in self.project.can_config.items())
             self.connection_label.setText(
-                f"Connected ({self.project.can_interface}:{self.project.can_channel} @ {self.project.can_bitrate / 1000:.0f} kbps)"
+                f"Connected ({self.project.can_interface}: {config_str})"
             )
         else:
             self.can_reader = None
