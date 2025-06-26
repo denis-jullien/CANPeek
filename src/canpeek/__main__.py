@@ -55,6 +55,7 @@ from PySide6.QtWidgets import (
     QToolBar,
     QDockWidget,
     QStyle,
+    QFrame
 )
 
 ### MODIFIED ### - Add QProcess, QSettings
@@ -229,8 +230,8 @@ def capture_logs(logger_name: str):
 # A manager to dynamically and safely find and inspect python-can interfaces
 class CANInterfaceManager:
     """
-    Dynamically discovers available python-can interfaces and their
-    required configuration parameters. It safely inspects Bus classes and
+    Dynamically discovers available python-can interfaces, their docstrings,
+    and their configuration parameters. It safely inspects Bus classes and
     filters out any that produce warnings or errors during discovery.
     """
     def __init__(self):
@@ -240,21 +241,25 @@ class CANInterfaceManager:
         interfaces = {}
         for name, (module_name, class_name) in can.interfaces.BACKENDS.items():
             try:
-                ### MODIFIED ### - Use the context manager to watch for warnings
+                docstring = ""
                 with capture_logs('can') as log_handler:
-                    # Attempt to import and inspect the interface
                     module = importlib.import_module(module_name)
                     bus_class = getattr(module, class_name)
-                    sig = inspect.signature(bus_class.__init__)
                     
-                    # After import/inspect, check if any warnings were logged
+                    ### MODIFIED ### - Prioritize the __init__ docstring
+                    # Get the __init__ docstring, as it's most relevant to parameters.
+                    init_docstring = inspect.getdoc(bus_class.__init__)
+                    
+                    # If __init__ has no docstring, fall back to the class docstring.
+                    docstring = init_docstring if init_docstring else inspect.getdoc(bus_class)
+
                     if log_handler.records:
-                        # A warning was detected. This interface is not fully supported.
                         first_warning = log_handler.records[0].getMessage()
                         print(f"Info: Skipping interface '{name}' due to warning: {first_warning}")
-                        continue # Skip to the next interface
+                        continue
 
-                # If we get here, no warnings were issued. Now we can extract params.
+                # The interface is clean, extract params and store everything
+                sig = inspect.signature(bus_class.__init__)
                 params = {}
                 for param in sig.parameters.values():
                     if param.name in ['self', 'args', 'kwargs', 'receive_own_messages']:
@@ -265,18 +270,17 @@ class CANInterfaceManager:
                     }
                     params[param.name] = param_info
 
-                # The interface is clean, add it to the list
-                interfaces[name] = {'class': bus_class, 'params': params}
+                interfaces[name] = {
+                    'class': bus_class,
+                    'params': params,
+                    'docstring': docstring
+                }
 
             except (ImportError, AttributeError, OSError, TypeError) as e:
-                # Catches hard crashes (missing dependencies, platform incompatibility)
-                # that the logger might not even get to warn about.
                 print(f"Info: Skipping interface '{name}' due to error on load: {e}")
             except Exception as e:
-                # A general catch-all for any other unexpected error.
                 print(f"Warning: Could not load or inspect CAN interface '{name}': {e}")
         
-        # Sort the final, clean list of interfaces alphabetically
         return dict(sorted(interfaces.items()))
 
     def get_available_interfaces(self) -> List[str]:
@@ -284,6 +288,10 @@ class CANInterfaceManager:
 
     def get_interface_params(self, name: str) -> Optional[Dict]:
         return self._interfaces.get(name, {}).get('params')
+
+    def get_interface_docstring(self, name: str) -> Optional[str]:
+        """Returns the cleaned docstring for the given interface name."""
+        return self._interfaces.get(name, {}).get('docstring')
     
 # --- Decoders ---
 class CANopenDecoder:
@@ -849,7 +857,7 @@ class FilterEditor(QWidget):
         self.filter_changed.emit()
 
 
-### MODIFIED ### - Fully dynamic editor for connection settings
+# Fully dynamic editor for connection settings
 class ConnectionEditor(QWidget):
     project_changed = Signal()
 
@@ -857,7 +865,7 @@ class ConnectionEditor(QWidget):
         super().__init__()
         self.project = project
         self.interface_manager = interface_manager
-        self.dynamic_widgets = {}  # To hold the dynamically created input fields
+        self.dynamic_widgets = {}
         self.setup_ui()
 
     def setup_ui(self):
@@ -867,32 +875,57 @@ class ConnectionEditor(QWidget):
         self.form_layout = QFormLayout(group)
         main_layout.addWidget(group)
 
+        # --- Interface Selection ---
         self.interface_combo = QComboBox()
         self.interface_combo.addItems(self.interface_manager.get_available_interfaces())
-        self.interface_combo.setCurrentText(self.project.can_interface)
         self.form_layout.addRow("Interface:", self.interface_combo)
+
+        # --- NEW: Docstring Display Area ---
+        self.docstring_label = QLabel()
+        self.docstring_label.setWordWrap(True)
+        self.docstring_label.setObjectName("docstringLabel") # For styling
+        # A little style to make the documentation stand out
+        self.docstring_label.setStyleSheet(
+            "QLabel#docstringLabel { font-style: italic; color: #909090; margin-top: 5px; margin-bottom: 10px; }"
+        )
+        self.form_layout.addRow(self.docstring_label)
+
+        # --- NEW: Visual Separator ---
+        self.doc_separator = QFrame()
+        self.doc_separator.setFrameShape(QFrame.HLine)
+        self.doc_separator.setFrameShadow(QFrame.Sunken)
+        self.form_layout.addRow(self.doc_separator)
         
-        # A container widget for the dynamic fields
+        # --- Dynamic Fields ---
         self.dynamic_fields_container = QWidget()
         self.dynamic_layout = QFormLayout(self.dynamic_fields_container)
         self.dynamic_layout.setContentsMargins(0, 0, 0, 0)
         self.form_layout.addRow(self.dynamic_fields_container)
 
+        # --- Connections and Initial State ---
         self.interface_combo.currentTextChanged.connect(self._on_interface_changed)
-        
-        # Initial population of the dynamic fields
+        self.interface_combo.setCurrentText(self.project.can_interface)
         self._rebuild_dynamic_fields(self.project.can_interface)
 
     def _on_interface_changed(self, interface_name: str):
-        # Update the project and clear the old config
         self.project.can_interface = interface_name
         self.project.can_config.clear() 
         self._rebuild_dynamic_fields(interface_name)
-        # Manually trigger an update since clearing the config is a change
         self._update_project()
 
     def _rebuild_dynamic_fields(self, interface_name: str):
-        # Clear existing dynamic widgets
+        ### NEW: Update the docstring label first ###
+        docstring = self.interface_manager.get_interface_docstring(interface_name)
+        if docstring:
+            self.docstring_label.setText(docstring)
+            self.docstring_label.setVisible(True)
+            self.doc_separator.setVisible(True)
+        else:
+            self.docstring_label.setText("")
+            self.docstring_label.setVisible(False)
+            self.doc_separator.setVisible(False)
+
+        # --- Clear and rebuild the dynamic input fields ---
         while self.dynamic_layout.count():
             item = self.dynamic_layout.takeAt(0)
             if item.widget():
@@ -901,13 +934,12 @@ class ConnectionEditor(QWidget):
 
         params = self.interface_manager.get_interface_params(interface_name)
         if not params:
+            self._update_project()
             return
-
-        # Create new widgets based on introspection
+            
         for name, info in params.items():
             default_value = self.project.can_config.get(name, info.get('default'))
             
-            # Choose widget based on parameter type hint or default value type
             if info['type'] is bool:
                 widget = QCheckBox()
                 if default_value is not None:
@@ -915,13 +947,11 @@ class ConnectionEditor(QWidget):
                 widget.toggled.connect(self._update_project)
             elif name == 'bitrate':
                 widget = QSpinBox()
-                widget.setRange(1000, 4000000)
-                widget.setSingleStep(1000)
-                widget.setSuffix(" bps")
+                widget.setRange(1000, 4000000); widget.setSingleStep(1000); widget.setSuffix(" bps")
                 if default_value is not None:
                     widget.setValue(int(default_value))
                 widget.valueChanged.connect(self._update_project)
-            else: # Default to QLineEdit for str, int, etc.
+            else:
                 widget = QLineEdit()
                 if default_value is not None:
                     widget.setText(str(default_value))
@@ -930,11 +960,9 @@ class ConnectionEditor(QWidget):
             self.dynamic_widgets[name] = widget
             self.dynamic_layout.addRow(f"{name.replace('_', ' ').title()}:", widget)
         
-        # Ensure the UI reflects the potentially new default values
         self._update_project() 
         
     def _update_project(self):
-        # Gather all values from the dynamic widgets
         config = {}
         for name, widget in self.dynamic_widgets.items():
             try:
@@ -943,15 +971,13 @@ class ConnectionEditor(QWidget):
                 elif isinstance(widget, QSpinBox):
                     config[name] = widget.value()
                 elif isinstance(widget, QLineEdit):
-                    # Try to convert to int if possible, otherwise keep as string
                     text = widget.text()
-                    try:
-                        config[name] = int(text)
-                    except ValueError:
-                        try:
-                            config[name] = int(text, 16)
+                    if text is None or text == 'None': config[name] = None
+                    else:
+                        try: config[name] = int(text)
                         except ValueError:
-                           config[name] = text
+                            try: config[name] = int(text, 16)
+                            except ValueError: config[name] = text
             except Exception as e:
                 print(f"Warning: Could not get value for '{name}': {e}")
         
