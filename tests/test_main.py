@@ -1,6 +1,7 @@
 # tests/test_main.py
 
 import sys
+
 # import json
 import pytest
 from pathlib import Path
@@ -11,20 +12,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.canpeek import __main__ as canpeek_app
 
-from PySide6.QtCore import Qt #, QTimer
+from PySide6.QtCore import Qt  # , QTimer
 # from PySide6.QtWidgets import QCheckBox, QLineEdit, QPushButton
 
 # --- Fixtures ---
+
 
 @pytest.fixture
 def sample_can_frame():
     """Provides a standard CANFrame for tests."""
     return canpeek_app.CANFrame(
-        timestamp=12345.678,
-        arbitration_id=0x123,
-        data=b'\x11\x22\x33\x44',
-        dlc=4
+        timestamp=12345.678, arbitration_id=0x123, data=b"\x11\x22\x33\x44", dlc=4
     )
+
 
 @pytest.fixture
 def sample_dbc_content():
@@ -36,6 +36,7 @@ BO_ 257 MSG_STATUS: 8 Vector__XXX
  SG_ Sig2 : 8|16@1+ (1,0) [0|0] "" Vector__XXX
 """
 
+
 @pytest.fixture
 def sample_project(tmp_path, sample_dbc_content):
     """Creates a sample Project with a temporary DBC file."""
@@ -45,14 +46,14 @@ def sample_project(tmp_path, sample_dbc_content):
     project = canpeek_app.Project()
     project.dbcs.append(
         canpeek_app.DBCFile(
-            path=dbc_path,
-            database=canpeek_app.cantools.database.load_file(dbc_path)
+            path=dbc_path, database=canpeek_app.cantools.database.load_file(dbc_path)
         )
     )
     project.filters.append(canpeek_app.CANFrameFilter(name="Test Filter"))
     project.can_interface = "virtual"
     project.can_channel = "vcan0"
     return project
+
 
 @pytest.fixture
 def main_window(qtbot):
@@ -67,6 +68,7 @@ def main_window(qtbot):
 
 
 # --- Test Classes ---
+
 
 class TestDataStructures:
     """Tests for the data classes and their serialization."""
@@ -92,9 +94,9 @@ class TestDataStructures:
     def test_filter_matches(self):
         """Test the CANFrameFilter logic."""
         f = canpeek_app.CANFrameFilter(min_id=0x100, max_id=0x1FF, mask=0x7FF)
-        frame_match = canpeek_app.CANFrame(0, 0x150, b'', 0)
-        frame_no_match = canpeek_app.CANFrame(0, 0x250, b'', 0)
-        frame_ext = canpeek_app.CANFrame(0, 0x12345, b'', 0, is_extended=True)
+        frame_match = canpeek_app.CANFrame(0, 0x150, b"", 0)
+        frame_no_match = canpeek_app.CANFrame(0, 0x250, b"", 0)
+        frame_ext = canpeek_app.CANFrame(0, 0x12345, b"", 0, is_extended=True)
 
         assert f.matches(frame_match)
         assert not f.matches(frame_no_match)
@@ -104,16 +106,20 @@ class TestDataStructures:
         f.accept_extended = False
         assert not f.matches(frame_ext)
 
+
 class TestDecoders:
     """Tests for the CANopen decoder logic."""
 
-    @pytest.mark.parametrize("frame_id, data, expected_type, expected_node", [
-        (0x701, b'\x05', "Heartbeat", 1),
-        (0x181, b'\x01\x02', "PDO1 TX", 1),
-        (0x581, b'\x40\x21\x10\x00', "SDO TX", 1),
-        (0x81, b'\x01\x00\x02\x00\x00\x00\x00\x00', "EMCY", 1),
-        (0x000, b'\x01\x00', "NMT", None), # NMT is broadcast
-    ])
+    @pytest.mark.parametrize(
+        "frame_id, data, expected_type, expected_node",
+        [
+            (0x701, b"\x05", "Heartbeat", 1),
+            (0x181, b"\x01\x02", "PDO1 TX", 1),
+            (0x581, b"\x40\x21\x10\x00", "SDO TX", 1),
+            (0x81, b"\x01\x00\x02\x00\x00\x00\x00\x00", "EMCY", 1),
+            (0x000, b"\x01\x00", "NMT", None),  # NMT is broadcast
+        ],
+    )
     def test_canopen_decode(self, frame_id, data, expected_type, expected_node):
         """Test various CANopen message decodings."""
         frame = canpeek_app.CANFrame(0, frame_id, data, len(data))
@@ -145,7 +151,7 @@ class TestUIModels:
         model = canpeek_app.CANGroupedModel()
         model.update_frames([sample_can_frame, sample_can_frame])
 
-        assert model.rowCount() == 1 # Only one unique ID
+        assert model.rowCount() == 1  # Only one unique ID
         top_level_index = model.index(0, 0)
         assert model.data(top_level_index, Qt.DisplayRole) == "0x123"
 
@@ -165,7 +171,7 @@ class TestUIWidgets:
 
         # Change the name
         editor.name_edit.setText("My New Filter")
-        editor.name_edit.editingFinished.emit() # Manually emit signal for test
+        editor.name_edit.editingFinished.emit()  # Manually emit signal for test
         assert can_filter.name == "My New Filter"
 
         # Change an ID
@@ -200,6 +206,7 @@ class TestUIWidgets:
     #     assert sent_message.arbitration_id == 0x3FF
     #     assert sent_message.data == b'\xAA\xBB\xCC'
     #     assert not sent_message.is_extended_id
+
 
 class TestMainWindow:
     """Integration-style tests for the main application window."""
