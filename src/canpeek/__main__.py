@@ -12,87 +12,153 @@ Features:
 """
 
 import sys
-import time
 import struct
 import json
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from functools import partial
 from collections import deque
 import faulthandler
-
-faulthandler.enable()
+import qdarktheme
 
 ### MODIFIED ### - Add QDockWidget, QToolBar, QStyle, QIcon
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTableWidget, QTableWidgetItem, QTabWidget, QPushButton, QLabel,
-    QLineEdit, QCheckBox, QComboBox, QSpinBox, QSplitter,
-    QGroupBox, QFormLayout, QHeaderView, QFileDialog, QMessageBox,
-    QStatusBar, QMenuBar, QMenu, QTreeView, QTreeWidget, QTreeWidgetItem, QTableView,
-    QToolBar, QDockWidget, QStyle
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QPushButton,
+    QLabel,
+    QLineEdit,
+    QCheckBox,
+    QComboBox,
+    QSpinBox,
+    QGroupBox,
+    QFormLayout,
+    QHeaderView,
+    QFileDialog,
+    QMessageBox,
+    QMenu,
+    QTreeView,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QTableView,
+    QToolBar,
+    QDockWidget,
+    QStyle,
 )
+
 ### MODIFIED ### - Add QProcess, QSettings
 from PySide6.QtCore import (
-    QThread, QTimer, Signal, QObject, Qt, QAbstractItemModel, QAbstractTableModel,
-    QModelIndex, QSortFilterProxyModel, QProcess, QSettings
+    QThread,
+    QTimer,
+    Signal,
+    Qt,
+    QAbstractItemModel,
+    QAbstractTableModel,
+    QModelIndex,
+    QSortFilterProxyModel,
+    QSettings,
 )
-from PySide6.QtGui import QAction, QKeyEvent, QIcon
+from PySide6.QtGui import QAction, QKeyEvent
 
-import qdarktheme
+
 # Try importing CAN libraries
 try:
     import can
     import cantools
+
     CAN_AVAILABLE = True
 except ImportError:
     CAN_AVAILABLE = False
+
     class can:
-        class Message: pass
-        class Bus: pass
+        class Message:
+            pass
+
+        class Bus:
+            pass
+
         class CanOperationError(Exception):
             def __init__(self, message, error_code=None):
                 super().__init__(message)
                 self.error_code = error_code
+
     class cantools:
         class database:
             @staticmethod
             def load_file(filename):
                 raise ImportError("cantools library is not installed.")
 
+
 # ### NEW ### Forward reference for type hinting
 if TYPE_CHECKING:
     from __main__ import ProjectExplorer
 
+
+faulthandler.enable()
+
 # --- Data Structures ---
 TRACE_BUFFER_LIMIT = 5000
 
-@dataclass
-class CANFrame:
-    timestamp: float; arbitration_id: int; data: bytes; dlc: int
-    is_extended: bool = False; is_error: bool = False; is_remote: bool = False; channel: str = "CAN1"
 
 @dataclass
-class DisplayItem: # Used for Grouped View
-    parent: Optional['DisplayItem']; data_source: Any; is_signal: bool = False
-    children: List['DisplayItem'] = field(default_factory=list); children_populated: bool = False; row_in_parent: int = 0
+class CANFrame:
+    timestamp: float
+    arbitration_id: int
+    data: bytes
+    dlc: int
+    is_extended: bool = False
+    is_error: bool = False
+    is_remote: bool = False
+    channel: str = "CAN1"
+
+
+@dataclass
+class DisplayItem:  # Used for Grouped View
+    parent: Optional["DisplayItem"]
+    data_source: Any
+    is_signal: bool = False
+    children: List["DisplayItem"] = field(default_factory=list)
+    children_populated: bool = False
+    row_in_parent: int = 0
+
 
 @dataclass
 class DBCFile:
-    path: Path; database: object; enabled: bool = True
+    path: Path
+    database: object
+    enabled: bool = True
+
 
 @dataclass
 class CANFrameFilter:
-    name: str = "New Filter"; enabled: bool = True; min_id: int = 0x000; max_id: int = 0x7FF; mask: int = 0x7FF
-    accept_extended: bool = True; accept_standard: bool = True; accept_data: bool = True; accept_remote: bool = True
+    name: str = "New Filter"
+    enabled: bool = True
+    min_id: int = 0x000
+    max_id: int = 0x7FF
+    mask: int = 0x7FF
+    accept_extended: bool = True
+    accept_standard: bool = True
+    accept_data: bool = True
+    accept_remote: bool = True
+
     def matches(self, frame: CANFrame) -> bool:
-        if frame.is_extended and not self.accept_extended: return False
-        if not frame.is_extended and not self.accept_standard: return False
-        if frame.is_remote and not self.accept_remote: return False
-        if not frame.is_remote and not self.accept_data: return False
+        if frame.is_extended and not self.accept_extended:
+            return False
+        if not frame.is_extended and not self.accept_standard:
+            return False
+        if frame.is_remote and not self.accept_remote:
+            return False
+        if not frame.is_remote and not self.accept_data:
+            return False
         return self.min_id <= (frame.arbitration_id & self.mask) <= self.max_id
+
 
 @dataclass
 class Project:
@@ -103,37 +169,46 @@ class Project:
     can_channel: str = "can0"
     can_bitrate: int = 500000
 
-    def get_active_dbcs(self) -> List[object]: return [dbc.database for dbc in self.dbcs if dbc.enabled]
-    def get_active_filters(self) -> List[CANFrameFilter]: return [f for f in self.filters if f.enabled]
+    def get_active_dbcs(self) -> List[object]:
+        return [dbc.database for dbc in self.dbcs if dbc.enabled]
+
+    def get_active_filters(self) -> List[CANFrameFilter]:
+        return [f for f in self.filters if f.enabled]
 
     ### NEW ### - Methods for project serialization
     def to_dict(self) -> Dict:
         return {
-            'dbcs': [{'path': str(dbc.path), 'enabled': dbc.enabled} for dbc in self.dbcs],
-            'filters': [asdict(f) for f in self.filters],
-            'canopen_enabled': self.canopen_enabled,
-            'can_interface': self.can_interface,
-            'can_channel': self.can_channel,
-            'can_bitrate': self.can_bitrate,
+            "dbcs": [
+                {"path": str(dbc.path), "enabled": dbc.enabled} for dbc in self.dbcs
+            ],
+            "filters": [asdict(f) for f in self.filters],
+            "canopen_enabled": self.canopen_enabled,
+            "can_interface": self.can_interface,
+            "can_channel": self.can_channel,
+            "can_bitrate": self.can_bitrate,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict) -> 'Project':
+    def from_dict(cls, data: Dict) -> "Project":
         project = cls()
-        project.canopen_enabled = data.get('canopen_enabled', True)
-        project.can_interface = data.get('can_interface', 'socketcan')
-        project.can_channel = data.get('can_channel', 'can0')
-        project.can_bitrate = data.get('can_bitrate', 500000)
-        project.filters = [CANFrameFilter(**f_data) for f_data in data.get('filters', [])]
-        
+        project.canopen_enabled = data.get("canopen_enabled", True)
+        project.can_interface = data.get("can_interface", "socketcan")
+        project.can_channel = data.get("can_channel", "can0")
+        project.can_bitrate = data.get("can_bitrate", 500000)
+        project.filters = [
+            CANFrameFilter(**f_data) for f_data in data.get("filters", [])
+        ]
+
         if CAN_AVAILABLE:
-            for dbc_data in data.get('dbcs', []):
+            for dbc_data in data.get("dbcs", []):
                 try:
-                    path = Path(dbc_data['path'])
+                    path = Path(dbc_data["path"])
                     if not path.exists():
                         raise FileNotFoundError(f"DBC file not found: {path}")
                     db = cantools.database.load_file(path)
-                    project.dbcs.append(DBCFile(path, db, dbc_data.get('enabled', True)))
+                    project.dbcs.append(
+                        DBCFile(path, db, dbc_data.get("enabled", True))
+                    )
                 except Exception as e:
                     print(f"Warning: Could not load DBC from project file: {e}")
                     # Optionally, show a warning to the user here
@@ -145,162 +220,323 @@ class CANopenDecoder:
     @staticmethod
     def decode(frame: CANFrame) -> Optional[Dict]:
         cob_id = frame.arbitration_id
-        if cob_id == 0x000: return CANopenDecoder._nmt(frame.data)
-        if cob_id == 0x080: return CANopenDecoder._sync()
-        if cob_id == 0x100: return CANopenDecoder._time(frame.data)
+        if cob_id == 0x000:
+            return CANopenDecoder._nmt(frame.data)
+        if cob_id == 0x080:
+            return CANopenDecoder._sync()
+        if cob_id == 0x100:
+            return CANopenDecoder._time(frame.data)
         node_id = cob_id & 0x7F
-        if node_id == 0: return None
+        if node_id == 0:
+            return None
         function_code = cob_id & 0x780
-        if function_code == 0x80: return CANopenDecoder._emcy(frame.data, node_id)
-        if function_code in [0x180, 0x280, 0x380, 0x480]: return CANopenDecoder._pdo("TX", function_code, node_id)
-        if function_code in [0x200, 0x300, 0x400, 0x500]: return CANopenDecoder._pdo("RX", function_code, node_id)
-        if function_code == 0x580: return CANopenDecoder._sdo("TX", frame.data, node_id)
-        if function_code == 0x600: return CANopenDecoder._sdo("RX", frame.data, node_id)
-        if function_code == 0x700: return CANopenDecoder._heartbeat(frame.data, node_id)
+        if function_code == 0x80:
+            return CANopenDecoder._emcy(frame.data, node_id)
+        if function_code in [0x180, 0x280, 0x380, 0x480]:
+            return CANopenDecoder._pdo("TX", function_code, node_id)
+        if function_code in [0x200, 0x300, 0x400, 0x500]:
+            return CANopenDecoder._pdo("RX", function_code, node_id)
+        if function_code == 0x580:
+            return CANopenDecoder._sdo("TX", frame.data, node_id)
+        if function_code == 0x600:
+            return CANopenDecoder._sdo("RX", frame.data, node_id)
+        if function_code == 0x700:
+            return CANopenDecoder._heartbeat(frame.data, node_id)
         return None
+
     @staticmethod
     def _nmt(data: bytes) -> Dict:
-        if len(data) != 2: return None
-        cs_map = {1: "Start", 2: "Stop", 128: "Pre-Operational", 129: "Reset Node", 130: "Reset Comm"}
+        if len(data) != 2:
+            return None
+        cs_map = {
+            1: "Start",
+            2: "Stop",
+            128: "Pre-Operational",
+            129: "Reset Node",
+            130: "Reset Comm",
+        }
         cs, nid = data[0], data[1]
         target = f"Node {nid}" if nid != 0 else "All Nodes"
-        return { "CANopen Type": "NMT", "Command": cs_map.get(cs, "Unknown"), "Target": target}
+        return {
+            "CANopen Type": "NMT",
+            "Command": cs_map.get(cs, "Unknown"),
+            "Target": target,
+        }
+
     @staticmethod
-    def _sync() -> Dict: return {"CANopen Type": "SYNC"}
+    def _sync() -> Dict:
+        return {"CANopen Type": "SYNC"}
+
     @staticmethod
-    def _time(data: bytes) -> Dict: return {"CANopen Type": "TIME", "Raw": data.hex(' ')}
+    def _time(data: bytes) -> Dict:
+        return {"CANopen Type": "TIME", "Raw": data.hex(" ")}
+
     @staticmethod
     def _emcy(data: bytes, node_id: int) -> Dict:
-        if len(data) != 8: return {"CANopen Type": "EMCY", "CANopen Node": node_id, "Error": "Invalid Length"}
+        if len(data) != 8:
+            return {
+                "CANopen Type": "EMCY",
+                "CANopen Node": node_id,
+                "Error": "Invalid Length",
+            }
         err_code, err_reg, _ = struct.unpack("<H B 5s", data)
-        return {"CANopen Type": "EMCY", "CANopen Node": node_id, "Code": f"0x{err_code:04X}", "Register": f"0x{err_reg:02X}"}
+        return {
+            "CANopen Type": "EMCY",
+            "CANopen Node": node_id,
+            "Code": f"0x{err_code:04X}",
+            "Register": f"0x{err_reg:02X}",
+        }
+
     @staticmethod
     def _pdo(direction: str, function_code: int, node_id: int) -> Dict:
-        pdo_num = ((function_code - 0x180) // 0x100 + 1) if direction == "TX" else ((function_code - 0x200) // 0x100 + 1)
+        pdo_num = (
+            ((function_code - 0x180) // 0x100 + 1)
+            if direction == "TX"
+            else ((function_code - 0x200) // 0x100 + 1)
+        )
         return {"CANopen Type": f"PDO{pdo_num} {direction}", "CANopen Node": node_id}
+
     @staticmethod
     def _sdo(direction: str, data: bytes, node_id: int) -> Dict:
-        if not data: return None
-        cmd = data[0]; base_info = {"CANopen Type": f"SDO {direction}", "CANopen Node": node_id}
+        if not data:
+            return None
+        cmd = data[0]
+        base_info = {"CANopen Type": f"SDO {direction}", "CANopen Node": node_id}
         specifier = (cmd >> 5) & 0x7
         if specifier in [1, 2]:
-            if len(data) < 4: return {**base_info, "Error": "Invalid SDO Initiate"}
+            if len(data) < 4:
+                return {**base_info, "Error": "Invalid SDO Initiate"}
             command = "Initiate Upload" if specifier == 1 else "Initiate Download"
             idx, sub = struct.unpack_from("<HB", data, 1)
-            base_info.update({"Command": command, "Index": f"0x{idx:04X}", "Sub-Index": sub})
-        elif specifier in [0, 3]: base_info.update({"Command": "Segment " + ("Upload" if specifier == 3 else "Download")})
+            base_info.update(
+                {"Command": command, "Index": f"0x{idx:04X}", "Sub-Index": sub}
+            )
+        elif specifier in [0, 3]:
+            base_info.update(
+                {"Command": "Segment " + ("Upload" if specifier == 3 else "Download")}
+            )
         elif specifier == 4:
-            if len(data) < 8: return {**base_info, "Error": "Invalid SDO Abort"}
+            if len(data) < 8:
+                return {**base_info, "Error": "Invalid SDO Abort"}
             idx, sub, code = struct.unpack_from("<HBL", data, 1)
-            base_info.update({"Command": "Abort", "Index": f"0x{idx:04X}", "Sub-Index": sub, "Code": f"0x{code:08X}"})
-        else: base_info.update({"Command": f"Unknown ({cmd:#04x})"})
+            base_info.update(
+                {
+                    "Command": "Abort",
+                    "Index": f"0x{idx:04X}",
+                    "Sub-Index": sub,
+                    "Code": f"0x{code:08X}",
+                }
+            )
+        else:
+            base_info.update({"Command": f"Unknown ({cmd:#04x})"})
         return base_info
+
     @staticmethod
     def _heartbeat(data: bytes, node_id: int) -> Dict:
-        if len(data) != 1: return None
-        state_map = {0: "Boot-up", 4: "Stopped", 5: "Operational", 127: "Pre-operational"}
+        if len(data) != 1:
+            return None
+        state_map = {
+            0: "Boot-up",
+            4: "Stopped",
+            5: "Operational",
+            127: "Pre-operational",
+        }
         state = data[0] & 0x7F
-        return {"CANopen Type": "Heartbeat", "CANopen Node": node_id, "State": state_map.get(state, f"Unknown ({state})")}
+        return {
+            "CANopen Type": "Heartbeat",
+            "CANopen Node": node_id,
+            "State": state_map.get(state, f"Unknown ({state})"),
+        }
+
 
 # --- Models ---
 class CANTraceModel(QAbstractTableModel):
     def __init__(self):
-        super().__init__(); self.frames:List[CANFrame]=[]; self.headers=["Timestamp", "ID", "Type", "DLC", "Data", "Decoded"]
-        self.dbc_databases:List[object]=[]; self.canopen_enabled = True
-    def set_data(self, frames: List[CANFrame]): self.beginResetModel(); self.frames = frames; self.endResetModel()
-    def rowCount(self,p=QModelIndex()): return len(self.frames)
-    def columnCount(self,p=QModelIndex()): return len(self.headers)
-    def headerData(self,s,o,r):
-        if o == Qt.Horizontal and r == Qt.DisplayRole: return self.headers[s]
+        super().__init__()
+        self.frames: List[CANFrame] = []
+        self.headers = ["Timestamp", "ID", "Type", "DLC", "Data", "Decoded"]
+        self.dbc_databases: List[object] = []
+        self.canopen_enabled = True
+
+    def set_data(self, frames: List[CANFrame]):
+        self.beginResetModel()
+        self.frames = frames
+        self.endResetModel()
+
+    def rowCount(self, p=QModelIndex()):
+        return len(self.frames)
+
+    def columnCount(self, p=QModelIndex()):
+        return len(self.headers)
+
+    def headerData(self, s, o, r):
+        if o == Qt.Horizontal and r == Qt.DisplayRole:
+            return self.headers[s]
+
     def data(self, index, role):
-        if not index.isValid() or role != Qt.DisplayRole: return None
-        frame = self.frames[index.row()]; col = index.column()
-        if col == 0: return f"{frame.timestamp:.6f}"
-        if col == 1: return f"0x{frame.arbitration_id:X}"
-        if col == 2: return ("Ext" if frame.is_extended else "Std") + (" RTR" if frame.is_remote else "")
-        if col == 3: return str(frame.dlc)
-        if col == 4: return frame.data.hex(' ')
-        if col == 5: return self._decode_frame(frame)
+        if not index.isValid() or role != Qt.DisplayRole:
+            return None
+        frame = self.frames[index.row()]
+        col = index.column()
+        if col == 0:
+            return f"{frame.timestamp:.6f}"
+        if col == 1:
+            return f"0x{frame.arbitration_id:X}"
+        if col == 2:
+            return ("Ext" if frame.is_extended else "Std") + (
+                " RTR" if frame.is_remote else ""
+            )
+        if col == 3:
+            return str(frame.dlc)
+        if col == 4:
+            return frame.data.hex(" ")
+        if col == 5:
+            return self._decode_frame(frame)
         return None
+
     def _decode_frame(self, frame: CANFrame) -> str:
         decoded_parts = []
         if CAN_AVAILABLE:
             for db in self.dbc_databases:
                 try:
                     message = db.get_message_by_frame_id(frame.arbitration_id)
-                    decoded = db.decode_message(frame.arbitration_id, frame.data, decode_choices=False)
-                    s = [f"{n}={v}" for n,v in decoded.items()]
+                    decoded = db.decode_message(
+                        frame.arbitration_id, frame.data, decode_choices=False
+                    )
+                    s = [f"{n}={v}" for n, v in decoded.items()]
                     decoded_parts.append(f"DBC: {message.name} {' '.join(s)}")
                     return " | ".join(decoded_parts)
-                except (KeyError, ValueError): continue
+                except (KeyError, ValueError):
+                    continue
         if self.canopen_enabled:
             if co_info := CANopenDecoder.decode(frame):
-                details = ", ".join(f"{k}={v}" for k, v in co_info.items() if k not in ["CANopen Type"])
+                details = ", ".join(
+                    f"{k}={v}" for k, v in co_info.items() if k not in ["CANopen Type"]
+                )
                 decoded_parts.append(f"CANopen {co_info['CANopen Type']}: {details}")
         return " | ".join(decoded_parts)
+
 
 class CANGroupedModel(QAbstractItemModel):
     def __init__(self):
         super().__init__()
         self.headers = ["ID", "Name", "Count", "Cycle Time", "DLC", "Data"]
         self.top_level_items: List[DisplayItem] = []
-        self.dbc_databases: List[object] = []; self.canopen_enabled = True
-        self.frame_counts = {}; self.timestamps = {}; self.item_map = {}
+        self.dbc_databases: List[object] = []
+        self.canopen_enabled = True
+        self.frame_counts = {}
+        self.timestamps = {}
+        self.item_map = {}
+
     def set_config(self, dbs: List[object], co_enabled: bool):
-        self.dbc_databases = dbs; self.canopen_enabled = co_enabled; self.layoutChanged.emit()
-    def columnCount(self, p=QModelIndex()): return len(self.headers)
+        self.dbc_databases = dbs
+        self.canopen_enabled = co_enabled
+        self.layoutChanged.emit()
+
+    def columnCount(self, p=QModelIndex()):
+        return len(self.headers)
+
     def headerData(self, s, o, r):
-        if o == Qt.Horizontal and r == Qt.DisplayRole: return self.headers[s]
+        if o == Qt.Horizontal and r == Qt.DisplayRole:
+            return self.headers[s]
+
     def rowCount(self, p=QModelIndex()):
-        if not p.isValid(): return len(self.top_level_items)
-        return len(p.internalPointer().children) if p.internalPointer().children_populated else 0
+        if not p.isValid():
+            return len(self.top_level_items)
+        return (
+            len(p.internalPointer().children)
+            if p.internalPointer().children_populated
+            else 0
+        )
+
     def index(self, r, c, p=QModelIndex()):
-        if not self.hasIndex(r, c, p): return QModelIndex()
+        if not self.hasIndex(r, c, p):
+            return QModelIndex()
         parent = p.internalPointer() if p.isValid() else None
         items = self.top_level_items if not parent else parent.children
         return self.createIndex(r, c, items[r]) if r < len(items) else QModelIndex()
+
     def parent(self, i):
-        if not i.isValid(): return QModelIndex()
+        if not i.isValid():
+            return QModelIndex()
         parent = i.internalPointer().parent
-        return self.createIndex(parent.row_in_parent, 0, parent) if parent else QModelIndex()
+        return (
+            self.createIndex(parent.row_in_parent, 0, parent)
+            if parent
+            else QModelIndex()
+        )
+
     def hasChildren(self, p=QModelIndex()):
-        if not p.isValid(): return True
+        if not p.isValid():
+            return True
         item = p.internalPointer()
-        if item.is_signal: return False
-        if item.children_populated: return len(item.children) > 0
-        if self.canopen_enabled and CANopenDecoder.decode(item.data_source): return True
+        if item.is_signal:
+            return False
+        if item.children_populated:
+            return len(item.children) > 0
+        if self.canopen_enabled and CANopenDecoder.decode(item.data_source):
+            return True
         for db in self.dbc_databases:
             try:
-                if db.get_message_by_frame_id(item.data_source.arbitration_id): return True
-            except KeyError: continue
+                if db.get_message_by_frame_id(item.data_source.arbitration_id):
+                    return True
+            except KeyError:
+                continue
         return False
+
     def canFetchMore(self, p: QModelIndex):
         return not p.internalPointer().children_populated if p.isValid() else False
+
     def fetchMore(self, p: QModelIndex):
         item = p.internalPointer()
-        if item.children_populated: return
+        if item.children_populated:
+            return
         signals = self._decode_frame_to_signals(item.data_source)
-        if not signals: item.children_populated = True; return
+        if not signals:
+            item.children_populated = True
+            return
         self.beginInsertRows(p, 0, len(signals) - 1)
-        item.children = [DisplayItem(p,s,True,row_in_parent=i) for i,s in enumerate(signals)]
+        item.children = [
+            DisplayItem(p, s, True, row_in_parent=i) for i, s in enumerate(signals)
+        ]
         item.children_populated = True
         self.endInsertRows()
+
     def _decode_frame_to_signals(self, frame: CANFrame) -> List[Dict]:
         sigs = []
         if self.canopen_enabled:
             if co_info := CANopenDecoder.decode(frame):
-                sigs += [{"name": k, "value": v, "unit": ""} for k,v in co_info.items()]
+                sigs += [
+                    {"name": k, "value": v, "unit": ""} for k, v in co_info.items()
+                ]
         if CAN_AVAILABLE:
             for db in self.dbc_databases:
                 try:
                     msg_def = db.get_message_by_frame_id(frame.arbitration_id)
-                    decoded = db.decode_message(frame.arbitration_id, frame.data, decode_choices=False)
-                    sigs += [{'name':s.name,'value':decoded.get(s.name,'N/A'),'unit':s.unit or ''} for s in msg_def.signals]
+                    decoded = db.decode_message(
+                        frame.arbitration_id, frame.data, decode_choices=False
+                    )
+                    sigs += [
+                        {
+                            "name": s.name,
+                            "value": decoded.get(s.name, "N/A"),
+                            "unit": s.unit or "",
+                        }
+                        for s in msg_def.signals
+                    ]
                     break
-                except (KeyError, ValueError): continue
+                except (KeyError, ValueError):
+                    continue
         return sigs
+
     def clear_frames(self):
-        self.beginResetModel(); self.top_level_items.clear(); self.frame_counts.clear(); self.timestamps.clear(); self.item_map.clear(); self.endResetModel()
+        self.beginResetModel()
+        self.top_level_items.clear()
+        self.frame_counts.clear()
+        self.timestamps.clear()
+        self.item_map.clear()
+        self.endResetModel()
+
     def update_frames(self, frames: List[CANFrame]):
         if not frames:
             return
@@ -323,39 +559,59 @@ class CANGroupedModel(QAbstractItemModel):
                     item.children.clear()
                     item.children_populated = False
         self.endResetModel()
+
     def data(self, index, role):
-        if not index.isValid(): return None
-        item: DisplayItem = index.internalPointer(); col = index.column()
+        if not index.isValid():
+            return None
+        item: DisplayItem = index.internalPointer()
+        col = index.column()
         if role == Qt.UserRole:
-            if item.is_signal: return None
-            return item.data_source.arbitration_id if col==0 else self.frame_counts.get(item.data_source.arbitration_id, 0)
-        if role != Qt.DisplayRole: return None
+            if item.is_signal:
+                return None
+            return (
+                item.data_source.arbitration_id
+                if col == 0
+                else self.frame_counts.get(item.data_source.arbitration_id, 0)
+            )
+        if role != Qt.DisplayRole:
+            return None
         if item.is_signal:
             sig = item.data_source
-            if col == 0: return f"  └ {sig['name']}"
-            if col == 5: return f"{sig['value']}"
+            if col == 0:
+                return f"  └ {sig['name']}"
+            if col == 5:
+                return f"{sig['value']}"
         else:
-            frame: CANFrame = item.data_source; can_id = frame.arbitration_id
-            if col == 0: return f"0x{can_id:X}"
+            frame: CANFrame = item.data_source
+            can_id = frame.arbitration_id
+            if col == 0:
+                return f"0x{can_id:X}"
             if col == 1:
                 for db in self.dbc_databases:
-                    try: return db.get_message_by_frame_id(can_id).name
-                    except KeyError: pass
+                    try:
+                        return db.get_message_by_frame_id(can_id).name
+                    except KeyError:
+                        pass
                 return ""
-            if col == 2: return str(self.frame_counts.get(can_id, 0))
+            if col == 2:
+                return str(self.frame_counts.get(can_id, 0))
             if col == 3:
                 ts_list = self.timestamps.get(can_id, [])
-                if len(ts_list) > 1: return f"{sum(ts_list[i]-ts_list[i-1] for i in range(1,len(ts_list)))/(len(ts_list)-1)*1000:.1f} ms"
+                if len(ts_list) > 1:
+                    return f"{sum(ts_list[i] - ts_list[i - 1] for i in range(1, len(ts_list))) / (len(ts_list) - 1) * 1000:.1f} ms"
                 return "-"
-            if col == 4: return str(frame.dlc)
-            if col == 5: return frame.data.hex(' ')
+            if col == 4:
+                return str(frame.dlc)
+            if col == 5:
+                return frame.data.hex(" ")
         return None
+
 
 class CANReaderThread(QThread):
     frame_received = Signal(object)
     error_occurred = Signal(str)
     send_frame = Signal(object)
-    
+
     ### MODIFIED ### - Accept bitrate
     def __init__(self, interface: str, channel: str, bitrate: int):
         super().__init__()
@@ -366,14 +622,14 @@ class CANReaderThread(QThread):
         self.bus = None
         self.daemon = True
         self.send_frame.connect(self._send_frame_internal)
-        
+
     def _send_frame_internal(self, message):
         if self.bus and self.running:
             try:
                 self.bus.send(message)
             except Exception as e:
                 self.error_occurred.emit(f"Send error: {e}")
-    
+
     def start_reading(self):
         if not CAN_AVAILABLE:
             self.error_occurred.emit("python-can library not available")
@@ -381,31 +637,38 @@ class CANReaderThread(QThread):
         self.running = True
         self.start()
         return True
-    
+
     def stop_reading(self):
         self.running = False
         self.wait(3000)
-        
+
     def run(self):
         try:
             self.bus = can.Bus(
                 interface=self.interface,
                 channel=self.channel,
                 bitrate=self.bitrate,
-                receive_own_messages=True
+                receive_own_messages=True,
             )
             while self.running:
                 msg = self.bus.recv(timeout=0.1)
                 if msg and self.running:
                     frame = CANFrame(
-                        msg.timestamp, msg.arbitration_id, msg.data, msg.dlc,
-                        msg.is_extended_id, msg.is_error_frame, msg.is_remote_frame
+                        msg.timestamp,
+                        msg.arbitration_id,
+                        msg.data,
+                        msg.dlc,
+                        msg.is_extended_id,
+                        msg.is_error_frame,
+                        msg.is_remote_frame,
                     )
                     self.frame_received.emit(frame)
         except can.CanOperationError as e:
             if self.running:
                 if e.error_code == 100:
-                    self.error_occurred.emit("CAN bus not up or not configured correctly")
+                    self.error_occurred.emit(
+                        "CAN bus not up or not configured correctly"
+                    )
                 else:
                     self.error_occurred.emit(f"CAN bus error: {e}")
         except Exception as e:
@@ -419,33 +682,118 @@ class CANReaderThread(QThread):
                     print(f"Error shutting down CAN bus: {e}")
                 finally:
                     self.bus = None
+
+
 # --- UI Classes ---
 class DBCEditor(QWidget):
-    def __init__(self, dbc_file: DBCFile): super().__init__(); self.dbc_file = dbc_file; self.setup_ui()
+    def __init__(self, dbc_file: DBCFile):
+        super().__init__()
+        self.dbc_file = dbc_file
+        self.setup_ui()
+
     def setup_ui(self):
-        main_layout=QVBoxLayout(self); main_layout.setContentsMargins(0,0,0,0); group=QGroupBox(f"DBC Content: {self.dbc_file.path.name}"); layout=QVBoxLayout(group); main_layout.addWidget(group); self.table=QTableWidget(); self.table.setEditTriggers(QTableWidget.NoEditTriggers); self.table.setColumnCount(4); self.table.setHorizontalHeaderLabels(["Message","ID (hex)","DLC","Signals"]); layout.addWidget(self.table); self.populate_table(); self.table.resizeColumnsToContents()
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        group = QGroupBox(f"DBC Content: {self.dbc_file.path.name}")
+        layout = QVBoxLayout(group)
+        main_layout.addWidget(group)
+        self.table = QTableWidget()
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Message", "ID (hex)", "DLC", "Signals"])
+        layout.addWidget(self.table)
+        self.populate_table()
+        self.table.resizeColumnsToContents()
+
     def populate_table(self):
-        messages = sorted(self.dbc_file.database.messages, key=lambda m: m.frame_id); self.table.setRowCount(len(messages))
-        for r,m in enumerate(messages): self.table.setItem(r,0,QTableWidgetItem(m.name)); self.table.setItem(r,1,QTableWidgetItem(f"0x{m.frame_id:X}")); self.table.setItem(r,2,QTableWidgetItem(str(m.length))); self.table.setItem(r,3,QTableWidgetItem(", ".join(s.name for s in m.signals)))
+        messages = sorted(self.dbc_file.database.messages, key=lambda m: m.frame_id)
+        self.table.setRowCount(len(messages))
+        for r, m in enumerate(messages):
+            self.table.setItem(r, 0, QTableWidgetItem(m.name))
+            self.table.setItem(r, 1, QTableWidgetItem(f"0x{m.frame_id:X}"))
+            self.table.setItem(r, 2, QTableWidgetItem(str(m.length)))
+            self.table.setItem(
+                r, 3, QTableWidgetItem(", ".join(s.name for s in m.signals))
+            )
+
 
 class FilterEditor(QWidget):
     filter_changed = Signal()
-    def __init__(self, can_filter: CANFrameFilter): super().__init__(); self.filter=can_filter; self.setup_ui()
+
+    def __init__(self, can_filter: CANFrameFilter):
+        super().__init__()
+        self.filter = can_filter
+        self.setup_ui()
+
     def setup_ui(self):
-        main_layout=QVBoxLayout(self); main_layout.setContentsMargins(0,0,0,0); group=QGroupBox("Filter Properties"); layout=QFormLayout(group); main_layout.addWidget(group); self.name_edit=QLineEdit(self.filter.name); layout.addRow("Name:",self.name_edit); id_layout=QHBoxLayout(); self.min_id_edit=QLineEdit(f"0x{self.filter.min_id:X}"); self.max_id_edit=QLineEdit(f"0x{self.filter.max_id:X}"); self.mask_edit=QLineEdit(f"0x{self.filter.mask:X}"); id_layout.addWidget(QLabel("Min:")); id_layout.addWidget(self.min_id_edit); id_layout.addWidget(QLabel("Max:")); id_layout.addWidget(self.max_id_edit); id_layout.addWidget(QLabel("Mask:")); id_layout.addWidget(self.mask_edit); layout.addRow("ID (hex):",id_layout); self.standard_cb=QCheckBox("Standard"); self.standard_cb.setChecked(self.filter.accept_standard); self.extended_cb=QCheckBox("Extended"); self.extended_cb.setChecked(self.filter.accept_extended); self.data_cb=QCheckBox("Data"); self.data_cb.setChecked(self.filter.accept_data); self.remote_cb=QCheckBox("Remote"); self.remote_cb.setChecked(self.filter.accept_remote); type_layout=QHBoxLayout(); type_layout.addWidget(self.standard_cb); type_layout.addWidget(self.extended_cb); type_layout.addWidget(self.data_cb); type_layout.addWidget(self.remote_cb); type_layout.addStretch(); layout.addRow("Frame Types:",type_layout); self.name_edit.editingFinished.connect(self._update_filter); [w.editingFinished.connect(self._update_filter) for w in [self.min_id_edit,self.max_id_edit,self.mask_edit]]; [cb.toggled.connect(self._update_filter) for cb in [self.standard_cb,self.extended_cb,self.data_cb,self.remote_cb]]
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        group = QGroupBox("Filter Properties")
+        layout = QFormLayout(group)
+        main_layout.addWidget(group)
+        self.name_edit = QLineEdit(self.filter.name)
+        layout.addRow("Name:", self.name_edit)
+        id_layout = QHBoxLayout()
+        self.min_id_edit = QLineEdit(f"0x{self.filter.min_id:X}")
+        self.max_id_edit = QLineEdit(f"0x{self.filter.max_id:X}")
+        self.mask_edit = QLineEdit(f"0x{self.filter.mask:X}")
+        id_layout.addWidget(QLabel("Min:"))
+        id_layout.addWidget(self.min_id_edit)
+        id_layout.addWidget(QLabel("Max:"))
+        id_layout.addWidget(self.max_id_edit)
+        id_layout.addWidget(QLabel("Mask:"))
+        id_layout.addWidget(self.mask_edit)
+        layout.addRow("ID (hex):", id_layout)
+        self.standard_cb = QCheckBox("Standard")
+        self.standard_cb.setChecked(self.filter.accept_standard)
+        self.extended_cb = QCheckBox("Extended")
+        self.extended_cb.setChecked(self.filter.accept_extended)
+        self.data_cb = QCheckBox("Data")
+        self.data_cb.setChecked(self.filter.accept_data)
+        self.remote_cb = QCheckBox("Remote")
+        self.remote_cb.setChecked(self.filter.accept_remote)
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(self.standard_cb)
+        type_layout.addWidget(self.extended_cb)
+        type_layout.addWidget(self.data_cb)
+        type_layout.addWidget(self.remote_cb)
+        type_layout.addStretch()
+        layout.addRow("Frame Types:", type_layout)
+        self.name_edit.editingFinished.connect(self._update_filter)
+        [
+            w.editingFinished.connect(self._update_filter)
+            for w in [self.min_id_edit, self.max_id_edit, self.mask_edit]
+        ]
+        [
+            cb.toggled.connect(self._update_filter)
+            for cb in [self.standard_cb, self.extended_cb, self.data_cb, self.remote_cb]
+        ]
+
     def _update_filter(self):
-        self.filter.name=self.name_edit.text()
-        try: self.filter.min_id=int(self.min_id_edit.text(),16)
-        except ValueError: self.min_id_edit.setText(f"0x{self.filter.min_id:X}")
-        try: self.filter.max_id=int(self.max_id_edit.text(),16)
-        except ValueError: self.max_id_edit.setText(f"0x{self.filter.max_id:X}")
-        try: self.filter.mask=int(self.mask_edit.text(),16)
-        except ValueError: self.mask_edit.setText(f"0x{self.filter.mask:X}")
-        self.filter.accept_standard=self.standard_cb.isChecked(); self.filter.accept_extended=self.extended_cb.isChecked(); self.filter.accept_data=self.data_cb.isChecked(); self.filter.accept_remote=self.remote_cb.isChecked(); self.filter_changed.emit()
+        self.filter.name = self.name_edit.text()
+        try:
+            self.filter.min_id = int(self.min_id_edit.text(), 16)
+        except ValueError:
+            self.min_id_edit.setText(f"0x{self.filter.min_id:X}")
+        try:
+            self.filter.max_id = int(self.max_id_edit.text(), 16)
+        except ValueError:
+            self.max_id_edit.setText(f"0x{self.filter.max_id:X}")
+        try:
+            self.filter.mask = int(self.mask_edit.text(), 16)
+        except ValueError:
+            self.mask_edit.setText(f"0x{self.filter.mask:X}")
+        self.filter.accept_standard = self.standard_cb.isChecked()
+        self.filter.accept_extended = self.extended_cb.isChecked()
+        self.filter.accept_data = self.data_cb.isChecked()
+        self.filter.accept_remote = self.remote_cb.isChecked()
+        self.filter_changed.emit()
+
 
 ### NEW ### - Editor for Connection Settings
 class ConnectionEditor(QWidget):
     project_changed = Signal()
+
     def __init__(self, project: Project):
         super().__init__()
         self.project = project
@@ -459,7 +807,9 @@ class ConnectionEditor(QWidget):
         main_layout.addWidget(group)
 
         self.interface_combo = QComboBox()
-        self.interface_combo.addItems(["socketcan", "pcan", "kvaser", "vector", "virtual"])
+        self.interface_combo.addItems(
+            ["socketcan", "pcan", "kvaser", "vector", "virtual"]
+        )
         self.interface_combo.setCurrentText(self.project.can_interface)
         layout.addRow("Interface:", self.interface_combo)
 
@@ -472,7 +822,7 @@ class ConnectionEditor(QWidget):
         self.bitrate_spin.setValue(self.project.can_bitrate)
         self.bitrate_spin.setSuffix(" bps")
         layout.addRow("Bitrate:", self.bitrate_spin)
-        
+
         self.interface_combo.currentTextChanged.connect(self._update_project)
         self.channel_edit.editingFinished.connect(self._update_project)
         self.bitrate_spin.valueChanged.connect(self._update_project)
@@ -483,9 +833,10 @@ class ConnectionEditor(QWidget):
         self.project.can_bitrate = self.bitrate_spin.value()
         self.project_changed.emit()
 
+
 class PropertiesPanel(QWidget):
     ### MODIFIED ### - Accept project and explorer for context
-    def __init__(self, project: Project, explorer: 'ProjectExplorer'):
+    def __init__(self, project: Project, explorer: "ProjectExplorer"):
         super().__init__()
         self.project = project
         self.explorer = explorer
@@ -518,16 +869,31 @@ class PropertiesPanel(QWidget):
             self.placeholder.show()
             return
         self.layout.addWidget(self.current_widget)
-        
+
     def clear(self):
-        if self.current_widget: self.current_widget.deleteLater(); self.current_widget=None
+        if self.current_widget:
+            self.current_widget.deleteLater()
+            self.current_widget = None
         self.placeholder.hide()
+
 
 class ProjectExplorer(QGroupBox):
     project_changed = Signal()
-    def __init__(self, project: Project): super().__init__("Project Explorer"); self.project=project; self.setup_ui()
+
+    def __init__(self, project: Project):
+        super().__init__("Project Explorer")
+        self.project = project
+        self.setup_ui()
+
     def setup_ui(self):
-        layout=QVBoxLayout(self); self.tree=QTreeWidget(); self.tree.setHeaderHidden(True); layout.addWidget(self.tree); self.tree.setContextMenuPolicy(Qt.CustomContextMenu); self.tree.customContextMenuRequested.connect(self.open_context_menu); self.tree.itemChanged.connect(self.on_item_changed); self.rebuild_tree()
+        layout = QVBoxLayout(self)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        layout.addWidget(self.tree)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self.open_context_menu)
+        self.tree.itemChanged.connect(self.on_item_changed)
+        self.rebuild_tree()
 
     def set_project(self, project: Project):
         self.project = project
@@ -537,17 +903,25 @@ class ProjectExplorer(QGroupBox):
     def rebuild_tree(self):
         self.tree.blockSignals(True)
         self.tree.clear()
-        
+
         connection_text = f"Connection ({self.project.can_interface})"
         self.add_item(None, connection_text, "connection_settings", checked=None)
-        
-        self.dbc_root = self.add_item(None, "Symbol Files (.dbc)")
-        [self.add_item(self.dbc_root, dbc.path.name, dbc, dbc.enabled) for dbc in self.project.dbcs]
-        
-        self.filter_root = self.add_item(None, "Message Filters")
-        [self.add_item(self.filter_root, f.name, f, f.enabled) for f in self.project.filters]
 
-        self.co_item = self.add_item(None, "CANopen Decoding", self.project, self.project.canopen_enabled)
+        self.dbc_root = self.add_item(None, "Symbol Files (.dbc)")
+        [
+            self.add_item(self.dbc_root, dbc.path.name, dbc, dbc.enabled)
+            for dbc in self.project.dbcs
+        ]
+
+        self.filter_root = self.add_item(None, "Message Filters")
+        [
+            self.add_item(self.filter_root, f.name, f, f.enabled)
+            for f in self.project.filters
+        ]
+
+        self.co_item = self.add_item(
+            None, "CANopen Decoding", self.project, self.project.canopen_enabled
+        )
 
         self.tree.expandAll()
         self.tree.blockSignals(False)
@@ -572,83 +946,230 @@ class ProjectExplorer(QGroupBox):
                 data.enabled = item.checkState(0) == Qt.Checked
             self.project_changed.emit()
 
-    def open_context_menu(self,position):
-        menu=QMenu(); item=self.tree.itemAt(position)
-        if not item or item==self.dbc_root: menu.addAction("Add Symbol File...").triggered.connect(self.add_dbc)
-        if not item or item==self.filter_root: menu.addAction("Add Filter").triggered.connect(self.add_filter)
-        if item and item.parent(): menu.addAction("Remove").triggered.connect(lambda: self.remove_item(item))
-        if menu.actions(): menu.exec(self.tree.viewport().mapToGlobal(position))
+    def open_context_menu(self, position):
+        menu = QMenu()
+        item = self.tree.itemAt(position)
+        if not item or item == self.dbc_root:
+            menu.addAction("Add Symbol File...").triggered.connect(self.add_dbc)
+        if not item or item == self.filter_root:
+            menu.addAction("Add Filter").triggered.connect(self.add_filter)
+        if item and item.parent():
+            menu.addAction("Remove").triggered.connect(lambda: self.remove_item(item))
+        if menu.actions():
+            menu.exec(self.tree.viewport().mapToGlobal(position))
+
     def add_dbc(self):
-        fns,_ = QFileDialog.getOpenFileNames(self, "Select DBC File(s)","", "DBC Files (*.dbc);;All Files (*)")
+        fns, _ = QFileDialog.getOpenFileNames(
+            self, "Select DBC File(s)", "", "DBC Files (*.dbc);;All Files (*)"
+        )
         if fns and CAN_AVAILABLE:
             for fn in fns:
-                try: self.project.dbcs.append(DBCFile(Path(fn), cantools.database.load_file(fn)))
-                except Exception as e: QMessageBox.critical(self,"DBC Load Error",f"Failed to load {Path(fn).name}: {e}")
-            self.rebuild_tree()
-    def add_filter(self): self.project.filters.append(CANFrameFilter(name=f"Filter {len(self.project.filters)+1}")); self.rebuild_tree()
-    def remove_item(self,item):
-        if data:=item.data(0,Qt.UserRole):
-            if isinstance(data,DBCFile): self.project.dbcs.remove(data)
-            elif isinstance(data,CANFrameFilter): self.project.filters.remove(data)
+                try:
+                    self.project.dbcs.append(
+                        DBCFile(Path(fn), cantools.database.load_file(fn))
+                    )
+                except Exception as e:
+                    QMessageBox.critical(
+                        self, "DBC Load Error", f"Failed to load {Path(fn).name}: {e}"
+                    )
             self.rebuild_tree()
 
+    def add_filter(self):
+        self.project.filters.append(
+            CANFrameFilter(name=f"Filter {len(self.project.filters) + 1}")
+        )
+        self.rebuild_tree()
+
+    def remove_item(self, item):
+        if data := item.data(0, Qt.UserRole):
+            if isinstance(data, DBCFile):
+                self.project.dbcs.remove(data)
+            elif isinstance(data, CANFrameFilter):
+                self.project.filters.remove(data)
+            self.rebuild_tree()
+
+
 class TransmitPanel(QGroupBox):
-    frame_to_send=Signal(object); row_selection_changed=Signal(int,str)
+    frame_to_send = Signal(object)
+    row_selection_changed = Signal(int, str)
     ### NEW ### - Signal for tracking unsaved changes
     config_changed = Signal()
 
-    def __init__(self): super().__init__("Transmit"); self.timers:Dict[int,QTimer]={}; self.dbcs:List[object]=[]; self.setup_ui(); self.setEnabled(not CAN_AVAILABLE)
-    def set_dbc_databases(self, dbs): self.dbcs = dbs
+    def __init__(self):
+        super().__init__("Transmit")
+        self.timers: Dict[int, QTimer] = {}
+        self.dbcs: List[object] = []
+        self.setup_ui()
+        self.setEnabled(not CAN_AVAILABLE)
+
+    def set_dbc_databases(self, dbs):
+        self.dbcs = dbs
+
     def get_message_from_id(self, can_id):
         for db in self.dbcs:
-            try: return db.get_message_by_frame_id(can_id)
-            except KeyError: continue
+            try:
+                return db.get_message_by_frame_id(can_id)
+            except KeyError:
+                continue
+
     def setup_ui(self):
-        layout=QVBoxLayout(self); ctrl_layout=QHBoxLayout(); self.add_btn=QPushButton("Add"); self.rem_btn=QPushButton("Remove"); ctrl_layout.addWidget(self.add_btn); ctrl_layout.addWidget(self.rem_btn); ctrl_layout.addStretch(); layout.addLayout(ctrl_layout); self.table=QTableWidget(); self.table.setColumnCount(8); self.table.setHorizontalHeaderLabels(["On","ID(hex)","Type","RTR","DLC","Data(hex)","Cycle","Send"]); self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents); self.table.horizontalHeader().setStretchLastSection(True); self.table.setSelectionBehavior(QTableWidget.SelectRows); layout.addWidget(self.table); self.add_btn.clicked.connect(self.add_frame); self.rem_btn.clicked.connect(self.remove_frames); self.table.currentItemChanged.connect(self._on_item_changed); self.table.cellChanged.connect(self._on_cell_changed)
-    def add_frame(self): r=self.table.rowCount(); self.table.insertRow(r); self._setup_row_widgets(r); self.config_changed.emit()
-    def remove_frames(self): 
-        if not self.table.selectionModel().selectedRows(): return
-        [self.table.removeRow(r) for r in sorted([i.row() for i in self.table.selectionModel().selectedRows()], reverse=True)]; self.config_changed.emit()
-    def _setup_row_widgets(self, r):
-        self.table.setItem(r,1,QTableWidgetItem("100")); combo=QComboBox(); combo.addItems(["Std","Ext"]); self.table.setCellWidget(r,2,combo); self.table.setItem(r,4,QTableWidgetItem("0")); self.table.setItem(r,5,QTableWidgetItem("")); self.table.setItem(r,6,QTableWidgetItem("100")); btn=QPushButton("Send"); btn.clicked.connect(partial(self.send_from_row,r)); self.table.setCellWidget(r,7,btn); cb_on=QCheckBox(); cb_on.toggled.connect(partial(self._toggle_periodic,r)); self.table.setCellWidget(r,0,self._center(cb_on)); cb_rtr=QCheckBox(); self.table.setCellWidget(r,3,self._center(cb_rtr)); combo.currentIndexChanged.connect(self.config_changed.emit); cb_rtr.toggled.connect(self.config_changed.emit)
-    def _center(self,w): c=QWidget(); l=QHBoxLayout(c); l.addWidget(w); l.setAlignment(Qt.AlignCenter); l.setContentsMargins(0,0,0,0); return c
-    def _on_item_changed(self,curr,prev):
-        if curr and (not prev or curr.row()!=prev.row()): self.row_selection_changed.emit(curr.row(), self.table.item(curr.row(),1).text())
-    def _on_cell_changed(self,r,c):
+        layout = QVBoxLayout(self)
+        ctrl_layout = QHBoxLayout()
+        self.add_btn = QPushButton("Add")
+        self.rem_btn = QPushButton("Remove")
+        ctrl_layout.addWidget(self.add_btn)
+        ctrl_layout.addWidget(self.rem_btn)
+        ctrl_layout.addStretch()
+        layout.addLayout(ctrl_layout)
+        self.table = QTableWidget()
+        self.table.setColumnCount(8)
+        self.table.setHorizontalHeaderLabels(
+            ["On", "ID(hex)", "Type", "RTR", "DLC", "Data(hex)", "Cycle", "Send"]
+        )
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        layout.addWidget(self.table)
+        self.add_btn.clicked.connect(self.add_frame)
+        self.rem_btn.clicked.connect(self.remove_frames)
+        self.table.currentItemChanged.connect(self._on_item_changed)
+        self.table.cellChanged.connect(self._on_cell_changed)
+
+    def add_frame(self):
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        self._setup_row_widgets(r)
         self.config_changed.emit()
-        if c==1: self.row_selection_changed.emit(r, self.table.item(r,1).text())
-        elif c==5: self._update_dlc(r)
-    def _update_dlc(self,r):
-        try: self.table.item(r,4).setText(str(len(bytes.fromhex(self.table.item(r,5).text().replace(" ","")))))
-        except (ValueError,TypeError): pass
-    def update_row_data(self,r,data): self.table.blockSignals(True); self.table.item(r,5).setText(data.hex(" ")); self.table.item(r,4).setText(str(len(data))); self.table.blockSignals(False); self.config_changed.emit()
+
+    def remove_frames(self):
+        if not self.table.selectionModel().selectedRows():
+            return
+        [
+            self.table.removeRow(r)
+            for r in sorted(
+                [i.row() for i in self.table.selectionModel().selectedRows()],
+                reverse=True,
+            )
+        ]
+        self.config_changed.emit()
+
+    def _setup_row_widgets(self, r):
+        self.table.setItem(r, 1, QTableWidgetItem("100"))
+        combo = QComboBox()
+        combo.addItems(["Std", "Ext"])
+        self.table.setCellWidget(r, 2, combo)
+        self.table.setItem(r, 4, QTableWidgetItem("0"))
+        self.table.setItem(r, 5, QTableWidgetItem(""))
+        self.table.setItem(r, 6, QTableWidgetItem("100"))
+        btn = QPushButton("Send")
+        btn.clicked.connect(partial(self.send_from_row, r))
+        self.table.setCellWidget(r, 7, btn)
+        cb_on = QCheckBox()
+        cb_on.toggled.connect(partial(self._toggle_periodic, r))
+        self.table.setCellWidget(r, 0, self._center(cb_on))
+        cb_rtr = QCheckBox()
+        self.table.setCellWidget(r, 3, self._center(cb_rtr))
+        combo.currentIndexChanged.connect(self.config_changed.emit)
+        cb_rtr.toggled.connect(self.config_changed.emit)
+
+    def _center(self, w):
+        c = QWidget()
+        layout = QHBoxLayout(c)
+        layout.addWidget(w)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setContentsMargins(0, 0, 0, 0)
+        return c
+
+    def _on_item_changed(self, curr, prev):
+        if curr and (not prev or curr.row() != prev.row()):
+            self.row_selection_changed.emit(
+                curr.row(), self.table.item(curr.row(), 1).text()
+            )
+
+    def _on_cell_changed(self, r, c):
+        self.config_changed.emit()
+        if c == 1:
+            self.row_selection_changed.emit(r, self.table.item(r, 1).text())
+        elif c == 5:
+            self._update_dlc(r)
+
+    def _update_dlc(self, r):
+        try:
+            self.table.item(r, 4).setText(
+                str(len(bytes.fromhex(self.table.item(r, 5).text().replace(" ", ""))))
+            )
+        except (ValueError, TypeError):
+            pass
+
+    def update_row_data(self, r, data):
+        self.table.blockSignals(True)
+        self.table.item(r, 5).setText(data.hex(" "))
+        self.table.item(r, 4).setText(str(len(data)))
+        self.table.blockSignals(False)
+        self.config_changed.emit()
+
     def _toggle_periodic(self, r, state):
         self.config_changed.emit()
         if state:
             try:
-                cycle = int(self.table.item(r,6).text())
-                if cycle<=0: raise ValueError
-                t=QTimer(self); t.timeout.connect(partial(self.send_from_row,r)); t.start(cycle); self.timers[r]=t
-            except (ValueError,TypeError): QMessageBox.warning(self,"Bad Cycle",f"Row {r+1}: bad cycle time."); self.table.cellWidget(r,0).findChild(QCheckBox).setChecked(False)
-        elif r in self.timers: self.timers.pop(r).stop()
-    def stop_all_timers(self): [t.stop() for t in self.timers.values()]; self.timers.clear(); [self.table.cellWidget(r,0).findChild(QCheckBox).setChecked(False) for r in range(self.table.rowCount())]
+                cycle = int(self.table.item(r, 6).text())
+                if cycle <= 0:
+                    raise ValueError
+                t = QTimer(self)
+                t.timeout.connect(partial(self.send_from_row, r))
+                t.start(cycle)
+                self.timers[r] = t
+            except (ValueError, TypeError):
+                QMessageBox.warning(self, "Bad Cycle", f"Row {r + 1}: bad cycle time.")
+                self.table.cellWidget(r, 0).findChild(QCheckBox).setChecked(False)
+        elif r in self.timers:
+            self.timers.pop(r).stop()
+
+    def stop_all_timers(self):
+        [t.stop() for t in self.timers.values()]
+        self.timers.clear()
+        [
+            self.table.cellWidget(r, 0).findChild(QCheckBox).setChecked(False)
+            for r in range(self.table.rowCount())
+        ]
+
     def send_from_row(self, r):
-        try: self.frame_to_send.emit(can.Message(arbitration_id=int(self.table.item(r,1).text(),16),is_extended_id=self.table.cellWidget(r,2).currentIndex()==1,is_remote_frame=self.table.cellWidget(r,3).findChild(QCheckBox).isChecked(),dlc=int(self.table.item(r,4).text()),data=bytes.fromhex(self.table.item(r,5).text().replace(" ",""))))
-        except(ValueError,TypeError) as e: QMessageBox.warning(self,"Bad Tx Data",f"Row {r+1}: {e}"); self._toggle_periodic(r,False)
-    def send_selected(self): [self.send_from_row(r) for r in sorted({i.row() for i in self.table.selectionModel().selectedIndexes()})]
-    
+        try:
+            self.frame_to_send.emit(
+                can.Message(
+                    arbitration_id=int(self.table.item(r, 1).text(), 16),
+                    is_extended_id=self.table.cellWidget(r, 2).currentIndex() == 1,
+                    is_remote_frame=self.table.cellWidget(r, 3)
+                    .findChild(QCheckBox)
+                    .isChecked(),
+                    dlc=int(self.table.item(r, 4).text()),
+                    data=bytes.fromhex(self.table.item(r, 5).text().replace(" ", "")),
+                )
+            )
+        except (ValueError, TypeError) as e:
+            QMessageBox.warning(self, "Bad Tx Data", f"Row {r + 1}: {e}")
+            self._toggle_periodic(r, False)
+
+    def send_selected(self):
+        [
+            self.send_from_row(r)
+            for r in sorted(
+                {i.row() for i in self.table.selectionModel().selectedIndexes()}
+            )
+        ]
+
     ### NEW ### - Methods for config serialization
     def get_config(self) -> List[Dict]:
         config = []
         for r in range(self.table.rowCount()):
             row_data = {
-                'on': self.table.cellWidget(r, 0).findChild(QCheckBox).isChecked(),
-                'id': self.table.item(r, 1).text(),
-                'type_idx': self.table.cellWidget(r, 2).currentIndex(),
-                'rtr': self.table.cellWidget(r, 3).findChild(QCheckBox).isChecked(),
-                'dlc': self.table.item(r, 4).text(),
-                'data': self.table.item(r, 5).text(),
-                'cycle': self.table.item(r, 6).text(),
+                "on": self.table.cellWidget(r, 0).findChild(QCheckBox).isChecked(),
+                "id": self.table.item(r, 1).text(),
+                "type_idx": self.table.cellWidget(r, 2).currentIndex(),
+                "rtr": self.table.cellWidget(r, 3).findChild(QCheckBox).isChecked(),
+                "dlc": self.table.item(r, 4).text(),
+                "data": self.table.item(r, 5).text(),
+                "cycle": self.table.item(r, 6).text(),
             }
             config.append(row_data)
         return config
@@ -656,36 +1177,85 @@ class TransmitPanel(QGroupBox):
     def set_config(self, config: List[Dict]):
         self.stop_all_timers()
         self.table.clearContents()
-        self.table.setRowCount(0) # Clear all rows
+        self.table.setRowCount(0)  # Clear all rows
         self.table.setRowCount(len(config))
         self.table.blockSignals(True)
         for r, row_data in enumerate(config):
             self._setup_row_widgets(r)
-            self.table.cellWidget(r, 0).findChild(QCheckBox).setChecked(row_data.get('on', False))
-            self.table.item(r, 1).setText(row_data.get('id', '0'))
-            self.table.cellWidget(r, 2).setCurrentIndex(row_data.get('type_idx', 0))
-            self.table.cellWidget(r, 3).findChild(QCheckBox).setChecked(row_data.get('rtr', False))
-            self.table.item(r, 4).setText(row_data.get('dlc', '0'))
-            self.table.item(r, 5).setText(row_data.get('data', ''))
-            self.table.item(r, 6).setText(row_data.get('cycle', '100'))
+            self.table.cellWidget(r, 0).findChild(QCheckBox).setChecked(
+                row_data.get("on", False)
+            )
+            self.table.item(r, 1).setText(row_data.get("id", "0"))
+            self.table.cellWidget(r, 2).setCurrentIndex(row_data.get("type_idx", 0))
+            self.table.cellWidget(r, 3).findChild(QCheckBox).setChecked(
+                row_data.get("rtr", False)
+            )
+            self.table.item(r, 4).setText(row_data.get("dlc", "0"))
+            self.table.item(r, 5).setText(row_data.get("data", ""))
+            self.table.item(r, 6).setText(row_data.get("cycle", "100"))
         self.table.blockSignals(False)
         self.config_changed.emit()
 
 
 class SignalTransmitPanel(QGroupBox):
-    data_encoded=Signal(bytes)
-    def __init__(self): super().__init__("Signal Config"); self.message=None; self.setup_ui()
+    data_encoded = Signal(bytes)
+
+    def __init__(self):
+        super().__init__("Signal Config")
+        self.message = None
+        self.setup_ui()
+
     def setup_ui(self):
-        layout=QVBoxLayout(self); self.table=QTableWidget(); self.table.setColumnCount(3); self.table.setHorizontalHeaderLabels(["Signal","Value","Unit"]); self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents); self.table.horizontalHeader().setStretchLastSection(True); layout.addWidget(self.table); self.table.cellChanged.connect(self._encode)
-    def clear_panel(self): self.message=None; self.table.setRowCount(0); self.setTitle("Signal Config"); self.setVisible(False)
-    def populate(self,msg):
-        self.message=msg; self.table.blockSignals(True); self.table.setRowCount(len(msg.signals))
-        for r,s in enumerate(msg.signals): self.table.setItem(r,0,QTableWidgetItem(s.name)); self.table.item(r,0).setFlags(Qt.ItemIsEnabled|Qt.ItemIsSelectable); self.table.setItem(r,1,QTableWidgetItem(str(s.initial if s.initial is not None else 0))); self.table.setItem(r,2,QTableWidgetItem(str(s.unit or ''))); self.table.item(r,2).setFlags(Qt.ItemIsEnabled|Qt.ItemIsSelectable)
-        self.table.blockSignals(False); self.setTitle(f"Signal Config: {msg.name}"); self.setVisible(True); self._encode()
+        layout = QVBoxLayout(self)
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Signal", "Value", "Unit"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.table)
+        self.table.cellChanged.connect(self._encode)
+
+    def clear_panel(self):
+        self.message = None
+        self.table.setRowCount(0)
+        self.setTitle("Signal Config")
+        self.setVisible(False)
+
+    def populate(self, msg):
+        self.message = msg
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(msg.signals))
+        for r, s in enumerate(msg.signals):
+            self.table.setItem(r, 0, QTableWidgetItem(s.name))
+            self.table.item(r, 0).setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            self.table.setItem(
+                r, 1, QTableWidgetItem(str(s.initial if s.initial is not None else 0))
+            )
+            self.table.setItem(r, 2, QTableWidgetItem(str(s.unit or "")))
+            self.table.item(r, 2).setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        self.table.blockSignals(False)
+        self.setTitle(f"Signal Config: {msg.name}")
+        self.setVisible(True)
+        self._encode()
+
     def _encode(self):
-        if not self.message: return
-        try: self.data_encoded.emit(self.message.encode({self.table.item(r,0).text():float(self.table.item(r,1).text()) for r in range(self.table.rowCount())}, strict=True))
-        except(ValueError,TypeError,KeyError): pass
+        if not self.message:
+            return
+        try:
+            self.data_encoded.emit(
+                self.message.encode(
+                    {
+                        self.table.item(r, 0).text(): float(
+                            self.table.item(r, 1).text()
+                        )
+                        for r in range(self.table.rowCount())
+                    },
+                    strict=True,
+                )
+            )
+        except (ValueError, TypeError, KeyError):
+            pass
+
 
 # --- Main Application Window ---
 class CANBusObserver(QMainWindow):
@@ -693,7 +1263,7 @@ class CANBusObserver(QMainWindow):
         super().__init__()
         self.setWindowTitle("CANPeek")
         self.setGeometry(100, 100, 1400, 900)
-        
+
         ### NEW ### - Project state attributes
         self.project = Project()
         self.current_project_path: Optional[Path] = None
@@ -711,19 +1281,19 @@ class CANBusObserver(QMainWindow):
         self.process = None
 
         self.setDockOptions(QMainWindow.AnimatedDocks | QMainWindow.AllowNestedDocks)
-        
+
         self.setup_actions()
         self.setup_ui()
         self.setup_docks()
         self.setup_toolbar()
         self.setup_menubar()
         self.setup_statusbar()
-        
+
         # Connect signals for dirty state tracking
         self.project_explorer.project_changed.connect(lambda: self._set_dirty(True))
         self.transmit_panel.config_changed.connect(lambda: self._set_dirty(True))
-        
-        self.restore_layout() # Restore layout and last project
+
+        self.restore_layout()  # Restore layout and last project
 
         self.gui_update_timer = QTimer(self)
         self.gui_update_timer.timeout.connect(self.update_views)
@@ -736,26 +1306,36 @@ class CANBusObserver(QMainWindow):
         self.open_project_action = QAction("&Open Project...", self)
         self.save_project_action = QAction("&Save Project", self)
         self.save_project_as_action = QAction("Save Project &As...", self)
-        
-        self.connect_action = QAction(style.standardIcon(QStyle.SP_DialogYesButton), "&Connect", self)
-        self.disconnect_action = QAction(style.standardIcon(QStyle.SP_DialogNoButton), "&Disconnect", self)
-        self.clear_action = QAction(style.standardIcon(QStyle.SP_TrashIcon), "&Clear Data", self)
-        self.save_log_action = QAction(style.standardIcon(QStyle.SP_DialogSaveButton), "&Save Log...", self)
-        self.load_log_action = QAction(style.standardIcon(QStyle.SP_DialogOpenButton), "&Load Log...", self)
+
+        self.connect_action = QAction(
+            style.standardIcon(QStyle.SP_DialogYesButton), "&Connect", self
+        )
+        self.disconnect_action = QAction(
+            style.standardIcon(QStyle.SP_DialogNoButton), "&Disconnect", self
+        )
+        self.clear_action = QAction(
+            style.standardIcon(QStyle.SP_TrashIcon), "&Clear Data", self
+        )
+        self.save_log_action = QAction(
+            style.standardIcon(QStyle.SP_DialogSaveButton), "&Save Log...", self
+        )
+        self.load_log_action = QAction(
+            style.standardIcon(QStyle.SP_DialogOpenButton), "&Load Log...", self
+        )
         self.exit_action = QAction("&Exit", self)
-        
+
         self.new_project_action.triggered.connect(self._new_project)
         self.open_project_action.triggered.connect(self._open_project)
         self.save_project_action.triggered.connect(self._save_project)
         self.save_project_as_action.triggered.connect(self._save_project_as)
-        
+
         self.connect_action.triggered.connect(self.connect_can)
         self.disconnect_action.triggered.connect(self.disconnect_can)
         self.clear_action.triggered.connect(self.clear_data)
         self.save_log_action.triggered.connect(self.save_log)
         self.load_log_action.triggered.connect(self.load_log)
         self.exit_action.triggered.connect(self.close)
-        
+
         self.disconnect_action.setEnabled(False)
 
     def setup_toolbar(self):
@@ -791,8 +1371,9 @@ class CANBusObserver(QMainWindow):
         trace_layout.addWidget(self.autoscroll_cb)
         self.tab_widget.addTab(trace_view_widget, "Trace")
 
-
-        if not CAN_AVAILABLE: self.connect_action.setEnabled(False); self.connect_action.setText("Connect (lib missing)")
+        if not CAN_AVAILABLE:
+            self.connect_action.setEnabled(False)
+            self.connect_action.setText("Connect (lib missing)")
 
     def setup_docks(self):
         self.project_explorer = ProjectExplorer(self.project)
@@ -818,12 +1399,18 @@ class CANBusObserver(QMainWindow):
         transmit_dock.setObjectName("TransmitDock")
         transmit_dock.setWidget(transmit_container)
         self.addDockWidget(Qt.BottomDockWidgetArea, transmit_dock)
-        self.docks = {'explorer': explorer_dock, 'properties': properties_dock, 'transmit': transmit_dock}
+        self.docks = {
+            "explorer": explorer_dock,
+            "properties": properties_dock,
+            "transmit": transmit_dock,
+        }
         self.transmit_panel.frame_to_send.connect(self.send_can_frame)
         self.transmit_panel.row_selection_changed.connect(self.on_transmit_row_selected)
         self.signal_transmit_panel.data_encoded.connect(self.on_signal_data_encoded)
         self.project_explorer.project_changed.connect(self.on_project_changed)
-        self.project_explorer.tree.currentItemChanged.connect(self.properties_panel.show_properties)
+        self.project_explorer.tree.currentItemChanged.connect(
+            self.properties_panel.show_properties
+        )
 
     def setup_menubar(self):
         menubar = self.menuBar()
@@ -838,10 +1425,10 @@ class CANBusObserver(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
         view_menu = menubar.addMenu("&View")
-        view_menu.addAction(self.docks['explorer'].toggleViewAction())
-        view_menu.addAction(self.docks['properties'].toggleViewAction())
-        view_menu.addAction(self.docks['transmit'].toggleViewAction())
-    
+        view_menu.addAction(self.docks["explorer"].toggleViewAction())
+        view_menu.addAction(self.docks["properties"].toggleViewAction())
+        view_menu.addAction(self.docks["transmit"].toggleViewAction())
+
     def setup_statusbar(self):
         self.statusBar().showMessage("Ready")
         self.frame_count_label = QLabel("Frames: 0")
@@ -849,94 +1436,198 @@ class CANBusObserver(QMainWindow):
         self.statusBar().addPermanentWidget(self.frame_count_label)
         self.statusBar().addPermanentWidget(self.connection_label)
 
-    def keyPressEvent(self, event: QKeyEvent): # ...
-        if event.key() == Qt.Key_Space and self.transmit_panel.table.hasFocus(): self.transmit_panel.send_selected(); event.accept()
-        else: super().keyPressEvent(event)
+    def keyPressEvent(self, event: QKeyEvent):  # ...
+        if event.key() == Qt.Key_Space and self.transmit_panel.table.hasFocus():
+            self.transmit_panel.send_selected()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
     def _process_frame(self, frame: CANFrame):
-        try: self.frame_batch.append(frame)
-        except Exception as e: print(f"Error processing frame: {e}")
+        try:
+            self.frame_batch.append(frame)
+        except Exception as e:
+            print(f"Error processing frame: {e}")
+
     def update_views(self):
-        if not self.frame_batch: return
+        if not self.frame_batch:
+            return
         try:
             frames_to_process, self.frame_batch = self.frame_batch[:], []
             active_filters = self.project.get_active_filters()
-            filtered_frames = [f for f in frames_to_process if not active_filters or any(filt.matches(f) for filt in active_filters)]
-            if not filtered_frames: return
-            expanded_ids = {self.grouped_model.data(self.grouped_proxy_model.mapToSource(self.grouped_proxy_model.index(row, 0)), Qt.UserRole) for row in range(self.grouped_proxy_model.rowCount()) if self.grouped_view.isExpanded(self.grouped_proxy_model.index(row, 0))}
+            filtered_frames = [
+                f
+                for f in frames_to_process
+                if not active_filters or any(filt.matches(f) for filt in active_filters)
+            ]
+            if not filtered_frames:
+                return
+            expanded_ids = {
+                self.grouped_model.data(
+                    self.grouped_proxy_model.mapToSource(
+                        self.grouped_proxy_model.index(row, 0)
+                    ),
+                    Qt.UserRole,
+                )
+                for row in range(self.grouped_proxy_model.rowCount())
+                if self.grouped_view.isExpanded(self.grouped_proxy_model.index(row, 0))
+            }
             self.grouped_model.update_frames(filtered_frames)
             self.all_received_frames.extend(filtered_frames)
-            if len(self.all_received_frames) > TRACE_BUFFER_LIMIT: del self.all_received_frames[:-TRACE_BUFFER_LIMIT]
+            if len(self.all_received_frames) > TRACE_BUFFER_LIMIT:
+                del self.all_received_frames[:-TRACE_BUFFER_LIMIT]
             self.trace_model.set_data(self.all_received_frames)
             for row in range(self.grouped_proxy_model.rowCount()):
                 proxy_index = self.grouped_proxy_model.index(row, 0)
-                if self.grouped_model.data(self.grouped_proxy_model.mapToSource(proxy_index), Qt.UserRole) in expanded_ids: self.grouped_view.setExpanded(proxy_index, True)
-            if self.autoscroll_cb.isChecked(): self.trace_view.scrollToBottom()
+                if (
+                    self.grouped_model.data(
+                        self.grouped_proxy_model.mapToSource(proxy_index), Qt.UserRole
+                    )
+                    in expanded_ids
+                ):
+                    self.grouped_view.setExpanded(proxy_index, True)
+            if self.autoscroll_cb.isChecked():
+                self.trace_view.scrollToBottom()
             self.frame_count_label.setText(f"Frames: {len(self.all_received_frames)}")
-        except Exception as e: print(f"Error in update_views: {e}"); import traceback; traceback.print_exc()
+        except Exception as e:
+            print(f"Error in update_views: {e}")
+            import traceback
+
+            traceback.print_exc()
 
     def on_project_changed(self):
         active_dbcs = self.project.get_active_dbcs()
-        self.trace_model.dbc_databases = active_dbcs; self.trace_model.canopen_enabled = self.project.canopen_enabled; self.trace_model.layoutChanged.emit()
+        self.trace_model.dbc_databases = active_dbcs
+        self.trace_model.canopen_enabled = self.project.canopen_enabled
+        self.trace_model.layoutChanged.emit()
         self.grouped_model.set_config(active_dbcs, self.project.canopen_enabled)
         self.transmit_panel.set_dbc_databases(active_dbcs)
         current_item = self.transmit_panel.table.currentItem()
-        self.on_transmit_row_selected(self.transmit_panel.table.currentRow(), current_item.text() if current_item else "")
-        self.properties_panel.project = self.project # ensure properties panel has latest project
+        self.on_transmit_row_selected(
+            self.transmit_panel.table.currentRow(),
+            current_item.text() if current_item else "",
+        )
+        self.properties_panel.project = (
+            self.project
+        )  # ensure properties panel has latest project
+
     def on_transmit_row_selected(self, row, id_text):
         self.signal_transmit_panel.clear_panel()
-        if row < 0 or not id_text: return
+        if row < 0 or not id_text:
+            return
         try:
-            if message := self.transmit_panel.get_message_from_id(int(id_text, 16)): self.signal_transmit_panel.populate(message)
-        except ValueError: pass
+            if message := self.transmit_panel.get_message_from_id(int(id_text, 16)):
+                self.signal_transmit_panel.populate(message)
+        except ValueError:
+            pass
+
     def on_signal_data_encoded(self, data_bytes):
-        if (row := self.transmit_panel.table.currentRow()) >= 0: self.transmit_panel.update_row_data(row, data_bytes)
-    
+        if (row := self.transmit_panel.table.currentRow()) >= 0:
+            self.transmit_panel.update_row_data(row, data_bytes)
+
     def connect_can(self):
-        self.can_reader = CANReaderThread(self.project.can_interface, self.project.can_channel, self.project.can_bitrate)
+        self.can_reader = CANReaderThread(
+            self.project.can_interface,
+            self.project.can_channel,
+            self.project.can_bitrate,
+        )
         self.can_reader.frame_received.connect(self._process_frame)
         self.can_reader.error_occurred.connect(self.on_can_error)
         if self.can_reader.start_reading():
-            self.connect_action.setEnabled(False); self.disconnect_action.setEnabled(True); self.transmit_panel.setEnabled(True)
-            self.connection_label.setText(f"Connected ({self.project.can_interface}:{self.project.can_channel} @ {self.project.can_bitrate/1000:.0f} kbps)")
-        else: self.can_reader = None
+            self.connect_action.setEnabled(False)
+            self.disconnect_action.setEnabled(True)
+            self.transmit_panel.setEnabled(True)
+            self.connection_label.setText(
+                f"Connected ({self.project.can_interface}:{self.project.can_channel} @ {self.project.can_bitrate / 1000:.0f} kbps)"
+            )
+        else:
+            self.can_reader = None
+
     def disconnect_can(self):
-        if self.can_reader: self.can_reader.stop_reading(); self.can_reader.deleteLater(); self.can_reader = None
-        self.connect_action.setEnabled(True); self.disconnect_action.setEnabled(False); self.transmit_panel.setEnabled(False); self.transmit_panel.stop_all_timers(); self.connection_label.setText("Disconnected")
+        if self.can_reader:
+            self.can_reader.stop_reading()
+            self.can_reader.deleteLater()
+            self.can_reader = None
+        self.connect_action.setEnabled(True)
+        self.disconnect_action.setEnabled(False)
+        self.transmit_panel.setEnabled(False)
+        self.transmit_panel.stop_all_timers()
+        self.connection_label.setText("Disconnected")
+
     def send_can_frame(self, message: can.Message):
-        if self.can_reader and self.can_reader.running: self.can_reader.send_frame.emit(message)
-        else: QMessageBox.warning(self, "Not Connected", "Connect to a CAN bus before sending frames.")
+        if self.can_reader and self.can_reader.running:
+            self.can_reader.send_frame.emit(message)
+        else:
+            QMessageBox.warning(
+                self, "Not Connected", "Connect to a CAN bus before sending frames."
+            )
+
     def on_can_error(self, error_message: str):
-        QMessageBox.warning(self, "CAN Error", error_message); self.statusBar().showMessage(f"Error: {error_message}"); self.disconnect_can()
+        QMessageBox.warning(self, "CAN Error", error_message)
+        self.statusBar().showMessage(f"Error: {error_message}")
+        self.disconnect_can()
+
     def clear_data(self):
-        self.all_received_frames.clear(); self.grouped_model.clear_frames(); self.trace_model.set_data([])
+        self.all_received_frames.clear()
+        self.grouped_model.clear_frames()
+        self.trace_model.set_data([])
         self.frame_count_label.setText("Frames: 0")
+
     def save_log(self):
-        if not self.all_received_frames: QMessageBox.information(self, "No Data", "No frames to save"); return
-        filename, _ = QFileDialog.getSaveFileName(self, "Save CAN Log", "", "CAN Log Files (*.log);;All Files (*)")
+        if not self.all_received_frames:
+            QMessageBox.information(self, "No Data", "No frames to save")
+            return
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save CAN Log", "", "CAN Log Files (*.log);;All Files (*)"
+        )
         if filename:
             try:
-                with open(filename, 'w') as f:
-                    f.write("# CAN Bus Log File\n# Format: timestamp id is_ext dlc data\n")
-                    for frame in self.all_received_frames: f.write(f"{frame.timestamp:.6f} {frame.arbitration_id:X} {'E' if frame.is_extended else 'S'} {frame.dlc} {frame.data.hex(' ')}\n")
+                with open(filename, "w") as f:
+                    f.write(
+                        "# CAN Bus Log File\n# Format: timestamp id is_ext dlc data\n"
+                    )
+                    for frame in self.all_received_frames:
+                        f.write(
+                            f"{frame.timestamp:.6f} {frame.arbitration_id:X} {'E' if frame.is_extended else 'S'} {frame.dlc} {frame.data.hex(' ')}\n"
+                        )
                 self.statusBar().showMessage(f"Log saved to {filename}")
-            except Exception as e: QMessageBox.critical(self, "Save Error", f"Failed to save log: {e}")
+            except Exception as e:
+                QMessageBox.critical(self, "Save Error", f"Failed to save log: {e}")
+
     def load_log(self):
-        filename, _ = QFileDialog.getOpenFileName(self, "Load CAN Log", "", "CAN Log Files (*.log);;All Files (*)")
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Load CAN Log", "", "CAN Log Files (*.log);;All Files (*)"
+        )
         if filename:
             try:
-                self.clear_data(); frames_to_add = []
-                with open(filename, 'r') as f:
+                self.clear_data()
+                frames_to_add = []
+                with open(filename, "r") as f:
                     for line in f:
-                        if line.startswith('#') or not line.strip(): continue
+                        if line.startswith("#") or not line.strip():
+                            continue
                         parts = line.split()
                         try:
                             ts, id_hex, type_char, dlc_str, *data_hex = parts
-                            frames_to_add.append(CANFrame(float(ts), int(id_hex,16), bytes.fromhex("".join(data_hex)), int(dlc_str), type_char=='E'))
-                        except (ValueError, IndexError): print(f"Warning: Invalid line in log file: {line.strip()}")
-                self.frame_batch.extend(frames_to_add); self.update_views()
-                self.statusBar().showMessage(f"Loaded {len(self.all_received_frames)} frames from {filename}")
-            except Exception as e: QMessageBox.critical(self, "Load Error", f"Failed to load log: {e}")
-    
+                            frames_to_add.append(
+                                CANFrame(
+                                    float(ts),
+                                    int(id_hex, 16),
+                                    bytes.fromhex("".join(data_hex)),
+                                    int(dlc_str),
+                                    type_char == "E",
+                                )
+                            )
+                        except (ValueError, IndexError):
+                            print(f"Warning: Invalid line in log file: {line.strip()}")
+                self.frame_batch.extend(frames_to_add)
+                self.update_views()
+                self.statusBar().showMessage(
+                    f"Loaded {len(self.all_received_frames)} frames from {filename}"
+                )
+            except Exception as e:
+                QMessageBox.critical(self, "Load Error", f"Failed to load log: {e}")
+
     ### NEW ### - Methods for project handling and state management
     def _set_dirty(self, dirty: bool):
         if self.project_dirty != dirty:
@@ -956,17 +1647,21 @@ class CANBusObserver(QMainWindow):
     def _prompt_save_if_dirty(self) -> bool:
         if not self.project_dirty:
             return True
-        reply = QMessageBox.question(self, "Save Changes?",
-                                     "You have unsaved changes. Would you like to save them?",
-                                     QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+        reply = QMessageBox.question(
+            self,
+            "Save Changes?",
+            "You have unsaved changes. Would you like to save them?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+        )
         if reply == QMessageBox.Save:
             return self._save_project()
         elif reply == QMessageBox.Cancel:
             return False
-        return True # Discard
+        return True  # Discard
 
     def _new_project(self):
-        if not self._prompt_save_if_dirty(): return
+        if not self._prompt_save_if_dirty():
+            return
         self.disconnect_can()
         self.clear_data()
         self.project = Project()
@@ -976,24 +1671,32 @@ class CANBusObserver(QMainWindow):
         self._set_dirty(False)
 
     def _open_project(self, path: Optional[str] = None):
-        if not self._prompt_save_if_dirty(): return
+        if not self._prompt_save_if_dirty():
+            return
         if not path:
-            path, _ = QFileDialog.getOpenFileName(self, "Open Project", "", "CANPeek Project (*.cpeek);;All Files (*)")
-        if not path: return
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Open Project", "", "CANPeek Project (*.cpeek);;All Files (*)"
+            )
+        if not path:
+            return
         try:
-            with open(path, 'r') as f:
+            with open(path, "r") as f:
                 data = json.load(f)
             self.disconnect_can()
             self.clear_data()
-            self.project = Project.from_dict(data.get('project', {}))
+            self.project = Project.from_dict(data.get("project", {}))
             self.project_explorer.set_project(self.project)
-            self.transmit_panel.set_config(data.get('transmit_config', []))
+            self.transmit_panel.set_config(data.get("transmit_config", []))
             self.current_project_path = Path(path)
             self._set_dirty(False)
-            self.statusBar().showMessage(f"Project '{self.current_project_path.name}' loaded.")
+            self.statusBar().showMessage(
+                f"Project '{self.current_project_path.name}' loaded."
+            )
         except Exception as e:
-            QMessageBox.critical(self, "Open Project Error", f"Failed to load project:\n{e}")
-            self._new_project() # Reset to a clean state
+            QMessageBox.critical(
+                self, "Open Project Error", f"Failed to load project:\n{e}"
+            )
+            self._new_project()  # Reset to a clean state
 
     def _save_project(self) -> bool:
         if self.current_project_path:
@@ -1002,7 +1705,9 @@ class CANBusObserver(QMainWindow):
             return self._save_project_as()
 
     def _save_project_as(self) -> bool:
-        path, _ = QFileDialog.getSaveFileName(self, "Save Project As", "", "CANPeek Project (*.cpeek);;All Files (*)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Project As", "", "CANPeek Project (*.cpeek);;All Files (*)"
+        )
         if path:
             self.current_project_path = Path(path)
             return self._save_project_to_path(self.current_project_path)
@@ -1011,16 +1716,18 @@ class CANBusObserver(QMainWindow):
     def _save_project_to_path(self, path: Path) -> bool:
         try:
             config = {
-                'project': self.project.to_dict(),
-                'transmit_config': self.transmit_panel.get_config()
+                "project": self.project.to_dict(),
+                "transmit_config": self.transmit_panel.get_config(),
             }
-            with open(path, 'w') as f:
+            with open(path, "w") as f:
                 json.dump(config, f, indent=2)
             self._set_dirty(False)
             self.statusBar().showMessage(f"Project saved to '{path.name}'.")
             return True
         except Exception as e:
-            QMessageBox.critical(self, "Save Project Error", f"Failed to save project:\n{e}")
+            QMessageBox.critical(
+                self, "Save Project Error", f"Failed to save project:\n{e}"
+            )
             return False
 
     def save_layout(self):
@@ -1029,14 +1736,16 @@ class CANBusObserver(QMainWindow):
         settings.setValue("windowState", self.saveState())
         if self.current_project_path:
             settings.setValue("lastProjectPath", str(self.current_project_path))
-    
+
     def restore_layout(self):
         settings = QSettings()
         geometry = settings.value("geometry")
-        if geometry: self.restoreGeometry(geometry)
+        if geometry:
+            self.restoreGeometry(geometry)
         state = settings.value("windowState")
-        if state: self.restoreState(state)
-        
+        if state:
+            self.restoreState(state)
+
         last_project = settings.value("lastProjectPath")
         if last_project and Path(last_project).exists():
             self._open_project(last_project)
@@ -1046,21 +1755,25 @@ class CANBusObserver(QMainWindow):
             event.ignore()
             return
         self.save_layout()
-        if hasattr(self, 'gui_update_timer'): self.gui_update_timer.stop()
-        if self.process: self.process.kill()
+        if hasattr(self, "gui_update_timer"):
+            self.gui_update_timer.stop()
+        if self.process:
+            self.process.kill()
         self.disconnect_can()
         QApplication.processEvents()
         event.accept()
+
 
 def main():
     app = QApplication(sys.argv)
     app.setOrganizationName("CANPeek")
     app.setApplicationName("CANPeek")
-    
+
     window = CANBusObserver()
     qdarktheme.setup_theme("auto")
     window.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
