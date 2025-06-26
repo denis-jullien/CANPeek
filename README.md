@@ -33,6 +33,15 @@ The goal was rapid prototyping, not pristine architecture. Use it, improve it, r
 
 ## Installation
 
+### With pip
+
+```bash
+pip install canpeek
+canpeek
+```
+
+### From source
+
 1. Install [uv](https://github.com/astral-sh/uv)
 2. Run `uv run main.py`
 
