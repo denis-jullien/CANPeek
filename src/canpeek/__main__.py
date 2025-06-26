@@ -25,6 +25,7 @@ import inspect
 import importlib
 import logging
 from contextlib import contextmanager
+from docstring_parser import parse
 
 ### MODIFIED ### - Add QDockWidget, QToolBar, QStyle, QIcon
 from PySide6.QtWidgets import (
@@ -237,9 +238,10 @@ def capture_logs(logger_name: str):
 # A manager to dynamically and safely find and inspect python-can interfaces
 class CANInterfaceManager:
     """
-    Dynamically discovers available python-can interfaces, their docstrings,
-    and their configuration parameters. It safely inspects Bus classes and
-    filters out any that produce warnings or errors during discovery.
+    Dynamically discovers available python-can interfaces. It uses the
+    'docstring-parser' library to parse their docstrings, finds their
+    configuration parameters, and filters out any interfaces that produce
+    warnings or errors during discovery.
     """
 
     def __init__(self):
@@ -249,19 +251,39 @@ class CANInterfaceManager:
         interfaces = {}
         for name, (module_name, class_name) in can.interfaces.BACKENDS.items():
             try:
-                docstring = ""
+                parsed_doc_dict = {}
                 with capture_logs("can") as log_handler:
                     module = importlib.import_module(module_name)
                     bus_class = getattr(module, class_name)
 
-                    ### MODIFIED ### - Prioritize the __init__ docstring
-                    # Get the __init__ docstring, as it's most relevant to parameters.
-                    init_docstring = inspect.getdoc(bus_class.__init__)
+                    init_doc = inspect.getdoc(bus_class.__init__)
+                    raw_doc = init_doc if init_doc else inspect.getdoc(bus_class)
 
-                    # If __init__ has no docstring, fall back to the class docstring.
-                    docstring = (
-                        init_docstring if init_docstring else inspect.getdoc(bus_class)
-                    )
+                    if raw_doc:
+                        parsed = parse(raw_doc)
+
+                        desc_parts = []
+                        if parsed.short_description:
+                            desc_parts.append(parsed.short_description)
+                        if parsed.long_description:
+                            desc_parts.append(parsed.long_description)
+                        description = "\n\n".join(desc_parts)
+
+                        ### MODIFIED ### - Store type_name along with description
+                        params_dict = {
+                            param.arg_name: {
+                                "type_name": param.type_name,
+                                "description": param.description or "",
+                            }
+                            for param in parsed.params
+                        }
+
+                        parsed_doc_dict = {
+                            "description": description,
+                            "params": params_dict,
+                        }
+                    else:
+                        parsed_doc_dict = {"description": "", "params": {}}
 
                     if log_handler.records:
                         first_warning = log_handler.records[0].getMessage()
@@ -270,7 +292,6 @@ class CANInterfaceManager:
                         )
                         continue
 
-                # The interface is clean, extract params and store everything
                 sig = inspect.signature(bus_class.__init__)
                 params = {}
                 for param in sig.parameters.values():
@@ -289,7 +310,7 @@ class CANInterfaceManager:
                 interfaces[name] = {
                     "class": bus_class,
                     "params": params,
-                    "docstring": docstring,
+                    "docstring": parsed_doc_dict,
                 }
 
             except (ImportError, AttributeError, OSError, TypeError) as e:
@@ -305,8 +326,8 @@ class CANInterfaceManager:
     def get_interface_params(self, name: str) -> Optional[Dict]:
         return self._interfaces.get(name, {}).get("params")
 
-    def get_interface_docstring(self, name: str) -> Optional[str]:
-        """Returns the cleaned docstring for the given interface name."""
+    def get_interface_docstring(self, name: str) -> Optional[Dict]:
+        """Returns the parsed docstring for the given interface name."""
         return self._interfaces.get(name, {}).get("docstring")
 
 
@@ -876,33 +897,69 @@ class FilterEditor(QWidget):
 
 ### NEW ### - A reusable, modeless dialog to display documentation
 class DocumentationWindow(QDialog):
-    """A separate, non-blocking window for displaying documentation."""
+    """A separate, non-blocking window for displaying parsed documentation."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Interface Documentation")
-        self.setMinimumSize(600, 600)  # Give it a reasonable default size
+        self.setMinimumSize(600, 450)
 
-        # Main layout
         layout = QVBoxLayout(self)
-
-        # Use QTextEdit for scrollable, selectable text
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
+        self.text_edit.setObjectName("documentationViewer")
         layout.addWidget(self.text_edit)
 
-    def set_content(self, interface_name: str, documentation_text: str):
-        """Updates the window title and the text content."""
-        self.setWindowTitle(f"python-can documentation for '{interface_name}'")
-        self.text_edit.setPlainText(documentation_text)
+    def set_content(self, interface_name: str, parsed_doc: Dict):
+        """
+        Updates the window title and content by building an HTML string
+        from the parsed docstring dictionary, including type information.
+        """
+        self.setWindowTitle(f"Documentation for '{interface_name}'")
 
-    def closeEvent(self, event):
+        ### MODIFIED ### - Added styling for the type information
+        html = """
+        <style>
+            body { font-family: sans-serif; font-size: 14px; }
+            p { margin-bottom: 12px; }
+            dl { margin-left: 10px; }
+            dt { font-weight: bold; color: #af5aed; margin-top: 8px; }
+            dt .param-type { font-style: italic; color: #555555; font-weight: normal; }
+            dd { margin-left: 20px; margin-bottom: 8px; }
+            hr { border: 1px solid #cccccc; }
+        </style>
         """
-        Overrides the default close event to simply hide the window
-        instead of destroying it. This allows it to be shown again later.
-        """
-        self.hide()
-        event.ignore()
+
+        if parsed_doc and parsed_doc.get("description"):
+            desc = parsed_doc["description"].replace("<", "<").replace(">", ">")
+            html += f"<p>{desc.replace(chr(10), '<br>')}</p>"
+
+        if parsed_doc and parsed_doc.get("params"):
+            html += "<hr><h3>Parameters:</h3>"
+            html += "<dl>"
+            ### MODIFIED ### - Loop now handles the richer param_info dictionary
+            for name, param_info in parsed_doc["params"].items():
+                type_name = param_info.get("type_name")
+                description = (
+                    param_info.get("description", "")
+                    .replace("<", "<")
+                    .replace(">", ">")
+                )
+
+                # Build the header line (dt) with optional type info
+                header = f"<strong>{name}</strong>"
+                if type_name:
+                    header += f' <span class="param-type">({type_name})</span>'
+
+                html += f"<dt>{header}:</dt><dd>{description}</dd>"
+            html += "</dl>"
+
+        if not (
+            parsed_doc and (parsed_doc.get("description") or parsed_doc.get("params"))
+        ):
+            html += "<p>No documentation available.</p>"
+
+        self.text_edit.setHtml(html)
 
 
 # Fully dynamic editor for connection settings

@@ -107,6 +107,7 @@ version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "cantools" },
+    { name = "docstring-parser" },
     { name = "pyqtdarktheme-fork" },
     { name = "pyside6" },
     { name = "python-can" },
@@ -136,6 +137,7 @@ dev = [
 requires-dist = [
     { name = "canalystii", marker = "extra == 'interfaces'", specifier = ">=0.1" },
     { name = "cantools", specifier = ">=40.2.3" },
+    { name = "docstring-parser", specifier = ">=0.16" },
     { name = "filelock", marker = "extra == 'interfaces'", specifier = ">=3.18.0" },
     { name = "gs-usb", marker = "extra == 'interfaces'", specifier = ">=0.3.0" },
     { name = "ics", marker = "extra == 'interfaces'", specifier = ">=0.7.2" },
@@ -208,6 +210,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/3f/21/1c1ffc1a039ddcc459db43cc108658f32c57d271d7289a2794e401d0fdb6/diskcache-5.6.3.tar.gz", hash = "sha256:2c3a3fa2743d8535d832ec61c2054a1641f41775aa7c556758a109941e33e4fc", size = 67916, upload-time = "2023-08-31T06:12:00.316Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3f/27/4570e78fc0bf5ea0ca45eb1de3818a23787af9b390c0b0a0033a1b8236f9/diskcache-5.6.3-py3-none-any.whl", hash = "sha256:5e31b2d5fbad117cc363ebaf6b689474db18a1f6438bc82358b024abd4c2ca19", size = 45550, upload-time = "2023-08-31T06:11:58.822Z" },
+]
+
+[[package]]
+name = "docstring-parser"
+version = "0.16"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/08/12/9c22a58c0b1e29271051222d8906257616da84135af9ed167c9e28f85cb3/docstring_parser-0.16.tar.gz", hash = "sha256:538beabd0af1e2db0146b6bd3caa526c35a34d61af9fd2887f3a8a27a739aa6e", size = 26565, upload-time = "2024-03-15T10:39:44.419Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d5/7c/e9fcff7623954d86bdc17782036cbf715ecab1bec4847c008557affe1ca8/docstring_parser-0.16-py3-none-any.whl", hash = "sha256:bf0a1387354d3691d102edef7ec124f219ef639982d096e26e3b60aeffa90637", size = 36533, upload-time = "2024-03-15T10:39:41.527Z" },
 ]
 
 [[package]]
