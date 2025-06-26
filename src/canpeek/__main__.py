@@ -174,16 +174,13 @@ class Project:
             CANFrameFilter(**f_data) for f_data in data.get("filters", [])
         ]
 
-
         for dbc_data in data.get("dbcs", []):
             try:
                 path = Path(dbc_data["path"])
                 if not path.exists():
                     raise FileNotFoundError(f"DBC file not found: {path}")
                 db = cantools.database.load_file(path)
-                project.dbcs.append(
-                    DBCFile(path, db, dbc_data.get("enabled", True))
-                )
+                project.dbcs.append(DBCFile(path, db, dbc_data.get("enabled", True)))
             except Exception as e:
                 print(f"Warning: Could not load DBC from project file: {e}")
                 # Optionally, show a warning to the user here
@@ -930,7 +927,10 @@ class ProjectExplorer(QGroupBox):
 
     def add_dbc(self):
         fns, _ = QFileDialog.getOpenFileNames(
-            self, "Select DBC File(s)", "", "DBC, KCD, SYM, ARXML 3&4 and CDD Files (*.dbc *.arxml *.kcd *.sym *.cdd);;All Files (*)"
+            self,
+            "Select DBC File(s)",
+            "",
+            "DBC, KCD, SYM, ARXML 3&4 and CDD Files (*.dbc *.arxml *.kcd *.sym *.cdd);;All Files (*)",
         )
         if fns:
             for fn in fns:
@@ -1241,19 +1241,25 @@ class CANBusObserver(QMainWindow):
 
         ### NEW ### - Create log file filter string
         file_loggers = {
-             "ASCWriter"  : ".asc",
-             "BLFWriter" : ".blf",
-             "CSVWriter" : ".csv",
-             "SqliteWriter" : ".db",
-             "CanutilsLogWriter" : ".log",
-             "TRCWriter" : ".trc" ,
-             "Printer" : ".txt",
+            "ASCWriter": ".asc",
+            "BLFWriter": ".blf",
+            "CSVWriter": ".csv",
+            "SqliteWriter": ".db",
+            "CanutilsLogWriter": ".log",
+            "TRCWriter": ".trc",
+            "Printer": ".txt",
         }
         sorted_loggers = sorted(file_loggers.items())
         filters = [f"{ext} : {name} Log (*{ext})" for name, ext in sorted_loggers]
-        filters += [f"{ext}.gz : Compressed {name} Log (*{ext}.gz)" for name, ext in sorted_loggers]
+        filters += [
+            f"{ext}.gz : Compressed {name} Log (*{ext}.gz)"
+            for name, ext in sorted_loggers
+        ]
         self.log_file_filter = ";;".join(filters)
-        self.log_file_filter_open = f"All Supported ({" ".join(["*"+ext for _, ext in sorted_loggers])});;" + self.log_file_filter
+        self.log_file_filter_open = (
+            f"All Supported ({' '.join(['*' + ext for _, ext in sorted_loggers])});;"
+            + self.log_file_filter
+        )
 
         self.trace_model = CANTraceModel()
         self.grouped_model = CANGroupedModel()
@@ -1356,7 +1362,6 @@ class CANBusObserver(QMainWindow):
         trace_layout.addWidget(self.trace_view)
         trace_layout.addWidget(self.autoscroll_cb)
         self.tab_widget.addTab(trace_view_widget, "Trace")
-
 
     def setup_docks(self):
         self.project_explorer = ProjectExplorer(self.project)
@@ -1558,7 +1563,6 @@ class CANBusObserver(QMainWindow):
 
     ### MODIFIED ### - Replaced with python-can based log saving
     def save_log(self):
-
         if not self.all_received_frames:
             QMessageBox.information(self, "No Data", "No frames to save.")
             return
@@ -1567,11 +1571,9 @@ class CANBusObserver(QMainWindow):
         dialog.setDefaultSuffix("log")
         dialog.setAcceptMode(QFileDialog.AcceptSave)
         if dialog.exec_():
-
             filename = dialog.selectedFiles()[0]
         else:
             return
-
 
         logger = None
         try:
@@ -1595,11 +1597,10 @@ class CANBusObserver(QMainWindow):
             QMessageBox.critical(self, "Save Error", f"Failed to save log: {e}")
         finally:
             if logger:
-                logger.stop() # This is crucial to flush buffers and close the file
+                logger.stop()  # This is crucial to flush buffers and close the file
 
     ### MODIFIED ### - Replaced with python-can based log loading
     def load_log(self):
-
         filename, _ = QFileDialog.getOpenFileName(
             self, "Load CAN Log", "", self.log_file_filter_open
         )
@@ -1711,7 +1712,9 @@ class CANBusObserver(QMainWindow):
             return self._save_project_as()
 
     def _save_project_as(self) -> bool:
-        dialog = QFileDialog(self, "Save Project As", "", "CANPeek Project (*.cpeek);;All Files (*)")
+        dialog = QFileDialog(
+            self, "Save Project As", "", "CANPeek Project (*.cpeek);;All Files (*)"
+        )
         dialog.setAcceptMode(QFileDialog.AcceptSave)
         dialog.setDefaultSuffix("cpeek")
         if dialog.exec_():
