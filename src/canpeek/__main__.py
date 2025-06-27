@@ -1847,6 +1847,7 @@ class CANBusObserver(QMainWindow):
 
         ### MODIFIED ### - Add the "Open Recent" submenu
         self.recent_menu = QMenu("Open &Recent", self)
+        self.recent_menu.setIcon(QIcon(QPixmap(":/icons/document-open-recent.png")))
         file_menu.addMenu(self.recent_menu)
 
         file_menu.addAction(self.save_project_action)
