@@ -102,10 +102,23 @@ wheels = [
 ]
 
 [[package]]
+name = "canopen"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-can" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1a/b3/733e5f98c995d7f3e82853bc5ee2f0677df6203d51d8a4387af188322523/canopen-2.3.0.tar.gz", hash = "sha256:792084a93c138d5b2a406ddd2d4eb5ce208f03bd8fda60f81ad2bb8d56c6b827", size = 101292, upload-time = "2024-06-13T20:36:05.515Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/34/7f/bef6f0e7d237d00705e921a286598e15cc1b9188878ef51b9fec22484c0c/canopen-2.3.0-py3-none-any.whl", hash = "sha256:7a62274af6ded7ee85ee96f4ada3afa38bc8607a91f306dcc202c3c8cf2850d7", size = 64196, upload-time = "2024-06-13T20:35:59.519Z" },
+]
+
+[[package]]
 name = "canpeek"
 version = "0.4.1"
 source = { editable = "." }
 dependencies = [
+    { name = "canopen" },
     { name = "cantools" },
     { name = "docstring-parser" },
     { name = "pyqtdarktheme-fork" },
@@ -136,6 +149,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "canalystii", marker = "extra == 'interfaces'", specifier = ">=0.1" },
+    { name = "canopen", specifier = ">=2.3.0" },
     { name = "cantools", specifier = ">=40.2.3" },
     { name = "docstring-parser", specifier = ">=0.16" },
     { name = "filelock", marker = "extra == 'interfaces'", specifier = ">=3.18.0" },

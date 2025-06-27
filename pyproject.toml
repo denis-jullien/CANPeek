@@ -5,6 +5,7 @@ description = "A simple CAN bus monitoring tool, with dbc support."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "canopen>=2.3.0",
     "cantools>=40.2.3",
     "docstring-parser>=0.16",
     "PyQtDarkTheme-fork>=2.1.0",
