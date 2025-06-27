@@ -29,8 +29,11 @@ from docstring_parser import parse
 import enum
 from . import rc_icons
 
+__all__ = [
+    "rc_icons",  # remove ruff "Remove unused import: `.rc_icons`"
+]
 
-### MODIFIED ### - Add QDockWidget, QToolBar, QStyle, QIcon
+
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -61,10 +64,8 @@ from PySide6.QtWidgets import (
     QStyle,
     QDialog,
     QTextEdit,
-    
 )
 
-### MODIFIED ### - Add QProcess, QSettings
 from PySide6.QtCore import (
     QThread,
     QTimer,
@@ -75,7 +76,6 @@ from PySide6.QtCore import (
     QModelIndex,
     QSortFilterProxyModel,
     QSettings,
-    
 )
 from PySide6.QtGui import QAction, QKeyEvent, QIcon, QPixmap
 
@@ -83,9 +83,8 @@ from PySide6.QtGui import QAction, QKeyEvent, QIcon, QPixmap
 import can
 import cantools
 
-# ### NEW ### Forward reference for type hinting
 if TYPE_CHECKING:
-    from __main__ import ProjectExplorer, CANInterfaceManager  # <-- MODIFIED THIS LINE
+    from __main__ import ProjectExplorer, CANInterfaceManager
 
 
 faulthandler.enable()
@@ -178,7 +177,6 @@ class Project:
             "can_config": serializable_can_config,
         }
 
-    ### MODIFIED ### - Now accepts interface_manager to "hydrate" the config
     @classmethod
     def from_dict(
         cls, data: Dict, interface_manager: "CANInterfaceManager"
@@ -240,7 +238,6 @@ class Project:
         return project
 
 
-### NEW ### - A custom logging handler to capture log records in a list
 class LogCaptureHandler(logging.Handler):
     """A logging handler that captures records to a list."""
 
@@ -252,7 +249,6 @@ class LogCaptureHandler(logging.Handler):
         self.records.append(record)
 
 
-### NEW ### - A context manager to temporarily capture logs from a specific logger
 @contextmanager
 def capture_logs(logger_name: str):
     """
@@ -316,7 +312,6 @@ class CANInterfaceManager:
                             desc_parts.append(parsed.long_description)
                         description = "\n\n".join(desc_parts)
 
-                        ### MODIFIED ### - Store type_name along with description
                         params_dict = {
                             param.arg_name: {
                                 "type_name": param.type_name,
@@ -773,7 +768,6 @@ class CANReaderThread(QThread):
     error_occurred = Signal(str)
     send_frame = Signal(object)
 
-    ### MODIFIED ### - Accept a flexible config dictionary
     def __init__(self, interface: str, config: Dict[str, Any]):
         super().__init__()
         self.interface = interface
@@ -801,7 +795,6 @@ class CANReaderThread(QThread):
 
     def run(self):
         try:
-            ### MODIFIED ### - Pass the config dict directly to the Bus
             self.bus = can.Bus(
                 interface=self.interface, receive_own_messages=True, **self.config
             )
@@ -942,7 +935,6 @@ class FilterEditor(QWidget):
         self.filter_changed.emit()
 
 
-### NEW ### - A reusable, modeless dialog to display documentation
 class DocumentationWindow(QDialog):
     """A separate, non-blocking window for displaying parsed documentation."""
 
@@ -964,7 +956,6 @@ class DocumentationWindow(QDialog):
         """
         self.setWindowTitle(f"Documentation for '{interface_name}'")
 
-        ### MODIFIED ### - Added styling for the type information
         html = """
         <style>
             body { font-family: sans-serif; font-size: 14px; }
@@ -984,7 +975,6 @@ class DocumentationWindow(QDialog):
         if parsed_doc and parsed_doc.get("params"):
             html += "<hr><h3>Parameters:</h3>"
             html += "<dl>"
-            ### MODIFIED ### - Loop now handles the richer param_info dictionary
             for name, param_info in parsed_doc["params"].items():
                 type_name = param_info.get("type_name")
                 description = (
@@ -1069,7 +1059,6 @@ class ConnectionEditor(QWidget):
         # _rebuild_dynamic_fields now calls _update_project at the end
         # self._update_project() # This call is now redundant
 
-    ### MODIFIED ### - Creates widgets based on parameter type (Enum, bool, int, str)
     def _rebuild_dynamic_fields(self, interface_name: str):
         # Fetch the parsed docstring data once
         parsed_doc = self.interface_manager.get_interface_docstring(interface_name)
@@ -1159,7 +1148,6 @@ class ConnectionEditor(QWidget):
 
         self._update_project()
 
-    ### NEW ### - Helper function to robustly convert text input
     def _convert_line_edit_text(self, text: str, param_info: Dict) -> Any:
         """
         Converts text from a QLineEdit to the appropriate type.
@@ -1187,7 +1175,6 @@ class ConnectionEditor(QWidget):
         # Fallback for strings or other complex types we don't handle
         return text
 
-    ### MODIFIED ### - Smarter value conversion based on widget type
     def _update_project(self):
         config = {}
         params = self.interface_manager.get_interface_params(self.project.can_interface)
@@ -1229,7 +1216,6 @@ class ConnectionEditor(QWidget):
 
 
 class PropertiesPanel(QWidget):
-    ### MODIFIED ### - Accept interface_manager in constructor
     def __init__(
         self,
         project: Project,
@@ -1247,7 +1233,6 @@ class PropertiesPanel(QWidget):
         self.placeholder.setAlignment(Qt.AlignCenter)
         self.layout.addWidget(self.placeholder)
 
-    ### MODIFIED ### - Use the stored interface_manager
     def show_properties(self, item: QTreeWidgetItem):
         self.clear()
         data = item.data(0, Qt.UserRole) if item else None
@@ -1299,7 +1284,6 @@ class ProjectExplorer(QGroupBox):
         self.project = project
         self.rebuild_tree()
 
-    ### MODIFIED ### - Rebuild tree to include connection settings
     def rebuild_tree(self):
         self.tree.blockSignals(True)
         self.tree.clear()
@@ -1327,7 +1311,6 @@ class ProjectExplorer(QGroupBox):
         self.tree.blockSignals(False)
         self.project_changed.emit()
 
-    ### MODIFIED ### - Allow non-checkable items
     def add_item(self, parent, text, data=None, checked=None):
         item = QTreeWidgetItem(parent or self.tree, [text])
         if data:
@@ -1337,7 +1320,6 @@ class ProjectExplorer(QGroupBox):
             item.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
         return item
 
-    ### MODIFIED ### - More robust item change handling
     def on_item_changed(self, item, column):
         if data := item.data(0, Qt.UserRole):
             if data == self.project:  # This is the CANopen item
@@ -1395,7 +1377,6 @@ class ProjectExplorer(QGroupBox):
 class TransmitPanel(QGroupBox):
     frame_to_send = Signal(object)
     row_selection_changed = Signal(int, str)
-    ### NEW ### - Signal for tracking unsaved changes
     config_changed = Signal()
 
     def __init__(self):
@@ -1561,7 +1542,6 @@ class TransmitPanel(QGroupBox):
             )
         ]
 
-    ### NEW ### - Methods for config serialization
     def get_config(self) -> List[Dict]:
         config = []
         for r in range(self.table.rowCount()):
@@ -1667,6 +1647,10 @@ class CANBusObserver(QMainWindow):
         self.setWindowTitle("CANPeek")
         self.setGeometry(100, 100, 1400, 900)
 
+        ### MODIFIED ### - Add attributes for recent projects
+        self.MAX_RECENT_PROJECTS = 10
+        self.recent_projects_paths = []
+
         self.interface_manager = CANInterfaceManager()
 
         # Project state attributes
@@ -1716,6 +1700,10 @@ class CANBusObserver(QMainWindow):
         self.setup_menubar()
         self.setup_statusbar()
 
+        ### MODIFIED ### - Load recent projects and populate menu
+        self._load_recent_projects()
+        self._update_recent_projects_menu()
+
         # Connect signals for dirty state tracking
         self.project_explorer.project_changed.connect(lambda: self._set_dirty(True))
         self.transmit_panel.config_changed.connect(lambda: self._set_dirty(True))
@@ -1729,10 +1717,18 @@ class CANBusObserver(QMainWindow):
 
     def setup_actions(self):
         style = self.style()
-        self.new_project_action = QAction(style.standardIcon(QStyle.SP_FileIcon), "&New Project", self)
-        self.open_project_action = QAction(style.standardIcon(QStyle.SP_DialogOpenButton), "&Open Project...", self)
-        self.save_project_action = QAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save &Project", self)
-        self.save_project_as_action = QAction(QIcon(QPixmap(":/icons/document-save-as.png")), "Save Project &As...", self)
+        self.new_project_action = QAction(
+            style.standardIcon(QStyle.SP_FileIcon), "&New Project", self
+        )
+        self.open_project_action = QAction(
+            style.standardIcon(QStyle.SP_DialogOpenButton), "&Open Project...", self
+        )
+        self.save_project_action = QAction(
+            style.standardIcon(QStyle.SP_DialogSaveButton), "Save &Project", self
+        )
+        self.save_project_as_action = QAction(
+            QIcon(QPixmap(":/icons/document-save-as.png")), "Save Project &As...", self
+        )
 
         self.connect_action = QAction(
             style.standardIcon(QStyle.SP_DialogYesButton), "&Connect", self
@@ -1809,7 +1805,6 @@ class CANBusObserver(QMainWindow):
         explorer_dock.setWidget(self.project_explorer)
         self.addDockWidget(Qt.RightDockWidgetArea, explorer_dock)
 
-        ### MODIFIED ### - Pass the interface_manager during instantiation
         self.properties_panel = PropertiesPanel(
             self.project, self.project_explorer, self.interface_manager
         )
@@ -1849,6 +1844,11 @@ class CANBusObserver(QMainWindow):
         file_menu = menubar.addMenu("&File")
         file_menu.addAction(self.new_project_action)
         file_menu.addAction(self.open_project_action)
+
+        ### MODIFIED ### - Add the "Open Recent" submenu
+        self.recent_menu = QMenu("Open &Recent", self)
+        file_menu.addMenu(self.recent_menu)
+
         file_menu.addAction(self.save_project_action)
         file_menu.addAction(self.save_project_as_action)
         file_menu.addSeparator()
@@ -1964,7 +1964,6 @@ class CANBusObserver(QMainWindow):
             self.transmit_panel.update_row_data(row, data_bytes)
 
     def connect_can(self):
-        ### MODIFIED ### - Pass the flexible config dictionary to the thread
         self.can_reader = CANReaderThread(
             self.project.can_interface,
             self.project.can_config,
@@ -2015,7 +2014,6 @@ class CANBusObserver(QMainWindow):
         self.trace_model.set_data([])
         self.frame_count_label.setText("Frames: 0")
 
-    ### MODIFIED ### - Replaced with python-can based log saving
     def save_log(self):
         if not self.all_received_frames:
             QMessageBox.information(self, "No Data", "No frames to save.")
@@ -2053,7 +2051,6 @@ class CANBusObserver(QMainWindow):
             if logger:
                 logger.stop()  # This is crucial to flush buffers and close the file
 
-    ### MODIFIED ### - Replaced with python-can based log loading
     def load_log(self):
         filename, _ = QFileDialog.getOpenFileName(
             self, "Load CAN Log", "", self.log_file_filter_open
@@ -2089,7 +2086,80 @@ class CANBusObserver(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Load Error", f"Failed to load log: {e}")
 
-    ### NEW ### - Methods for project handling and state management
+    ### NEW ### - Methods for managing the recent projects list
+    def _load_recent_projects(self):
+        """Loads the list of recent project paths from QSettings."""
+        settings = QSettings()
+        self.recent_projects_paths = settings.value("recentProjects", [], type=list)
+
+    def _save_recent_projects(self):
+        """Saves the current list of recent project paths to QSettings."""
+        settings = QSettings()
+        settings.setValue("recentProjects", self.recent_projects_paths)
+
+    def _add_to_recent_projects(self, path: Path):
+        """Adds a project path to the top of the recent projects list."""
+        path_str = str(path.resolve())  # Use resolved, absolute path
+        # Remove if already exists
+        if path_str in self.recent_projects_paths:
+            self.recent_projects_paths.remove(path_str)
+        # Add to the top
+        self.recent_projects_paths.insert(0, path_str)
+        # Trim the list
+        self.recent_projects_paths = self.recent_projects_paths[
+            : self.MAX_RECENT_PROJECTS
+        ]
+        # Update the menu and save
+        self._update_recent_projects_menu()
+        self._save_recent_projects()
+
+    def _update_recent_projects_menu(self):
+        """Clears and repopulates the 'Open Recent' menu."""
+        self.recent_menu.clear()
+        if not self.recent_projects_paths:
+            self.recent_menu.addAction(
+                QAction("No Recent Projects", self, enabled=False)
+            )
+            return
+
+        for i, path_str in enumerate(self.recent_projects_paths):
+            path = Path(path_str)
+            # Display a more user-friendly name in the menu
+            action_text = f"&{i + 1} {path.name}"
+            action = QAction(action_text, self)
+            action.setData(path_str)  # Store the full path string in the action
+            action.setToolTip(path_str)
+            action.triggered.connect(self._open_recent_project)
+            self.recent_menu.addAction(action)
+
+        self.recent_menu.addSeparator()
+        clear_action = QAction("Clear List", self)
+        clear_action.triggered.connect(self._clear_recent_projects)
+        self.recent_menu.addAction(clear_action)
+
+    def _open_recent_project(self):
+        """Slot for opening a project from the 'Open Recent' menu."""
+        action = self.sender()
+        if isinstance(action, QAction):
+            path_str = action.data()
+            if path_str and Path(path_str).exists():
+                self._open_project(path_str)
+            else:
+                QMessageBox.warning(
+                    self, "File Not Found", f"The file '{path_str}' could not be found."
+                )
+                # Remove non-existent file from list
+                if path_str in self.recent_projects_paths:
+                    self.recent_projects_paths.remove(path_str)
+                    self._update_recent_projects_menu()
+                    self._save_recent_projects()
+
+    def _clear_recent_projects(self):
+        """Clears the entire recent projects list and menu."""
+        self.recent_projects_paths.clear()
+        self._update_recent_projects_menu()
+        self._save_recent_projects()
+
     def _set_dirty(self, dirty: bool):
         if self.project_dirty != dirty:
             self.project_dirty = dirty
@@ -2146,7 +2216,6 @@ class CANBusObserver(QMainWindow):
             self.disconnect_can()
             self.clear_data()
 
-            # ### MODIFIED ### - Pass self.interface_manager to the factory method
             self.project = Project.from_dict(
                 data.get("project", {}), self.interface_manager
             )
@@ -2154,6 +2223,10 @@ class CANBusObserver(QMainWindow):
             self.project_explorer.set_project(self.project)
             self.transmit_panel.set_config(data.get("transmit_config", []))
             self.current_project_path = Path(path)
+
+            ### MODIFIED ### - Add to recent projects list
+            self._add_to_recent_projects(self.current_project_path)
+
             self._set_dirty(False)
             self.statusBar().showMessage(
                 f"Project '{self.current_project_path.name}' loaded."
@@ -2192,6 +2265,10 @@ class CANBusObserver(QMainWindow):
                 json.dump(config, f, indent=2)
             self._set_dirty(False)
             self.statusBar().showMessage(f"Project saved to '{path.name}'.")
+
+            ### MODIFIED ### - Add to recent projects list
+            self._add_to_recent_projects(path)
+
             return True
         except Exception as e:
             QMessageBox.critical(
