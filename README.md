@@ -1,6 +1,6 @@
 # CANpeek
 
-**CANpeek** is a graphical CAN bus observer and analyzer for Linux and Windows (untested) based on Python and Qt.
+**CANpeek** is a graphical CAN bus observer and analyzer for Linux and Windows based on Python and Qt.
 
 ## 🤖 About the Code (aka “AI Slop” Warning)
 
@@ -31,10 +31,11 @@ The goal was rapid prototyping, not pristine architecture. Use it, improve it, r
 
 ## Installation
 
+The interfaces avaibility depends on modules and drivers available on your system.
+
 ### With pip
 
-The interfaces avaibility depends on modules and drivers available on your system. Use the extra [interfaces] to install optionals python modules.
-
+ Use the extra [interfaces] to install optionals python modules.
 
 ```bash
 pip install canpeek[interfaces]
@@ -71,3 +72,8 @@ CANPeek is designed to be quick & simple, you might find those intersesting:
 
  * [cangaroo](https://github.com/normaldotcom/cangaroo) : rather similar
  * [SavvyCAN](https://github.com/collin80/SavvyCAN) : a much more complete canbus tool
+
+## License
+
+ * This project is licensed by MIT License
+ * icons : [Yaru](https://github.com/ubuntu/yaru) : [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
