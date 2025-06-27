@@ -1,6 +1,6 @@
 [project]
 name = "canpeek"
-version = "0.4.0"
+version = "0.4.1"
 description = "A simple CAN bus monitoring tool, with dbc support."
 readme = "README.md"
 requires-python = ">=3.10"

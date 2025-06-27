@@ -27,6 +27,8 @@ import logging
 from contextlib import contextmanager
 from docstring_parser import parse
 import enum
+from . import rc_icons
+
 
 ### MODIFIED ### - Add QDockWidget, QToolBar, QStyle, QIcon
 from PySide6.QtWidgets import (
@@ -59,6 +61,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QDialog,
     QTextEdit,
+    
 )
 
 ### MODIFIED ### - Add QProcess, QSettings
@@ -72,8 +75,9 @@ from PySide6.QtCore import (
     QModelIndex,
     QSortFilterProxyModel,
     QSettings,
+    
 )
-from PySide6.QtGui import QAction, QKeyEvent
+from PySide6.QtGui import QAction, QKeyEvent, QIcon, QPixmap
 
 
 import can
@@ -1725,10 +1729,10 @@ class CANBusObserver(QMainWindow):
 
     def setup_actions(self):
         style = self.style()
-        self.new_project_action = QAction("&New Project", self)
-        self.open_project_action = QAction("&Open Project...", self)
-        self.save_project_action = QAction("&Save Project", self)
-        self.save_project_as_action = QAction("Save Project &As...", self)
+        self.new_project_action = QAction(style.standardIcon(QStyle.SP_FileIcon), "&New Project", self)
+        self.open_project_action = QAction(style.standardIcon(QStyle.SP_DialogOpenButton), "&Open Project...", self)
+        self.save_project_action = QAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save &Project", self)
+        self.save_project_as_action = QAction(QIcon(QPixmap(":/icons/document-save-as.png")), "Save Project &As...", self)
 
         self.connect_action = QAction(
             style.standardIcon(QStyle.SP_DialogYesButton), "&Connect", self
@@ -1740,10 +1744,10 @@ class CANBusObserver(QMainWindow):
             style.standardIcon(QStyle.SP_TrashIcon), "&Clear Data", self
         )
         self.save_log_action = QAction(
-            style.standardIcon(QStyle.SP_DialogSaveButton), "&Save Log...", self
+            QIcon(QPixmap(":/icons/document-export.png")), "&Save Log...", self
         )
         self.load_log_action = QAction(
-            style.standardIcon(QStyle.SP_DialogOpenButton), "&Load Log...", self
+            QIcon(QPixmap(":/icons/document-import.png")), "&Load Log...", self
         )
         self.exit_action = QAction("&Exit", self)
 
@@ -1765,6 +1769,10 @@ class CANBusObserver(QMainWindow):
         toolbar = QToolBar("Main Toolbar")
         toolbar.setObjectName("MainToolbar")
         self.addToolBar(toolbar)
+        toolbar.addAction(self.new_project_action)
+        toolbar.addAction(self.open_project_action)
+        toolbar.addAction(self.save_project_action)
+        toolbar.addSeparator()
         toolbar.addAction(self.connect_action)
         toolbar.addAction(self.disconnect_action)
         toolbar.addSeparator()
@@ -1844,10 +1852,16 @@ class CANBusObserver(QMainWindow):
         file_menu.addAction(self.save_project_action)
         file_menu.addAction(self.save_project_as_action)
         file_menu.addSeparator()
+        file_menu.addAction(self.clear_action)
         file_menu.addAction(self.load_log_action)
         file_menu.addAction(self.save_log_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
+
+        connect_menu = menubar.addMenu("&Connect")
+        connect_menu.addAction(self.connect_action)
+        connect_menu.addAction(self.disconnect_action)
+
         view_menu = menubar.addMenu("&View")
         view_menu.addAction(self.docks["explorer"].toggleViewAction())
         view_menu.addAction(self.docks["properties"].toggleViewAction())
