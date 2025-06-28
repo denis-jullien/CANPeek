@@ -66,6 +66,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QSplitter,
     QProgressBar,
+    QSizePolicy,
 )
 
 from PySide6.QtCore import (
@@ -1678,7 +1679,9 @@ class ObjectDictionaryViewer(QWidget):
         
         # Node info header
         self.node_info_label = QLabel("No CANopen node selected")
-        self.node_info_label.setStyleSheet("font-weight: bold; padding: 5px;")
+        self.node_info_label.setStyleSheet("font-weight: bold; padding: 2px;")
+        self.node_info_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.node_info_label.setMaximumHeight(20)
         layout.addWidget(self.node_info_label)
         
         # Splitter for tree and details
@@ -1687,7 +1690,7 @@ class ObjectDictionaryViewer(QWidget):
         
         # Object dictionary tree
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Index", "Sub", "Name", "Type", "Access", "Value"])
+        self.tree.setHeaderLabels(["Index", "Sub", "Name", "Type", "Access", "Value", "Hex Value"])
         self.tree.setAlternatingRowColors(True)
         self.tree.itemSelectionChanged.connect(self.on_item_selected)
         splitter.addWidget(self.tree)
@@ -1851,8 +1854,9 @@ class ObjectDictionaryViewer(QWidget):
                 obj_item = QTreeWidgetItem(parent_item, [
                     f"0x{index:04X}", "", 
                     getattr(obj, 'name', f"Object_{index:04X}"),
-                    getattr(obj, 'data_type', 'Unknown'),
+                    str(getattr(obj, 'data_type', 'Unknown')),
                     self.get_access_string(getattr(obj, 'access_type', None)),
+                    "",
                     ""
                 ])
                 obj_item.setData(0, Qt.UserRole, {'index': index, 'subindex': None, 'obj': obj})
@@ -1864,9 +1868,10 @@ class ObjectDictionaryViewer(QWidget):
                             f"0x{index:04X}",
                             f"0x{subindex:02X}",
                             getattr(subobj, 'name', f"Sub_{subindex:02X}"),
-                            getattr(subobj, 'data_type', 'Unknown'),
+                            str(getattr(subobj, 'data_type', 'Unknown')),
                             self.get_access_string(getattr(subobj, 'access_type', None)),
-                            ""
+                            "-",
+                            "-"
                         ])
                         sub_item.setData(0, Qt.UserRole, {
                             'index': index, 
@@ -1878,9 +1883,10 @@ class ObjectDictionaryViewer(QWidget):
                 obj_item = QTreeWidgetItem(parent_item, [
                     f"0x{index:04X}", "0x00",
                     getattr(obj, 'name', f"Object_{index:04X}"),
-                    getattr(obj, 'data_type', 'Unknown'),
+                    str(getattr(obj, 'data_type', 'Unknown')),
                     self.get_access_string(getattr(obj, 'access_type', None)),
-                    ""
+                    "-",
+                    "-"
                 ])
                 obj_item.setData(0, Qt.UserRole, {
                     'index': index, 
@@ -1890,7 +1896,25 @@ class ObjectDictionaryViewer(QWidget):
                 
         except Exception as e:
             print(f"Error adding object 0x{index:04X} to tree: {e}")
+    
+    def update_tree_item_value(self, value, raw_value=None):
+        """Update the value columns of the currently selected tree item"""
+        current_item = self.tree.currentItem()
+        if current_item:
+            current_item.setText(5, value)  # Column 5 is the Value column
             
+            # Generate hex value for column 6
+            if raw_value is not None:
+                if isinstance(raw_value, bytes):
+                    hex_value = raw_value.hex(' ').upper()
+                elif isinstance(raw_value, int):
+                    hex_value = f"0x{raw_value:X}"
+                else:
+                    hex_value = "-"
+                current_item.setText(6, hex_value)  # Column 6 is the Hex Value column
+            else:
+                current_item.setText(6, "-")
+             
     def get_access_string(self, access_type):
         """Convert access type to readable string"""
         if access_type is None:
@@ -1900,6 +1924,8 @@ class ObjectDictionaryViewer(QWidget):
             'ro': 'Read Only',
             'wo': 'Write Only', 
             'rw': 'Read/Write',
+            'rww': 'Read/Write/Write',
+            'rwr': 'Read/Write/Read',
             'const': 'Constant'
         }
         
@@ -1933,13 +1959,13 @@ class ObjectDictionaryViewer(QWidget):
         self.index_label.setText(f"0x{index:04X}")
         self.subindex_label.setText(f"0x{subindex:02X}" if subindex is not None else "-")
         self.name_label.setText(getattr(obj, 'name', 'Unknown'))
-        self.type_label.setText(getattr(obj, 'data_type', 'Unknown'))
+        self.type_label.setText(str(getattr(obj, 'data_type', 'Unknown')))
         self.access_label.setText(self.get_access_string(getattr(obj, 'access_type', None)))
         
         # Enable/disable SDO operations based on access type
         access_type = getattr(obj, 'access_type', None)
-        can_read = access_type in ['ro', 'rw'] if access_type else True
-        can_write = access_type in ['wo', 'rw'] if access_type else True
+        can_read = access_type in ['ro', 'rw', 'rww', 'rwr'] if access_type else True
+        can_write = access_type in ['wo', 'rw', 'rww', 'rwr'] if access_type else True
         
         # Only enable if we have a connected node
         has_connection = (self.current_node is not None and 
@@ -1986,6 +2012,9 @@ class ObjectDictionaryViewer(QWidget):
             self.current_value_label.setText(display_value)
             self.status_label.setText("Read successful")
             self.status_label.setStyleSheet("color: green;")
+            
+            # Update the tree item's value columns
+            self.update_tree_item_value(display_value, value)
             
         except Exception as e:
             self.status_label.setText(f"Read failed: {e}")
