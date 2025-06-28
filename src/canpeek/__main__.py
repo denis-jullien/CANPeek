@@ -854,6 +854,59 @@ class DBCEditor(QWidget):
             )
 
 
+class PDOEditor(QWidget):
+    def __init__(self, node: CANopenNode):
+        super().__init__()
+        self.node = node
+        self.pdo_database = None
+        self.setup_ui()
+        self.load_pdo_database()
+
+    def setup_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        group = QGroupBox(f"PDO Content: {self.node.path.name} (Node {self.node.node_id})")
+        layout = QVBoxLayout(group)
+        main_layout.addWidget(group)
+        
+        self.table = QTableWidget()
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Message", "ID (hex)", "DLC", "Signals"])
+        layout.addWidget(self.table)
+        
+        self.status_label = QLabel("Loading PDO database...")
+        layout.addWidget(self.status_label)
+
+    def load_pdo_database(self):
+        try:
+            slave_name = f"{self.node.path.stem}_Node{self.node.node_id}"
+            self.pdo_database = dcf_2_db(str(self.node.path), self.node.node_id, slave_name)
+            self.populate_table()
+            self.status_label.setText(f"Loaded {len(self.pdo_database.messages)} PDO messages")
+        except Exception as e:
+            self.status_label.setText(f"Error loading PDO database: {str(e)}")
+            self.table.setRowCount(0)
+
+    def populate_table(self):
+        if not self.pdo_database:
+            return
+            
+        messages = sorted(self.pdo_database.messages, key=lambda m: m.frame_id)
+        self.table.setRowCount(len(messages))
+        
+        for r, m in enumerate(messages):
+            self.table.setItem(r, 0, QTableWidgetItem(m.name))
+            self.table.setItem(r, 1, QTableWidgetItem(f"0x{m.frame_id:X}"))
+            self.table.setItem(r, 2, QTableWidgetItem(str(m.length)))
+            self.table.setItem(
+                r, 3, QTableWidgetItem(", ".join(s.name for s in m.signals))
+            )
+        
+        self.table.resizeColumnsToContents()
+
+
 class FilterEditor(QWidget):
     filter_changed = Signal()
 
@@ -1070,17 +1123,22 @@ class CANopenNodeEditor(QWidget):
     def __init__(self, node: CANopenNode):
         super().__init__()
         self.node = node
+        self.pdo_editor = None
         self.setup_ui()
 
     def setup_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Node properties group
         group = QGroupBox("CANopen Node Properties")
         layout = QFormLayout(group)
         main_layout.addWidget(group)
+        
         path_edit = QLineEdit(str(self.node.path))
         path_edit.setReadOnly(True)
         layout.addRow("EDS/DCF File:", path_edit)
+        
         self.node_id_spinbox = QSpinBox()
         self.node_id_spinbox.setRange(1, 127)
         self.node_id_spinbox.setValue(self.node.node_id)
@@ -1093,10 +1151,36 @@ class CANopenNodeEditor(QWidget):
         self.pdo_decoding_cb.setToolTip("Decode PDO messages using EDS/DCF file")
         layout.addRow(self.pdo_decoding_cb)
         self.pdo_decoding_cb.toggled.connect(self._update_node)
+        self.pdo_decoding_cb.toggled.connect(self._toggle_pdo_content)
+        
+        # PDO content area (initially hidden)
+        self._setup_pdo_content()
+        
+    def _setup_pdo_content(self):
+        """Setup PDO content viewer"""
+        if self.node.pdo_decoding_enabled:
+            self.pdo_editor = PDOEditor(self.node)
+            self.layout().addWidget(self.pdo_editor)
+        
+    def _toggle_pdo_content(self, enabled: bool):
+        """Show/hide PDO content based on checkbox state"""
+        if enabled and not self.pdo_editor:
+            self.pdo_editor = PDOEditor(self.node)
+            self.layout().addWidget(self.pdo_editor)
+        elif not enabled and self.pdo_editor:
+            self.pdo_editor.deleteLater()
+            self.pdo_editor = None
 
     def _update_node(self):
         self.node.node_id = self.node_id_spinbox.value()
-        self.node.pdo_decoding_enabled = self.pdo_decoding_cb.isChecked()  # Update PDO setting
+        old_pdo_enabled = self.node.pdo_decoding_enabled
+        self.node.pdo_decoding_enabled = self.pdo_decoding_cb.isChecked()
+        
+        # Reload PDO content if node ID changed and PDO is enabled
+        if (self.node.pdo_decoding_enabled and self.pdo_editor and 
+            old_pdo_enabled == self.node.pdo_decoding_enabled):
+            self.pdo_editor.load_pdo_database()
+            
         self.node_changed.emit()
 
 
@@ -1290,6 +1374,10 @@ class PropertiesPanel(QWidget):
             self.current_widget = editor
         elif isinstance(data, DBCFile):
             self.current_widget = DBCEditor(data)
+        elif isinstance(data, tuple) and len(data) == 2 and data[0] == "pdo_content":
+            # PDO content viewer for CANopen node
+            node = data[1]
+            self.current_widget = PDOEditor(node)
         else:
             self.layout.addWidget(self.placeholder)
             self.placeholder.show()
