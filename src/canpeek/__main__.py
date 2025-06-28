@@ -64,7 +64,6 @@ from PySide6.QtWidgets import (
     QStyle,
     QDialog,
     QTextEdit,
-    QProgressDialog,
 )
 
 from PySide6.QtCore import (
@@ -84,7 +83,7 @@ from PySide6.QtGui import QAction, QKeyEvent, QIcon, QPixmap
 
 import can
 import cantools
-import canopen  # ### NEW ###
+import canopen
 
 if TYPE_CHECKING:
     from __main__ import ProjectExplorer, CANInterfaceManager, CANBusObserver
@@ -125,7 +124,6 @@ class DBCFile:
     enabled: bool = True
 
 
-### NEW ### - Dataclass for CANopen Node configuration
 @dataclass
 class CANopenNode:
     path: Path
@@ -175,7 +173,6 @@ class CANFrameFilter:
 class Project:
     dbcs: List[DBCFile] = field(default_factory=list)
     filters: List[CANFrameFilter] = field(default_factory=list)
-    ### MODIFIED ### - Updated CANopen configuration
     canopen_enabled: bool = False
     canopen_nodes: List[CANopenNode] = field(default_factory=list)
     can_interface: str = "virtual"
@@ -187,14 +184,11 @@ class Project:
     def get_active_filters(self) -> List[CANFrameFilter]:
         return [f for f in self.filters if f.enabled]
 
-    ### MODIFIED ### - Updated to support new CANopen config
     def to_dict(self) -> Dict:
-        serializable_can_config = {}
-        for key, value in self.can_config.items():
-            if isinstance(value, enum.Enum):
-                serializable_can_config[key] = value.name
-            else:
-                serializable_can_config[key] = value
+        serializable_can_config = {
+            k: v.name if isinstance(v, enum.Enum) else v
+            for k, v in self.can_config.items()
+        }
         return {
             "dbcs": [
                 {"path": str(dbc.path), "enabled": dbc.enabled} for dbc in self.dbcs
@@ -206,7 +200,6 @@ class Project:
             "can_config": serializable_can_config,
         }
 
-    ### MODIFIED ### - Updated to support new CANopen config
     @classmethod
     def from_dict(
         cls, data: Dict, interface_manager: "CANInterfaceManager"
@@ -215,14 +208,12 @@ class Project:
         project.canopen_enabled = data.get("canopen_enabled", False)
         project.can_interface = data.get("can_interface", "virtual")
 
-        # Hydrate CANopen nodes
         for node_data in data.get("canopen_nodes", []):
             try:
                 project.canopen_nodes.append(CANopenNode.from_dict(node_data))
             except Exception as e:
                 print(f"Warning: Could not load CANopen node from project: {e}")
 
-        # Hydrate the can_config: convert strings from file back to real objects (enums)
         config_from_file = data.get("can_config", {})
         hydrated_config = {}
         param_defs = interface_manager.get_interface_params(project.can_interface)
@@ -235,7 +226,6 @@ class Project:
 
                 param_info = param_defs[key]
                 expected_type = param_info.get("type")
-
                 is_enum = False
                 try:
                     if inspect.isclass(expected_type) and issubclass(
@@ -247,12 +237,8 @@ class Project:
 
                 if is_enum and isinstance(value, str):
                     try:
-                        # Convert saved string name back to the actual Enum member
                         hydrated_config[key] = expected_type[value]
                     except KeyError:
-                        print(
-                            f"Warning: Stored enum member '{value}' for '{key}' is invalid. Using default."
-                        )
                         hydrated_config[key] = param_info.get("default")
                 else:
                     hydrated_config[key] = value
@@ -274,10 +260,8 @@ class Project:
                 print(f"Warning: Could not load DBC from project file: {e}")
         return project
 
-# ... (LogCaptureHandler, CANInterfaceManager, and CANopenDecoder remain unchanged)
-class LogCaptureHandler(logging.Handler):
-    """A logging handler that captures records to a list."""
 
+class LogCaptureHandler(logging.Handler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.records = []
@@ -288,42 +272,21 @@ class LogCaptureHandler(logging.Handler):
 
 @contextmanager
 def capture_logs(logger_name: str):
-    """
-    A context manager to temporarily capture logs of level WARNING or higher
-    from the specified logger.
-    """
     log_handler = LogCaptureHandler()
     target_logger = logging.getLogger(logger_name)
-
-    # Store the original state to restore it later
     original_handlers = target_logger.handlers[:]
     original_level = target_logger.level
-
     try:
-        # Clear existing handlers and set a low level to catch everything
         target_logger.handlers.clear()
         target_logger.addHandler(log_handler)
-        target_logger.setLevel(
-            logging.WARNING
-        )  # We only care about warnings and errors
-
-        yield log_handler  # Pass the handler to the 'with' block
-
+        target_logger.setLevel(logging.WARNING)
+        yield log_handler
     finally:
-        # Restore the logger to its original state, no matter what
         target_logger.handlers = original_handlers
         target_logger.setLevel(original_level)
 
 
-# A manager to dynamically and safely find and inspect python-can interfaces
 class CANInterfaceManager:
-    """
-    Dynamically discovers available python-can interfaces. It uses the
-    'docstring-parser' library to parse their docstrings, finds their
-    configuration parameters, and filters out any interfaces that produce
-    warnings or errors during discovery.
-    """
-
     def __init__(self):
         self._interfaces = self._discover_interfaces()
 
@@ -335,42 +298,8 @@ class CANInterfaceManager:
                 with capture_logs("can") as log_handler:
                     module = importlib.import_module(module_name)
                     bus_class = getattr(module, class_name)
-
-                    init_doc = inspect.getdoc(bus_class.__init__)
-                    raw_doc = init_doc if init_doc else inspect.getdoc(bus_class)
-
-                    if raw_doc:
-                        parsed = parse(raw_doc)
-
-                        desc_parts = []
-                        if parsed.short_description:
-                            desc_parts.append(parsed.short_description)
-                        if parsed.long_description:
-                            desc_parts.append(parsed.long_description)
-                        description = "\n\n".join(desc_parts)
-
-                        params_dict = {
-                            param.arg_name: {
-                                "type_name": param.type_name,
-                                "description": param.description or "",
-                            }
-                            for param in parsed.params
-                        }
-
-                        parsed_doc_dict = {
-                            "description": description,
-                            "params": params_dict,
-                        }
-                    else:
-                        parsed_doc_dict = {"description": "", "params": {}}
-
                     if log_handler.records:
-                        first_warning = log_handler.records[0].getMessage()
-                        print(
-                            f"Info: Skipping interface '{name}' due to warning: {first_warning}"
-                        )
                         continue
-
                 sig = inspect.signature(bus_class.__init__)
                 params = {}
                 for param in sig.parameters.values():
@@ -385,13 +314,7 @@ class CANInterfaceManager:
                         else type(param.default),
                     }
                     params[param.name] = param_info
-
-                interfaces[name] = {
-                    "class": bus_class,
-                    "params": params,
-                    "docstring": parsed_doc_dict,
-                }
-
+                interfaces[name] = {"class": bus_class, "params": params}
             except (ImportError, AttributeError, OSError, TypeError) as e:
                 print(f"Info: Skipping interface '{name}' due to error on load: {e}")
             except Exception as e:
@@ -405,12 +328,7 @@ class CANInterfaceManager:
     def get_interface_params(self, name: str) -> Optional[Dict]:
         return self._interfaces.get(name, {}).get("params")
 
-    def get_interface_docstring(self, name: str) -> Optional[Dict]:
-        """Returns the parsed docstring for the given interface name."""
-        return self._interfaces.get(name, {}).get("docstring")
 
-
-# --- Decoders ---
 class CANopenDecoder:
     @staticmethod
     def decode(frame: CANFrame) -> Optional[Dict]:
@@ -495,9 +413,8 @@ class CANopenDecoder:
     def _sdo(direction: str, data: bytes, node_id: int) -> Dict:
         if not data:
             return None
-        cmd = data[0]
+        cmd, specifier = data[0], (data[0] >> 5) & 0x7
         base_info = {"CANopen Type": f"SDO {direction}", "CANopen Node": node_id}
-        specifier = (cmd >> 5) & 0x7
         if specifier in [1, 2]:
             if len(data) < 4:
                 return {**base_info, "Error": "Invalid SDO Initiate"}
@@ -544,8 +461,7 @@ class CANopenDecoder:
         }
 
 
-# ... (CANTraceModel and CANGroupedModel remain mostly the same, but note the
-#      `canopen_enabled` property is what matters for the static decoder)
+# --- Models ---
 class CANTraceModel(QAbstractTableModel):
     def __init__(self):
         super().__init__()
@@ -606,7 +522,7 @@ class CANTraceModel(QAbstractTableModel):
         if self.canopen_enabled:
             if co_info := CANopenDecoder.decode(frame):
                 details = ", ".join(
-                    f"{k}={v}" for k, v in co_info.items() if k not in ["CANopen Type"]
+                    f"{k}={v}" for k, v in co_info.items() if k != "CANopen Type"
                 )
                 decoded_parts.append(f"CANopen {co_info['CANopen Type']}: {details}")
         return " | ".join(decoded_parts)
@@ -800,7 +716,8 @@ class CANGroupedModel(QAbstractItemModel):
                 return frame.data.hex(" ")
         return None
 
-# ... (CANReaderThread is unchanged)
+
+# --- CAN Communication ---
 class CANReaderThread(QThread):
     frame_received = Signal(object)
     error_occurred = Signal(str)
@@ -866,9 +783,8 @@ class CANReaderThread(QThread):
                 finally:
                     self.bus = None
 
-# --- UI Classes ---
 
-# ... (DBCEditor, FilterEditor, DocumentationWindow, ConnectionEditor are unchanged)
+# --- UI Classes ---
 class DBCEditor(QWidget):
     def __init__(self, dbc_file: DBCFile):
         super().__init__()
@@ -974,71 +890,6 @@ class FilterEditor(QWidget):
         self.filter_changed.emit()
 
 
-class DocumentationWindow(QDialog):
-    """A separate, non-blocking window for displaying parsed documentation."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Interface Documentation")
-        self.setMinimumSize(600, 450)
-
-        layout = QVBoxLayout(self)
-        self.text_edit = QTextEdit()
-        self.text_edit.setReadOnly(True)
-        self.text_edit.setObjectName("documentationViewer")
-        layout.addWidget(self.text_edit)
-
-    def set_content(self, interface_name: str, parsed_doc: Dict):
-        """
-        Updates the window title and content by building an HTML string
-        from the parsed docstring dictionary, including type information.
-        """
-        self.setWindowTitle(f"Documentation for '{interface_name}'")
-
-        html = """
-        <style>
-            body { font-family: sans-serif; font-size: 14px; }
-            p { margin-bottom: 12px; }
-            dl { margin-left: 10px; }
-            dt { font-weight: bold; color: #af5aed; margin-top: 8px; }
-            dt .param-type { font-style: italic; color: #555555; font-weight: normal; }
-            dd { margin-left: 20px; margin-bottom: 8px; }
-            hr { border: 1px solid #cccccc; }
-        </style>
-        """
-
-        if parsed_doc and parsed_doc.get("description"):
-            desc = parsed_doc["description"].replace("<", "<").replace(">", ">")
-            html += f"<p>{desc.replace(chr(10), '<br>')}</p>"
-
-        if parsed_doc and parsed_doc.get("params"):
-            html += "<hr><h3>Parameters:</h3>"
-            html += "<dl>"
-            for name, param_info in parsed_doc["params"].items():
-                type_name = param_info.get("type_name")
-                description = (
-                    param_info.get("description", "")
-                    .replace("<", "<")
-                    .replace(">", ">")
-                )
-
-                # Build the header line (dt) with optional type info
-                header = f"<strong>{name}</strong>"
-                if type_name:
-                    header += f' <span class="param-type">({type_name})</span>'
-
-                html += f"<dt>{header}:</dt><dd>{description}</dd>"
-            html += "</dl>"
-
-        if not (
-            parsed_doc and (parsed_doc.get("description") or parsed_doc.get("params"))
-        ):
-            html += "<p>No documentation available.</p>"
-
-        self.text_edit.setHtml(html)
-
-
-# Fully dynamic editor for connection settings
 class ConnectionEditor(QWidget):
     project_changed = Signal()
 
@@ -1047,10 +898,6 @@ class ConnectionEditor(QWidget):
         self.project = project
         self.interface_manager = interface_manager
         self.dynamic_widgets = {}
-
-        # Create a single, persistent instance of the documentation window
-        self.docs_window = DocumentationWindow(self)
-
         self.setup_ui()
 
     def setup_ui(self):
@@ -1059,73 +906,36 @@ class ConnectionEditor(QWidget):
         group = QGroupBox("Connection Properties")
         self.form_layout = QFormLayout(group)
         main_layout.addWidget(group)
-
-        # --- Interface Selection ---
         self.interface_combo = QComboBox()
         self.interface_combo.addItems(self.interface_manager.get_available_interfaces())
         self.form_layout.addRow("Interface:", self.interface_combo)
-
-        # --- NEW: Button to show the documentation in a separate window ---
-        self.show_docs_button = QPushButton("Show python-can Documentation...")
-        self.form_layout.addRow(self.show_docs_button)
-
-        # --- Dynamic Fields ---
         self.dynamic_fields_container = QWidget()
         self.dynamic_layout = QFormLayout(self.dynamic_fields_container)
         self.dynamic_layout.setContentsMargins(0, 0, 0, 0)
         self.form_layout.addRow(self.dynamic_fields_container)
-
-        # --- Connections and Initial State ---
-        self.show_docs_button.clicked.connect(self._show_documentation_window)
         self.interface_combo.currentTextChanged.connect(self._on_interface_changed)
         self.interface_combo.setCurrentText(self.project.can_interface)
         self._rebuild_dynamic_fields(self.project.can_interface)
-
-    # Method to show the documentation dialog
-    def _show_documentation_window(self):
-        interface_name = self.interface_combo.currentText()
-        docstring = self.interface_manager.get_interface_docstring(interface_name)
-        self.docs_window.set_content(interface_name, docstring)
-        self.docs_window.show()
-        # Bring the window to the front
-        self.docs_window.raise_()
-        self.docs_window.activateWindow()
 
     def _on_interface_changed(self, interface_name: str):
         self.project.can_interface = interface_name
         self.project.can_config.clear()
         self._rebuild_dynamic_fields(interface_name)
-        # _rebuild_dynamic_fields now calls _update_project at the end
-        # self._update_project() # This call is now redundant
 
     def _rebuild_dynamic_fields(self, interface_name: str):
-        # Fetch the parsed docstring data once
-        parsed_doc = self.interface_manager.get_interface_docstring(interface_name)
-        param_docs = parsed_doc.get("params", {}) if parsed_doc else {}
-
-        has_docs = bool(
-            parsed_doc and (parsed_doc.get("description") or parsed_doc.get("params"))
-        )
-        self.show_docs_button.setVisible(has_docs)
-
-        # --- Clear and rebuild the dynamic input fields ---
         while self.dynamic_layout.count():
             item = self.dynamic_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         self.dynamic_widgets.clear()
-
         params = self.interface_manager.get_interface_params(interface_name)
         if not params:
             self._update_project()
             return
-
         for name, info in params.items():
             default_value = self.project.can_config.get(name, info.get("default"))
             expected_type = info["type"]
             widget = None
-
-            # Check if the parameter's type is an Enum
             is_enum = False
             try:
                 if inspect.isclass(expected_type) and issubclass(
@@ -1133,98 +943,67 @@ class ConnectionEditor(QWidget):
                 ):
                     is_enum = True
             except TypeError:
-                pass  # Not a class, so cannot be an enum
-
+                pass
             if is_enum:
                 widget = QComboBox()
                 widget.setProperty("enum_class", expected_type)
-                members = list(expected_type)
-                widget.addItems([m.name for m in members])
-
-                # Set current value from saved config or default
+                widget.addItems([m.name for m in list(expected_type)])
                 current_value = default_value
                 if isinstance(current_value, enum.Enum):
                     widget.setCurrentText(current_value.name)
                 elif isinstance(current_value, str):
                     widget.setCurrentText(current_value)
-
                 widget.currentTextChanged.connect(self._update_project)
-
             elif expected_type is bool:
                 widget = QCheckBox()
-                if default_value is not None:
-                    widget.setChecked(bool(default_value))
+                widget.setChecked(
+                    bool(default_value) if default_value is not None else False
+                )
                 widget.toggled.connect(self._update_project)
-
             elif name == "bitrate" and expected_type is int:
                 widget = QSpinBox()
                 widget.setRange(1000, 4000000)
-                widget.setSingleStep(1000)
                 widget.setSuffix(" bps")
-                if default_value is not None:
-                    widget.setValue(int(default_value))
+                widget.setValue(
+                    int(default_value) if default_value is not None else 125000
+                )
                 widget.valueChanged.connect(self._update_project)
             else:
                 widget = QLineEdit()
-                # Set text to empty if default is None, otherwise string representation
                 widget.setText(str(default_value) if default_value is not None else "")
                 widget.editingFinished.connect(self._update_project)
-
             if widget:
-                tooltip_info = param_docs.get(name)
-                if tooltip_info and tooltip_info.get("description"):
-                    tooltip_parts = []
-                    type_name = tooltip_info.get("type_name")
-                    if type_name:
-                        tooltip_parts.append(f"({type_name})")
-                    tooltip_parts.append(tooltip_info["description"])
-                    tooltip_text = " ".join(tooltip_parts)
-                    widget.setToolTip(tooltip_text)
-
                 label_text = f"{name.replace('_', ' ').title()}:"
                 self.dynamic_layout.addRow(label_text, widget)
                 self.dynamic_widgets[name] = widget
-
         self._update_project()
 
     def _convert_line_edit_text(self, text: str, param_info: Dict) -> Any:
-        """
-        Converts text from a QLineEdit to the appropriate type.
-        Handles optional values (empty string -> None) and hex/dec integers.
-        """
         text = text.strip()
-        expected_type = param_info.get("type")
-        default_value = param_info.get("default")
-
-        # If parameter is optional (indicated by default=None), empty text becomes None
+        expected_type, default_value = param_info.get("type"), param_info.get("default")
         if not text and default_value is None:
             return None
-
-        # Attempt type conversion based on inspection
         if expected_type is int:
             try:
-                return int(text)  # Try decimal first
+                return int(text)
             except ValueError:
-                return int(text, 16)  # Fallback to hex
+                return int(text, 16)
         elif expected_type is float:
             return float(text)
         elif expected_type is bool:
             return text.lower() in ("true", "1", "t", "yes", "y")
-
-        # Fallback for strings or other complex types we don't handle
         return text
 
     def _update_project(self):
         config = {}
-        params = self.interface_manager.get_interface_params(self.project.can_interface)
-        if not params:
-            params = {}
-
+        params = (
+            self.interface_manager.get_interface_params(self.project.can_interface)
+            or {}
+        )
         for name, widget in self.dynamic_widgets.items():
             param_info = params.get(name)
             if not param_info:
                 continue
-
             value = None
             try:
                 if isinstance(widget, QCheckBox):
@@ -1234,27 +1013,20 @@ class ConnectionEditor(QWidget):
                 elif isinstance(widget, QComboBox):
                     enum_class = widget.property("enum_class")
                     if enum_class:
-                        # Convert selected string back to the actual Enum member
                         value = enum_class[widget.currentText()]
                 elif isinstance(widget, QLineEdit):
                     value = self._convert_line_edit_text(widget.text(), param_info)
-
             except (ValueError, TypeError, KeyError) as e:
                 print(
-                    f"Warning: Could not get value for '{name}'. Input may be invalid. Error: {e}"
+                    f"Warning: Could not get value for '{name}'. Invalid input. Error: {e}"
                 )
-                # Skip adding this parameter to the config if conversion fails
                 continue
-
-            # Only add to config if a valid value was determined
             config[name] = value
-
         self.project.can_interface = self.interface_combo.currentText()
         self.project.can_config = config
         self.project_changed.emit()
 
 
-### NEW ### - Editor for CANopen Node properties
 class CANopenNodeEditor(QWidget):
     node_changed = Signal()
 
@@ -1269,18 +1041,13 @@ class CANopenNodeEditor(QWidget):
         group = QGroupBox("CANopen Node Properties")
         layout = QFormLayout(group)
         main_layout.addWidget(group)
-
-        # File Path (read-only)
         path_edit = QLineEdit(str(self.node.path))
         path_edit.setReadOnly(True)
         layout.addRow("EDS/DCF File:", path_edit)
-
-        # Node ID (editable)
         self.node_id_spinbox = QSpinBox()
         self.node_id_spinbox.setRange(1, 127)
         self.node_id_spinbox.setValue(self.node.node_id)
         layout.addRow("Node ID:", self.node_id_spinbox)
-
         self.node_id_spinbox.valueChanged.connect(self._update_node)
 
     def _update_node(self):
@@ -1288,13 +1055,35 @@ class CANopenNodeEditor(QWidget):
         self.node_changed.emit()
 
 
-### NEW ### - Editor for the root CANopen item
-class CANopenRootEditor(QWidget):
-    settings_changed = Signal(bool)
+class ScanWorker(QObject):
+    finished = Signal()
+    error = Signal(str)
 
-    def __init__(self, project: Project):
+    def __init__(self, network: canopen.Network):
+        super().__init__()
+        self.network = network
+
+    def run(self):
+        try:
+            self.network.scanner.search()
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class CANopenRootEditor(QWidget):
+    settings_changed = Signal()
+
+    def __init__(self, project: Project, network: canopen.Network):
         super().__init__()
         self.project = project
+        self.network = network
+        self.scan_thread = None
+        self.scan_worker = None
+        self.passive_scan_timer = QTimer(self)
+        self.passive_scan_timer.setInterval(1000)
+        self.passive_scan_timer.timeout.connect(self._update_discovered_nodes)
+        self.last_known_nodes = set()
         self.setup_ui()
 
     def setup_ui(self):
@@ -1303,29 +1092,124 @@ class CANopenRootEditor(QWidget):
         group = QGroupBox("CANopen Settings")
         layout = QFormLayout(group)
         main_layout.addWidget(group)
-
-        self.enabled_cb = QCheckBox("Enable CANopen Decoding")
+        self.enabled_cb = QCheckBox("Enable CANopen Processing")
         self.enabled_cb.setChecked(self.project.canopen_enabled)
         layout.addRow(self.enabled_cb)
+        scan_group = QGroupBox("Node Discovery")
+        scan_layout = QVBoxLayout(scan_group)
+        passive_layout = QFormLayout()
+        self.discovery_status_label = QLabel("Disconnected")
+        passive_layout.addRow("Status:", self.discovery_status_label)
+        discovered_nodes_layout = QHBoxLayout()
+        self.discovered_nodes_text = QLineEdit()
+        self.discovered_nodes_text.setReadOnly(True)
+        self.discovered_nodes_text.setPlaceholderText("No nodes detected")
+        self.clear_nodes_button = QPushButton("Clear")
+        discovered_nodes_layout.addWidget(self.discovered_nodes_text)
+        discovered_nodes_layout.addWidget(self.clear_nodes_button)
+        passive_layout.addRow("Discovered Nodes:", discovered_nodes_layout)
+        scan_layout.addLayout(passive_layout)
+        self.active_scan_button = QPushButton("Actively Scan for Nodes")
+        scan_layout.addWidget(self.active_scan_button)
+        layout.addRow(scan_group)
         self.enabled_cb.toggled.connect(self._update_settings)
+        self.active_scan_button.clicked.connect(self._start_active_scan)
+        self.clear_nodes_button.clicked.connect(self._clear_discovered_nodes)
 
-    def _update_settings(self, enabled: bool):
-        self.project.canopen_enabled = enabled
-        self.settings_changed.emit(enabled)
+    def set_connection_status(self, is_connected: bool):
+        self.active_scan_button.setEnabled(is_connected)
+        self.clear_nodes_button.setEnabled(is_connected)
+        if is_connected:
+            self.discovery_status_label.setText("Passively Listening...")
+            self.passive_scan_timer.start()
+        else:
+            self.discovery_status_label.setText("Disconnected")
+            self.passive_scan_timer.stop()
+            self._clear_discovered_nodes()
+
+    def _update_settings(self):
+        self.project.canopen_enabled = self.enabled_cb.isChecked()
+        self.settings_changed.emit()
+
+    def _clear_discovered_nodes(self):
+        if self.network.bus:
+            self.network.scanner.reset()
+        self.last_known_nodes.clear()
+        self.discovered_nodes_text.clear()
+
+    def _update_discovered_nodes(self):
+        if not self.network.bus:
+            return
+        current_nodes = set(self.network.scanner.nodes)
+        if current_nodes != self.last_known_nodes:
+            self.last_known_nodes = current_nodes
+            self.discovered_nodes_text.setText(
+                ", ".join(map(str, sorted(list(current_nodes))))
+            )
+
+    def _start_active_scan(self):
+        # Check if a scan is already running by checking the thread object
+        if self.scan_thread is not None:
+            return
+
+        self.active_scan_button.setEnabled(False)
+        self.discovery_status_label.setText("Actively Scanning...")
+
+        self.scan_thread = QThread()
+        self.scan_worker = ScanWorker(self.network)
+        self.scan_worker.moveToThread(self.scan_thread)
+
+        self.scan_thread.started.connect(self.scan_worker.run)
+        self.scan_worker.finished.connect(self.on_active_scan_finished)
+        self.scan_worker.error.connect(self.on_active_scan_error)
+
+        # Proper cleanup
+        self.scan_worker.finished.connect(self.scan_worker.deleteLater)
+        self.scan_thread.finished.connect(
+            self._on_scan_thread_finished
+        )  # Use our cleanup slot
+
+        self.scan_thread.start()
+
+    def _on_scan_thread_finished(self):
+        """Slot to safely clean up the thread and worker objects."""
+        if self.scan_thread:
+            self.scan_thread.deleteLater()
+        self.scan_thread = None
+        self.scan_worker = None
+
+    def on_active_scan_finished(self):
+        self.active_scan_button.setEnabled(True)
+        self.discovery_status_label.setText("Passively Listening...")
+        QTimer.singleShot(250, self._update_discovered_nodes)
+        # Now that the worker's job is done, we can quit the thread
+        if self.scan_thread:
+            self.scan_thread.quit()
+
+    def on_active_scan_error(self, error_msg: str):
+        self.active_scan_button.setEnabled(True)
+        self.discovery_status_label.setText("Active scan error!")
+        QMessageBox.warning(
+            self, "Scan Error", f"An error occurred during active scan:\n{error_msg}"
+        )
+        # Quit the thread on error too
+        if self.scan_thread:
+            self.scan_thread.quit()
 
 
-### MODIFIED ### - PropertiesPanel handles new CANopen editors
 class PropertiesPanel(QWidget):
     def __init__(
         self,
         project: Project,
         explorer: "ProjectExplorer",
         interface_manager: "CANInterfaceManager",
+        main_window: "CANBusObserver",
     ):
         super().__init__()
         self.project = project
         self.explorer = explorer
         self.interface_manager = interface_manager
+        self.main_window = main_window
         self.current_widget = None
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
@@ -1336,18 +1220,21 @@ class PropertiesPanel(QWidget):
     def show_properties(self, item: QTreeWidgetItem):
         self.clear()
         data = item.data(0, Qt.UserRole) if item else None
-
         if data == "connection_settings":
             editor = ConnectionEditor(self.project, self.interface_manager)
             editor.project_changed.connect(self.explorer.rebuild_tree)
             self.current_widget = editor
         elif data == "canopen_root":
-            editor = CANopenRootEditor(self.project)
+            editor = CANopenRootEditor(self.project, self.main_window.canopen_network)
             editor.settings_changed.connect(self.explorer.rebuild_tree)
+            is_connected = (
+                self.main_window.can_reader is not None
+                and self.main_window.can_reader.isRunning()
+            )
+            editor.set_connection_status(is_connected)
             self.current_widget = editor
         elif isinstance(data, CANopenNode):
             editor = CANopenNodeEditor(data)
-            # When node ID changes, rebuild tree to update the label
             editor.node_changed.connect(self.explorer.rebuild_tree)
             editor.node_changed.connect(self.explorer.project_changed.emit)
             self.current_widget = editor
@@ -1371,32 +1258,6 @@ class PropertiesPanel(QWidget):
         self.placeholder.hide()
 
 
-### NEW ### - Thread for non-blocking CANopen node scanning
-class NodeScanner(QObject):
-    finished = Signal(list)
-    error = Signal(str)
-
-    def __init__(self, bus):
-        super().__init__()
-        self.bus = bus
-
-    def run(self):
-        try:
-            network = canopen.Network(self.bus)
-            network.connect()
-            network.scanner.search()
-            # We need to wait for the scan to complete.
-            # The scanner sends NMT messages and waits for heartbeats.
-            # A 1-second timeout for responses should be sufficient.
-            QThread.sleep(1)
-            found_nodes = network.scanner.nodes
-            # network.disconnect()
-            self.finished.emit(found_nodes)
-        except Exception as e:
-            self.error.emit(str(e))
-
-
-### MODIFIED ### - ProjectExplorer handles new CANopen tree and actions
 class ProjectExplorer(QGroupBox):
     project_changed = Signal()
 
@@ -1404,8 +1265,6 @@ class ProjectExplorer(QGroupBox):
         super().__init__("Project Explorer")
         self.project = project
         self.main_window = main_window
-        self.scanner_thread = None
-        self.scanner_worker = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -1424,49 +1283,44 @@ class ProjectExplorer(QGroupBox):
 
     def rebuild_tree(self):
         self.tree.blockSignals(True)
-        # Store expansion state
         expanded_items_data = set()
         for i in range(self.tree.topLevelItemCount()):
             root_item = self.tree.topLevelItem(i)
             if root_item.isExpanded():
                 expanded_items_data.add(root_item.data(0, Qt.UserRole))
-
         self.tree.clear()
-
-        connection_text = f"Connection ({self.project.can_interface})"
-        self.add_item(None, connection_text, "connection_settings", checked=None)
-
+        self.add_item(
+            None, f"Connection ({self.project.can_interface})", "connection_settings"
+        )
         self.dbc_root = self.add_item(None, "Symbol Files (.dbc)", "dbc_root")
         [
             self.add_item(self.dbc_root, dbc.path.name, dbc, dbc.enabled)
             for dbc in self.project.dbcs
         ]
-
         self.filter_root = self.add_item(None, "Message Filters", "filter_root")
         [
             self.add_item(self.filter_root, f.name, f, f.enabled)
             for f in self.project.filters
         ]
-
-        self.co_root = self.add_item(
-            None, "CANopen", "canopen_root"
-        )
-        for node in self.project.canopen_nodes:
-            label = f"{node.path.name} [ID: {node.node_id}]"
-            self.add_item(self.co_root, label, node, node.enabled)
-
-        # Restore expansion state
+        self.co_root = self.add_item(None, "CANopen", "canopen_root")
+        [
+            self.add_item(
+                self.co_root,
+                f"{node.path.name} [ID: {node.node_id}]",
+                node,
+                node.enabled,
+            )
+            for node in self.project.canopen_nodes
+        ]
         for i in range(self.tree.topLevelItemCount()):
             root_item = self.tree.topLevelItem(i)
             if root_item.data(0, Qt.UserRole) in expanded_items_data:
                 root_item.setExpanded(True)
-
         self.tree.blockSignals(False)
         self.project_changed.emit()
 
     def add_item(self, parent, text, data=None, checked=None):
-        parent_item = parent or self.tree
-        item = QTreeWidgetItem(parent_item, [text])
+        item = QTreeWidgetItem(parent or self.tree, [text])
         if data:
             item.setData(0, Qt.UserRole, data)
         if checked is not None:
@@ -1476,40 +1330,24 @@ class ProjectExplorer(QGroupBox):
 
     def on_item_changed(self, item, column):
         if data := item.data(0, Qt.UserRole):
-            is_checked = item.checkState(0) == Qt.Checked
-            if data == "canopen_root":
-                self.project.canopen_enabled = is_checked
-            elif isinstance(data, CANopenNode):
-                data.enabled = is_checked
-            elif isinstance(data, (DBCFile, CANFrameFilter)):
-                data.enabled = is_checked
+            if isinstance(data, (DBCFile, CANFrameFilter, CANopenNode)):
+                data.enabled = item.checkState(0) == Qt.Checked
             self.project_changed.emit()
 
     def open_context_menu(self, position):
         menu = QMenu()
         item = self.tree.itemAt(position)
         data = item.data(0, Qt.UserRole) if item else None
-
-        if not item or data == "dbc_root":
+        if data in [None, "dbc_root"]:
             menu.addAction("Add Symbol File...").triggered.connect(self.add_dbc)
-        if not item or data == "filter_root":
+        if data in [None, "filter_root"]:
             menu.addAction("Add Filter").triggered.connect(self.add_filter)
-        if not item or data == "canopen_root":
+        if data in [None, "canopen_root"]:
             menu.addAction("Add Node from EDS/DCF...").triggered.connect(
                 self.add_canopen_node
             )
-            scan_action = menu.addAction("Scan for Nodes...")
-            scan_action.triggered.connect(self.scan_for_nodes)
-            # Scanner needs an active connection
-            is_connected = (
-                self.main_window.can_reader is not None
-                and self.main_window.can_reader.isRunning()
-            )
-            scan_action.setEnabled(is_connected)
-
-        if item and item.parent():  # Can remove any child item
+        if item and item.parent():
             menu.addAction("Remove").triggered.connect(lambda: self.remove_item(item))
-
         if menu.actions():
             menu.exec(self.tree.viewport().mapToGlobal(position))
 
@@ -1557,53 +1395,10 @@ class ProjectExplorer(QGroupBox):
         )
         if fns:
             for fn in fns:
-                # Default node ID is 1, user can change it in properties
-                node = CANopenNode(path=Path(fn), node_id=1)
-                self.project.canopen_nodes.append(node)
+                self.project.canopen_nodes.append(CANopenNode(path=Path(fn), node_id=1))
             self.rebuild_tree()
 
-    def scan_for_nodes(self):
-        if not self.main_window.can_reader or not self.main_window.can_reader.bus:
-            QMessageBox.warning(self, "Not Connected", "Connect to a CAN bus to scan.")
-            return
 
-        self.progress_dialog = QProgressDialog(
-            "Scanning for CANopen nodes...", "Cancel", 0, 0, self.main_window
-        )
-        self.progress_dialog.setWindowModality(Qt.WindowModal)
-        self.progress_dialog.show()
-
-        self.scanner_thread = QThread()
-        self.scanner_worker = NodeScanner(self.main_window.can_reader.bus)
-        self.scanner_worker.moveToThread(self.scanner_thread)
-
-        self.scanner_thread.started.connect(self.scanner_worker.run)
-        self.scanner_worker.finished.connect(self.on_scan_finished)
-        self.scanner_worker.error.connect(self.on_scan_error)
-        self.scanner_worker.finished.connect(self.scanner_thread.quit)
-        self.scanner_worker.finished.connect(self.scanner_worker.deleteLater)
-        self.scanner_thread.finished.connect(self.scanner_thread.deleteLater)
-
-        self.progress_dialog.canceled.connect(self.scanner_thread.quit)
-        self.scanner_thread.start()
-
-    def on_scan_finished(self, node_ids: List[int]):
-        self.progress_dialog.close()
-        if not node_ids:
-            QMessageBox.information(
-                self, "Scan Complete", "No CANopen nodes found."
-            )
-        else:
-            ids_str = ", ".join(map(str, sorted(node_ids)))
-            QMessageBox.information(
-                self, "Scan Complete", f"Found nodes with IDs: {ids_str}"
-            )
-
-    def on_scan_error(self, error_msg: str):
-        self.progress_dialog.close()
-        QMessageBox.critical(self, "Scan Error", f"An error occurred during scan: {error_msg}")
-
-# ... (TransmitPanel, SignalTransmitPanel are unchanged)
 class TransmitPanel(QGroupBox):
     frame_to_send = Signal(object)
     row_selection_changed = Signal(int, str)
@@ -1656,16 +1451,15 @@ class TransmitPanel(QGroupBox):
         self.config_changed.emit()
 
     def remove_frames(self):
-        if not self.table.selectionModel().selectedRows():
-            return
-        [
-            self.table.removeRow(r)
-            for r in sorted(
-                [i.row() for i in self.table.selectionModel().selectedRows()],
-                reverse=True,
-            )
-        ]
-        self.config_changed.emit()
+        if self.table.selectionModel().selectedRows():
+            [
+                self.table.removeRow(r)
+                for r in sorted(
+                    [i.row() for i in self.table.selectionModel().selectedRows()],
+                    reverse=True,
+                )
+            ]
+            self.config_changed.emit()
 
     def _setup_row_widgets(self, r):
         self.table.setItem(r, 1, QTableWidgetItem("100"))
@@ -1727,8 +1521,6 @@ class TransmitPanel(QGroupBox):
         if state:
             try:
                 cycle = int(self.table.item(r, 6).text())
-                if cycle <= 0:
-                    raise ValueError
                 t = QTimer(self)
                 t.timeout.connect(partial(self.send_from_row, r))
                 t.start(cycle)
@@ -1773,9 +1565,8 @@ class TransmitPanel(QGroupBox):
         ]
 
     def get_config(self) -> List[Dict]:
-        config = []
-        for r in range(self.table.rowCount()):
-            row_data = {
+        return [
+            {
                 "on": self.table.cellWidget(r, 0).findChild(QCheckBox).isChecked(),
                 "id": self.table.item(r, 1).text(),
                 "type_idx": self.table.cellWidget(r, 2).currentIndex(),
@@ -1784,13 +1575,13 @@ class TransmitPanel(QGroupBox):
                 "data": self.table.item(r, 5).text(),
                 "cycle": self.table.item(r, 6).text(),
             }
-            config.append(row_data)
-        return config
+            for r in range(self.table.rowCount())
+        ]
 
     def set_config(self, config: List[Dict]):
         self.stop_all_timers()
         self.table.clearContents()
-        self.table.setRowCount(0)  # Clear all rows
+        self.table.setRowCount(0)
         self.table.setRowCount(len(config))
         self.table.blockSignals(True)
         for r, row_data in enumerate(config):
@@ -1869,27 +1660,20 @@ class SignalTransmitPanel(QGroupBox):
         except (ValueError, TypeError, KeyError):
             pass
 
+
 # --- Main Application Window ---
 class CANBusObserver(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("CANPeek")
         self.setGeometry(100, 100, 1400, 900)
-
-        # ### NEW ### - Add CANopen network object for advanced management
         self.canopen_network = canopen.Network()
-
         self.MAX_RECENT_PROJECTS = 10
         self.recent_projects_paths = []
-
         self.interface_manager = CANInterfaceManager()
-
-        # Project state attributes
         self.project = Project()
         self.current_project_path: Optional[Path] = None
         self.project_dirty = False
-
-        # Create log file filter string
         file_loggers = {
             "ASCWriter": ".asc",
             "BLFWriter": ".blf",
@@ -1910,36 +1694,26 @@ class CANBusObserver(QMainWindow):
             f"All Supported ({' '.join(['*' + ext for _, ext in sorted_loggers])});;"
             + self.log_file_filter
         )
-
         self.trace_model = CANTraceModel()
         self.grouped_model = CANGroupedModel()
         self.grouped_proxy_model = QSortFilterProxyModel()
         self.grouped_proxy_model.setSourceModel(self.grouped_model)
         self.grouped_proxy_model.setSortRole(Qt.UserRole)
-
         self.can_reader = None
         self.frame_batch = []
         self.all_received_frames = []
-        self.process = None
-
         self.setDockOptions(QMainWindow.AnimatedDocks | QMainWindow.AllowNestedDocks)
-
         self.setup_actions()
         self.setup_ui()
         self.setup_docks()
         self.setup_toolbar()
         self.setup_menubar()
         self.setup_statusbar()
-
         self._load_recent_projects()
         self._update_recent_projects_menu()
-
-        # Connect signals for dirty state tracking
         self.project_explorer.project_changed.connect(lambda: self._set_dirty(True))
         self.transmit_panel.config_changed.connect(lambda: self._set_dirty(True))
-
-        self.restore_layout()  # Restore layout and last project
-
+        self.restore_layout()
         self.gui_update_timer = QTimer(self)
         self.gui_update_timer.timeout.connect(self.update_views)
         self.gui_update_timer.start(50)
@@ -1959,7 +1733,6 @@ class CANBusObserver(QMainWindow):
         self.save_project_as_action = QAction(
             QIcon(QPixmap(":/icons/document-save-as.png")), "Save Project &As...", self
         )
-
         self.connect_action = QAction(
             style.standardIcon(QStyle.SP_DialogYesButton), "&Connect", self
         )
@@ -1976,19 +1749,16 @@ class CANBusObserver(QMainWindow):
             QIcon(QPixmap(":/icons/document-import.png")), "&Load Log...", self
         )
         self.exit_action = QAction("&Exit", self)
-
         self.new_project_action.triggered.connect(self._new_project)
         self.open_project_action.triggered.connect(self._open_project)
         self.save_project_action.triggered.connect(self._save_project)
         self.save_project_as_action.triggered.connect(self._save_project_as)
-
         self.connect_action.triggered.connect(self.connect_can)
         self.disconnect_action.triggered.connect(self.disconnect_can)
         self.clear_action.triggered.connect(self.clear_data)
         self.save_log_action.triggered.connect(self.save_log)
         self.load_log_action.triggered.connect(self.load_log)
         self.exit_action.triggered.connect(self.close)
-
         self.disconnect_action.setEnabled(False)
 
     def setup_toolbar(self):
@@ -2009,13 +1779,11 @@ class CANBusObserver(QMainWindow):
     def setup_ui(self):
         self.tab_widget = QTabWidget()
         self.setCentralWidget(self.tab_widget)
-
         self.grouped_view = QTreeView()
         self.grouped_view.setModel(self.grouped_proxy_model)
         self.grouped_view.setAlternatingRowColors(True)
         self.grouped_view.setSortingEnabled(True)
         self.tab_widget.addTab(self.grouped_view, "Grouped")
-
         trace_view_widget = QWidget()
         trace_layout = QVBoxLayout(trace_view_widget)
         trace_layout.setContentsMargins(5, 5, 5, 5)
@@ -2029,17 +1797,14 @@ class CANBusObserver(QMainWindow):
         self.tab_widget.addTab(trace_view_widget, "Trace")
 
     def setup_docks(self):
-        # ### MODIFIED ### - Pass self (main window) to ProjectExplorer
         self.project_explorer = ProjectExplorer(self.project, self)
         explorer_dock = QDockWidget("Project", self)
         explorer_dock.setObjectName("ProjectExplorerDock")
         explorer_dock.setWidget(self.project_explorer)
         self.addDockWidget(Qt.RightDockWidgetArea, explorer_dock)
-
         self.properties_panel = PropertiesPanel(
-            self.project, self.project_explorer, self.interface_manager
+            self.project, self.project_explorer, self.interface_manager, self
         )
-
         properties_dock = QDockWidget("Properties", self)
         properties_dock.setObjectName("PropertiesDock")
         properties_dock.setWidget(self.properties_panel)
@@ -2075,11 +1840,9 @@ class CANBusObserver(QMainWindow):
         file_menu = menubar.addMenu("&File")
         file_menu.addAction(self.new_project_action)
         file_menu.addAction(self.open_project_action)
-
         self.recent_menu = QMenu("Open &Recent", self)
         self.recent_menu.setIcon(QIcon(QPixmap(":/icons/document-open-recent.png")))
         file_menu.addMenu(self.recent_menu)
-
         file_menu.addAction(self.save_project_action)
         file_menu.addAction(self.save_project_as_action)
         file_menu.addSeparator()
@@ -2088,11 +1851,9 @@ class CANBusObserver(QMainWindow):
         file_menu.addAction(self.save_log_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
-
         connect_menu = menubar.addMenu("&Connect")
         connect_menu.addAction(self.connect_action)
         connect_menu.addAction(self.disconnect_action)
-
         view_menu = menubar.addMenu("&View")
         view_menu.addAction(self.docks["explorer"].toggleViewAction())
         view_menu.addAction(self.docks["properties"].toggleViewAction())
@@ -2105,7 +1866,7 @@ class CANBusObserver(QMainWindow):
         self.statusBar().addPermanentWidget(self.frame_count_label)
         self.statusBar().addPermanentWidget(self.connection_label)
 
-    def keyPressEvent(self, event: QKeyEvent):  # ...
+    def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key_Space and self.transmit_panel.table.hasFocus():
             self.transmit_panel.send_selected()
             event.accept()
@@ -2114,9 +1875,7 @@ class CANBusObserver(QMainWindow):
 
     def _process_frame(self, frame: CANFrame):
         try:
-            # ### NEW ### - Notify the canopen network object
-            # This allows it to process messages like heartbeats, state changes, etc.
-            if self.project.canopen_enabled and self.canopen_network.bus:
+            if self.project.canopen_enabled:
                 self.canopen_network.notify(
                     frame.arbitration_id, frame.data, frame.timestamp
                 )
@@ -2165,24 +1924,20 @@ class CANBusObserver(QMainWindow):
                 self.trace_view.scrollToBottom()
             self.frame_count_label.setText(f"Frames: {len(self.all_received_frames)}")
         except Exception as e:
-            print(f"Error in update_views: {e}")
             import traceback
 
+            print(f"Error in update_views: {e}")
             traceback.print_exc()
 
-    ### MODIFIED ### - Update canopen network when project changes
     def on_project_changed(self):
-        # DBC setup
         active_dbcs = self.project.get_active_dbcs()
         self.trace_model.dbc_databases = active_dbcs
-
-        # CANopen setup
         self.trace_model.canopen_enabled = self.project.canopen_enabled
         self.trace_model.layoutChanged.emit()
         self.grouped_model.set_config(active_dbcs, self.project.canopen_enabled)
-
-        # Update the central canopen.Network object
-        self.canopen_network.clear()
+        # if self.canopen_network.bus:
+        #     self.canopen_network.disconnect()
+        # self.canopen_network.clear()
         if self.project.canopen_enabled:
             for node_config in self.project.canopen_nodes:
                 if node_config.enabled and node_config.path.exists():
@@ -2192,16 +1947,15 @@ class CANBusObserver(QMainWindow):
                         )
                     except Exception as e:
                         print(f"Error adding CANopen node {node_config.node_id}: {e}")
-
-        # Transmit panel setup
+        if self.can_reader and self.can_reader.bus:
+            self.canopen_network.bus = self.can_reader.bus
+            self.canopen_network.connect()
         self.transmit_panel.set_dbc_databases(active_dbcs)
         current_item = self.transmit_panel.table.currentItem()
         self.on_transmit_row_selected(
             self.transmit_panel.table.currentRow(),
             current_item.text() if current_item else "",
         )
-
-        # Properties panel setup
         self.properties_panel.project = self.project
 
     def on_transmit_row_selected(self, row, id_text):
@@ -2218,17 +1972,14 @@ class CANBusObserver(QMainWindow):
         if (row := self.transmit_panel.table.currentRow()) >= 0:
             self.transmit_panel.update_row_data(row, data_bytes)
 
-    ### MODIFIED ### - Connect canopen_network to the bus
     def connect_can(self):
         self.can_reader = CANReaderThread(
-            self.project.can_interface,
-            self.project.can_config,
+            self.project.can_interface, self.project.can_config
         )
         self.can_reader.frame_received.connect(self._process_frame)
         self.can_reader.error_occurred.connect(self.on_can_error)
         if self.can_reader.start_reading():
-            # Wait a moment for the bus object to be created in the thread
-            QTimer.singleShot(100, self._finalize_connection)
+            QTimer.singleShot(200, self._finalize_connection)
         else:
             self.can_reader = None
 
@@ -2236,23 +1987,18 @@ class CANBusObserver(QMainWindow):
         if not self.can_reader or not self.can_reader.bus:
             self.on_can_error("Failed to establish bus object in reader thread.")
             return
-
-        # Connect the canopen network to the live bus
         self.canopen_network.bus = self.can_reader.bus
         self.canopen_network.connect()
-
         self.connect_action.setEnabled(False)
         self.disconnect_action.setEnabled(True)
         self.transmit_panel.setEnabled(True)
-
         config_str = ", ".join(f"{k}={v}" for k, v in self.project.can_config.items())
         self.connection_label.setText(
             f"Connected ({self.project.can_interface}: {config_str})"
         )
-        # Re-run context menu check now that connection is active
-        self.project_explorer.rebuild_tree()
+        if current_item := self.project_explorer.tree.currentItem():
+            self.properties_panel.show_properties(current_item)
 
-    ### MODIFIED ### - Disconnect canopen_network from the bus
     def disconnect_can(self):
         # Disconnect the canopen network
         # self.canopen_network.disconnect()
@@ -2272,8 +2018,8 @@ class CANBusObserver(QMainWindow):
         self.transmit_panel.setEnabled(False)
         self.transmit_panel.stop_all_timers()
         self.connection_label.setText("Disconnected")
-        # Re-run context menu check now that connection is inactive
-        self.project_explorer.rebuild_tree()
+        if current_item := self.project_explorer.tree.currentItem():
+            self.properties_panel.show_properties(current_item)
 
     def send_can_frame(self, message: can.Message):
         if self.can_reader and self.can_reader.running:
@@ -2298,38 +2044,34 @@ class CANBusObserver(QMainWindow):
         if not self.all_received_frames:
             QMessageBox.information(self, "No Data", "No frames to save.")
             return
-
         dialog = QFileDialog(self, "Save CAN Log", "", self.log_file_filter)
         dialog.setDefaultSuffix("log")
         dialog.setAcceptMode(QFileDialog.AcceptSave)
-        if dialog.exec():
-            filename = dialog.selectedFiles()[0]
-        else:
+        if not dialog.exec():
             return
-
+        filename = dialog.selectedFiles()[0]
         logger = None
         try:
-            # Logger type is inferred from the file extension
             logger = can.Logger(filename)
             for frame in self.all_received_frames:
-                # Convert our internal CANFrame back to a can.Message
-                msg = can.Message(
-                    timestamp=frame.timestamp,
-                    arbitration_id=frame.arbitration_id,
-                    is_extended_id=frame.is_extended,
-                    is_remote_frame=frame.is_remote,
-                    is_error_frame=frame.is_error,
-                    dlc=frame.dlc,
-                    data=frame.data,
-                    channel=frame.channel,
+                logger.on_message_received(
+                    can.Message(
+                        timestamp=frame.timestamp,
+                        arbitration_id=frame.arbitration_id,
+                        is_extended_id=frame.is_extended,
+                        is_remote_frame=frame.is_remote,
+                        is_error_frame=frame.is_error,
+                        dlc=frame.dlc,
+                        data=frame.data,
+                        channel=frame.channel,
+                    )
                 )
-                logger.on_message_received(msg)
             self.statusBar().showMessage(f"Log saved to {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save log: {e}")
         finally:
             if logger:
-                logger.stop()  # This is crucial to flush buffers and close the file
+                logger.stop()
 
     def load_log(self):
         filename, _ = QFileDialog.getOpenFileName(
@@ -2337,13 +2079,10 @@ class CANBusObserver(QMainWindow):
         )
         if not filename:
             return
-
         try:
             self.clear_data()
             frames_to_add = []
-            # CANLogReader infers file type from extension and works as an iterator
             for msg in can.LogReader(filename):
-                # Convert can.Message to our internal CANFrame format
                 frames_to_add.append(
                     CANFrame(
                         timestamp=msg.timestamp,
@@ -2353,11 +2092,9 @@ class CANBusObserver(QMainWindow):
                         is_extended=msg.is_extended_id,
                         is_error=msg.is_error_frame,
                         is_remote=msg.is_remote_frame,
-                        channel=msg.channel if msg.channel is not None else "CAN1",
+                        channel=msg.channel or "CAN1",
                     )
                 )
-
-            # Batch add frames to the view for performance
             self.frame_batch.extend(frames_to_add)
             self.update_views()
             self.statusBar().showMessage(
@@ -2366,59 +2103,42 @@ class CANBusObserver(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Load Error", f"Failed to load log: {e}")
 
-    # ... (Recent projects methods are unchanged)
     def _load_recent_projects(self):
-        """Loads the list of recent project paths from QSettings."""
-        settings = QSettings()
-        self.recent_projects_paths = settings.value("recentProjects", [], type=list)
+        self.recent_projects_paths = QSettings().value("recentProjects", [], type=list)
 
     def _save_recent_projects(self):
-        """Saves the current list of recent project paths to QSettings."""
-        settings = QSettings()
-        settings.setValue("recentProjects", self.recent_projects_paths)
+        QSettings().setValue("recentProjects", self.recent_projects_paths)
 
     def _add_to_recent_projects(self, path: Path):
-        """Adds a project path to the top of the recent projects list."""
-        path_str = str(path.resolve())  # Use resolved, absolute path
-        # Remove if already exists
+        path_str = str(path.resolve())
         if path_str in self.recent_projects_paths:
             self.recent_projects_paths.remove(path_str)
-        # Add to the top
         self.recent_projects_paths.insert(0, path_str)
-        # Trim the list
         self.recent_projects_paths = self.recent_projects_paths[
             : self.MAX_RECENT_PROJECTS
         ]
-        # Update the menu and save
         self._update_recent_projects_menu()
         self._save_recent_projects()
 
     def _update_recent_projects_menu(self):
-        """Clears and repopulates the 'Open Recent' menu."""
         self.recent_menu.clear()
         if not self.recent_projects_paths:
             self.recent_menu.addAction(
                 QAction("No Recent Projects", self, enabled=False)
             )
             return
-
         for i, path_str in enumerate(self.recent_projects_paths):
-            path = Path(path_str)
-            # Display a more user-friendly name in the menu
-            action_text = f"&{i + 1} {path.name}"
-            action = QAction(action_text, self)
-            action.setData(path_str)  # Store the full path string in the action
+            action = QAction(f"&{i + 1} {Path(path_str).name}", self)
+            action.setData(path_str)
             action.setToolTip(path_str)
             action.triggered.connect(self._open_recent_project)
             self.recent_menu.addAction(action)
-
         self.recent_menu.addSeparator()
         clear_action = QAction("Clear List", self)
         clear_action.triggered.connect(self._clear_recent_projects)
         self.recent_menu.addAction(clear_action)
 
     def _open_recent_project(self):
-        """Slot for opening a project from the 'Open Recent' menu."""
         action = self.sender()
         if isinstance(action, QAction):
             path_str = action.data()
@@ -2428,14 +2148,12 @@ class CANBusObserver(QMainWindow):
                 QMessageBox.warning(
                     self, "File Not Found", f"The file '{path_str}' could not be found."
                 )
-                # Remove non-existent file from list
                 if path_str in self.recent_projects_paths:
                     self.recent_projects_paths.remove(path_str)
                     self._update_recent_projects_menu()
                     self._save_recent_projects()
 
     def _clear_recent_projects(self):
-        """Clears the entire recent projects list and menu."""
         self.recent_projects_paths.clear()
         self._update_recent_projects_menu()
         self._save_recent_projects()
@@ -2446,11 +2164,11 @@ class CANBusObserver(QMainWindow):
         self._update_window_title()
 
     def _update_window_title(self):
-        title = "CANPeek - "
-        if self.current_project_path:
-            title += self.current_project_path.name
-        else:
-            title += "Untitled Project"
+        title = "CANPeek - " + (
+            self.current_project_path.name
+            if self.current_project_path
+            else "Untitled Project"
+        )
         if self.project_dirty:
             title += "*"
         self.setWindowTitle(title)
@@ -2466,9 +2184,7 @@ class CANBusObserver(QMainWindow):
         )
         if reply == QMessageBox.Save:
             return self._save_project()
-        elif reply == QMessageBox.Cancel:
-            return False
-        return True  # Discard
+        return reply != QMessageBox.Cancel
 
     def _new_project(self):
         if not self._prompt_save_if_dirty():
@@ -2495,17 +2211,13 @@ class CANBusObserver(QMainWindow):
                 data = json.load(f)
             self.disconnect_can()
             self.clear_data()
-
             self.project = Project.from_dict(
                 data.get("project", {}), self.interface_manager
             )
-
             self.project_explorer.set_project(self.project)
             self.transmit_panel.set_config(data.get("transmit_config", []))
             self.current_project_path = Path(path)
-
             self._add_to_recent_projects(self.current_project_path)
-
             self._set_dirty(False)
             self.statusBar().showMessage(
                 f"Project '{self.current_project_path.name}' loaded."
@@ -2514,13 +2226,14 @@ class CANBusObserver(QMainWindow):
             QMessageBox.critical(
                 self, "Open Project Error", f"Failed to load project:\n{e}"
             )
-            self._new_project()  # Reset to a clean state
+            self._new_project()
 
     def _save_project(self) -> bool:
-        if self.current_project_path:
-            return self._save_project_to_path(self.current_project_path)
-        else:
-            return self._save_project_as()
+        return (
+            self._save_project_as()
+            if not self.current_project_path
+            else self._save_project_to_path(self.current_project_path)
+        )
 
     def _save_project_as(self) -> bool:
         dialog = QFileDialog(
@@ -2529,24 +2242,24 @@ class CANBusObserver(QMainWindow):
         dialog.setAcceptMode(QFileDialog.AcceptSave)
         dialog.setDefaultSuffix("cpeek")
         if dialog.exec():
-            path = dialog.selectedFiles()[0]
-            self.current_project_path = Path(path)
+            self.current_project_path = Path(dialog.selectedFiles()[0])
             return self._save_project_to_path(self.current_project_path)
         return False
 
     def _save_project_to_path(self, path: Path) -> bool:
         try:
-            config = {
-                "project": self.project.to_dict(),
-                "transmit_config": self.transmit_panel.get_config(),
-            }
             with open(path, "w") as f:
-                json.dump(config, f, indent=2)
+                json.dump(
+                    {
+                        "project": self.project.to_dict(),
+                        "transmit_config": self.transmit_panel.get_config(),
+                    },
+                    f,
+                    indent=2,
+                )
             self._set_dirty(False)
             self.statusBar().showMessage(f"Project saved to '{path.name}'.")
-
             self._add_to_recent_projects(path)
-
             return True
         except Exception as e:
             QMessageBox.critical(
@@ -2564,13 +2277,12 @@ class CANBusObserver(QMainWindow):
     def restore_layout(self):
         settings = QSettings()
         geometry = settings.value("geometry")
+        state = settings.value("windowState")
+        last_project = settings.value("lastProjectPath")
         if geometry:
             self.restoreGeometry(geometry)
-        state = settings.value("windowState")
         if state:
             self.restoreState(state)
-
-        last_project = settings.value("lastProjectPath")
         if last_project and Path(last_project).exists():
             self._open_project(last_project)
 
@@ -2579,10 +2291,6 @@ class CANBusObserver(QMainWindow):
             event.ignore()
             return
         self.save_layout()
-        if hasattr(self, "gui_update_timer"):
-            self.gui_update_timer.stop()
-        if self.process:
-            self.process.kill()
         self.disconnect_can()
         QApplication.processEvents()
         event.accept()
@@ -2592,7 +2300,6 @@ def main():
     app = QApplication(sys.argv)
     app.setOrganizationName("CANPeek")
     app.setApplicationName("CANPeek")
-
     window = CANBusObserver()
     qdarktheme.setup_theme("auto")
     window.show()
