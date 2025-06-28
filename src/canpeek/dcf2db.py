@@ -7,7 +7,7 @@ def read_device_from_dcf(filename, nodeid: int):
     # dev.c = CDevice(dev)
     return dev
 
-def dcf_2_db(filename, nodeid: int):
+def dcf_2_messages(filename, nodeid: int, slave_name:str):
     dev = read_device_from_dcf(filename, nodeid)
 
     messages = []
@@ -19,7 +19,7 @@ def dcf_2_db(filename, nodeid: int):
         sigs = []
         for mapn, subObject in tpdo.mapping.items():
             print("\t", hex(subObject.index), subObject.sub_index, subObject.name)
-            debug(subObject.data_type.name(), subObject.data_type.bits())
+            # debug(subObject.data_type.name(), subObject.data_type.bits())
 
             if "INTEGER" in subObject.data_type.name():
                 is_signed = True
@@ -49,3 +49,9 @@ def dcf_2_db(filename, nodeid: int):
         messages.append(msg)
 
     return messages
+
+def dcf_2_db(filename, nodeid: int, slave_name:str):
+    messages = dcf_2_messages(filename, nodeid, slave_name)
+    node = cantools.db.Node(slave_name)
+    db = cantools.db.Database(messages, [node])
+    return db

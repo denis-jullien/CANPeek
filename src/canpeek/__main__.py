@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from docstring_parser import parse
 import enum
 from . import rc_icons
+from .dcf2db import dcf_2_db
 
 __all__ = [
     "rc_icons",  # remove ruff "Remove unused import: `.rc_icons`"
@@ -132,12 +133,14 @@ class CANopenNode:
     path: Path
     node_id: int
     enabled: bool = True
+    pdo_decoding_enabled: bool = True  # Add PDO decoding option
 
     def to_dict(self) -> Dict:
         return {
             "path": str(self.path),
             "node_id": self.node_id,
             "enabled": self.enabled,
+            "pdo_decoding_enabled": self.pdo_decoding_enabled,  # Add to serialization
         }
 
     @classmethod
@@ -145,7 +148,12 @@ class CANopenNode:
         path = Path(data["path"])
         if not path.exists():
             raise FileNotFoundError(f"EDS/DCF file not found: {path}")
-        return cls(path=path, node_id=data["node_id"], enabled=data["enabled"])
+        return cls(
+            path=path, 
+            node_id=data["node_id"], 
+            enabled=data["enabled"],
+            pdo_decoding_enabled=data.get("pdo_decoding_enabled", True)  # Add with default
+        )
 
 
 @dataclass
@@ -468,15 +476,23 @@ class CANopenDecoder:
 class CANTraceModel(QAbstractTableModel):
     def __init__(self):
         super().__init__()
-        self.frames: List[CANFrame] = []
         self.headers = ["Timestamp", "ID", "Type", "DLC", "Data", "Decoded"]
+        self.frames: deque[CANFrame] = deque(maxlen=10000)
         self.dbc_databases: List[object] = []
+        self.pdo_databases: List[object] = []  # Add PDO databases
         self.canopen_enabled = True
 
     def set_data(self, frames: List[CANFrame]):
         self.beginResetModel()
-        self.frames = frames
+        self.frames.clear()
+        self.frames.extend(frames)
         self.endResetModel()
+
+    def set_config(self, dbs: List[object], co_enabled: bool, pdo_dbs: List[object] = None):
+        self.dbc_databases = dbs
+        self.canopen_enabled = co_enabled
+        self.pdo_databases = pdo_dbs or []  # Set PDO databases
+        self.layoutChanged.emit()
 
     def rowCount(self, p=QModelIndex()):
         return len(self.frames)
@@ -511,6 +527,8 @@ class CANTraceModel(QAbstractTableModel):
 
     def _decode_frame(self, frame: CANFrame) -> str:
         decoded_parts = []
+        
+        # Try DBC databases first
         for db in self.dbc_databases:
             try:
                 message = db.get_message_by_frame_id(frame.arbitration_id)
@@ -522,12 +540,28 @@ class CANTraceModel(QAbstractTableModel):
                 return " | ".join(decoded_parts)
             except (KeyError, ValueError):
                 continue
+        
+        # Try PDO databases
+        for db in self.pdo_databases:
+            try:
+                message = db.get_message_by_frame_id(frame.arbitration_id)
+                decoded = db.decode_message(
+                    frame.arbitration_id, frame.data, decode_choices=False
+                )
+                s = [f"{n}={v}" for n, v in decoded.items()]
+                decoded_parts.append(f"PDO: {message.name} {' '.join(s)}")
+                return " | ".join(decoded_parts)
+            except (KeyError, ValueError):
+                continue
+        
+        # Fallback to CANopen decoding
         if self.canopen_enabled:
             if co_info := CANopenDecoder.decode(frame):
                 details = ", ".join(
                     f"{k}={v}" for k, v in co_info.items() if k != "CANopen Type"
                 )
                 decoded_parts.append(f"CANopen {co_info['CANopen Type']}: {details}")
+        
         return " | ".join(decoded_parts)
 
 
@@ -1052,9 +1086,17 @@ class CANopenNodeEditor(QWidget):
         self.node_id_spinbox.setValue(self.node.node_id)
         layout.addRow("Node ID:", self.node_id_spinbox)
         self.node_id_spinbox.valueChanged.connect(self._update_node)
+        
+        # Add PDO decoding checkbox
+        self.pdo_decoding_cb = QCheckBox("Enable PDO Decoding")
+        self.pdo_decoding_cb.setChecked(self.node.pdo_decoding_enabled)
+        self.pdo_decoding_cb.setToolTip("Decode PDO messages using EDS/DCF file")
+        layout.addRow(self.pdo_decoding_cb)
+        self.pdo_decoding_cb.toggled.connect(self._update_node)
 
     def _update_node(self):
         self.node.node_id = self.node_id_spinbox.value()
+        self.node.pdo_decoding_enabled = self.pdo_decoding_cb.isChecked()  # Update PDO setting
         self.node_changed.emit()
 
 
@@ -2362,11 +2404,27 @@ class CANBusObserver(QMainWindow):
             print(f"Error in update_views: {e}")
             traceback.print_exc()
 
+    def _create_pdo_databases(self) -> List[object]:
+        """Create PDO databases from enabled CANopen nodes"""
+        pdo_databases = []
+        for node_config in self.project.canopen_nodes:
+            if node_config.enabled and node_config.pdo_decoding_enabled:
+                try:
+                    # Create slave name from file and node ID
+                    slave_name = f"{node_config.path.stem}_Node{node_config.node_id}"
+                    pdo_db = dcf_2_db(str(node_config.path), node_config.node_id, slave_name)
+                    pdo_databases.append(pdo_db)
+                    print(f"Created PDO database for node {node_config.node_id}")
+                except Exception as e:
+                    print(f"Error creating PDO database for node {node_config.node_id}: {e}")
+        
+        return pdo_databases
+
     def on_project_changed(self):
         active_dbcs = self.project.get_active_dbcs()
-        self.trace_model.dbc_databases = active_dbcs
-        self.trace_model.canopen_enabled = self.project.canopen_enabled
-        self.trace_model.layoutChanged.emit()
+        pdo_databases = self._create_pdo_databases()  # Create PDO databases
+        
+        self.trace_model.set_config(active_dbcs, self.project.canopen_enabled, pdo_databases)
         self.grouped_model.set_config(active_dbcs, self.project.canopen_enabled)
         # if self.canopen_network.bus:
         #     self.canopen_network.disconnect()
