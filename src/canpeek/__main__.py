@@ -1854,8 +1854,8 @@ class ObjectDictionaryViewer(QWidget):
                 obj_item = QTreeWidgetItem(parent_item, [
                     f"0x{index:04X}", "", 
                     getattr(obj, 'name', f"Object_{index:04X}"),
-                    str(getattr(obj, 'data_type', 'Unknown')),
-                    self.get_access_string(getattr(obj, 'access_type', None)),
+                    "",
+                    "",
                     "",
                     ""
                 ])
@@ -2001,7 +2001,12 @@ class ObjectDictionaryViewer(QWidget):
         
         try:
             # Perform SDO read
-            value = self.current_node.sdo[self.selected_index][self.selected_subindex].raw
+            if self.selected_subindex == 0:
+                # Simple variable - access directly
+                value = self.current_node.sdo[self.selected_index].raw
+            else:
+                # Complex object with subindex
+                value = self.current_node.sdo[self.selected_index][self.selected_subindex].raw
             
             # Display the value
             if isinstance(value, bytes):
