@@ -297,6 +297,49 @@ def capture_logs(logger_name: str):
         target_logger.setLevel(original_level)
 
 
+class PDODatabaseManager:
+    """Manages PDO databases with caching to avoid duplicate creation"""
+    
+    def __init__(self):
+        self._cache = {}  # Cache: (path, node_id) -> database
+    
+    def get_pdo_database(self, node: CANopenNode):
+        """Get or create PDO database for a CANopen node"""
+        if not node.pdo_decoding_enabled:
+            return None
+            
+        cache_key = (str(node.path), node.node_id)
+        
+        if cache_key not in self._cache:
+            try:
+                slave_name = f"{node.path.stem}_Node{node.node_id}"
+                self._cache[cache_key] = dcf_2_db(str(node.path), node.node_id, slave_name)
+                print(f"Created PDO database for node {node.node_id}")
+            except Exception as e:
+                print(f"Error creating PDO database for node {node.node_id}: {e}")
+                return None
+        
+        return self._cache[cache_key]
+    
+    def invalidate_cache(self, node: CANopenNode = None):
+        """Invalidate cache for a specific node or all nodes"""
+        if node:
+            cache_key = (str(node.path), node.node_id)
+            self._cache.pop(cache_key, None)
+        else:
+            self._cache.clear()
+    
+    def get_all_active_databases(self, nodes: List[CANopenNode]) -> List[object]:
+        """Get all PDO databases for enabled nodes"""
+        databases = []
+        for node in nodes:
+            if node.enabled and node.pdo_decoding_enabled:
+                db = self.get_pdo_database(node)
+                if db:
+                    databases.append(db)
+        return databases
+
+
 class CANInterfaceManager:
     def __init__(self):
         self._interfaces = self._discover_interfaces()
@@ -855,9 +898,10 @@ class DBCEditor(QWidget):
 
 
 class PDOEditor(QWidget):
-    def __init__(self, node: CANopenNode):
+    def __init__(self, node: CANopenNode, pdo_manager: PDODatabaseManager):
         super().__init__()
         self.node = node
+        self.pdo_manager = pdo_manager
         self.pdo_database = None
         self.setup_ui()
         self.load_pdo_database()
@@ -880,11 +924,15 @@ class PDOEditor(QWidget):
         layout.addWidget(self.status_label)
 
     def load_pdo_database(self):
+        """Load PDO database using the manager"""
         try:
-            slave_name = f"{self.node.path.stem}_Node{self.node.node_id}"
-            self.pdo_database = dcf_2_db(str(self.node.path), self.node.node_id, slave_name)
-            self.populate_table()
-            self.status_label.setText(f"Loaded {len(self.pdo_database.messages)} PDO messages")
+            self.pdo_database = self.pdo_manager.get_pdo_database(self.node)
+            if self.pdo_database:
+                self.populate_table()
+                self.status_label.setText(f"Loaded {len(self.pdo_database.messages)} PDO messages")
+            else:
+                self.status_label.setText("PDO decoding not enabled or failed to load")
+                self.table.setRowCount(0)
         except Exception as e:
             self.status_label.setText(f"Error loading PDO database: {str(e)}")
             self.table.setRowCount(0)
@@ -1120,9 +1168,10 @@ class ConnectionEditor(QWidget):
 class CANopenNodeEditor(QWidget):
     node_changed = Signal()
 
-    def __init__(self, node: CANopenNode):
+    def __init__(self, node: CANopenNode, pdo_manager: PDODatabaseManager):
         super().__init__()
         self.node = node
+        self.pdo_manager = pdo_manager
         self.pdo_editor = None
         self.setup_ui()
 
@@ -1159,28 +1208,35 @@ class CANopenNodeEditor(QWidget):
     def _setup_pdo_content(self):
         """Setup PDO content viewer"""
         if self.node.pdo_decoding_enabled:
-            self.pdo_editor = PDOEditor(self.node)
+            self.pdo_editor = PDOEditor(self.node, self.pdo_manager)
             self.layout().addWidget(self.pdo_editor)
         
     def _toggle_pdo_content(self, enabled: bool):
         """Show/hide PDO content based on checkbox state"""
         if enabled and not self.pdo_editor:
-            self.pdo_editor = PDOEditor(self.node)
+            self.pdo_editor = PDOEditor(self.node, self.pdo_manager)
             self.layout().addWidget(self.pdo_editor)
         elif not enabled and self.pdo_editor:
             self.pdo_editor.deleteLater()
             self.pdo_editor = None
 
     def _update_node(self):
-        self.node.node_id = self.node_id_spinbox.value()
+        old_node_id = self.node.node_id
         old_pdo_enabled = self.node.pdo_decoding_enabled
+        
+        self.node.node_id = self.node_id_spinbox.value()
         self.node.pdo_decoding_enabled = self.pdo_decoding_cb.isChecked()
         
-        # Reload PDO content if node ID changed and PDO is enabled
-        if (self.node.pdo_decoding_enabled and self.pdo_editor and 
-            old_pdo_enabled == self.node.pdo_decoding_enabled):
-            self.pdo_editor.load_pdo_database()
+        # Invalidate cache if node ID changed
+        if old_node_id != self.node.node_id:
+            # Invalidate old cache entry
+            old_node = CANopenNode(self.node.path, old_node_id, self.node.enabled, old_pdo_enabled)
+            self.pdo_manager.invalidate_cache(old_node)
             
+            # Reload PDO content if it's visible
+            if self.pdo_editor:
+                self.pdo_editor.load_pdo_database()
+        
         self.node_changed.emit()
 
 
@@ -1363,7 +1419,7 @@ class PropertiesPanel(QWidget):
             editor.set_connection_status(is_connected)
             self.current_widget = editor
         elif isinstance(data, CANopenNode):
-            editor = CANopenNodeEditor(data)
+            editor = CANopenNodeEditor(data, self.main_window.pdo_manager)
             editor.node_changed.connect(self.explorer.rebuild_tree)
             editor.node_changed.connect(self.explorer.project_changed.emit)
             self.current_widget = editor
@@ -1377,7 +1433,7 @@ class PropertiesPanel(QWidget):
         elif isinstance(data, tuple) and len(data) == 2 and data[0] == "pdo_content":
             # PDO content viewer for CANopen node
             node = data[1]
-            self.current_widget = PDOEditor(node)
+            self.current_widget = PDOEditor(node, self.main_window.pdo_manager)
         else:
             self.layout.addWidget(self.placeholder)
             self.placeholder.show()
@@ -2227,6 +2283,7 @@ class CANBusObserver(QMainWindow):
         self.MAX_RECENT_PROJECTS = 10
         self.recent_projects_paths = []
         self.interface_manager = CANInterfaceManager()
+        self.pdo_manager = PDODatabaseManager()
         self.project = Project()
         self.current_project_path: Optional[Path] = None
         self.project_dirty = False
@@ -2274,6 +2331,9 @@ class CANBusObserver(QMainWindow):
         self.gui_update_timer.timeout.connect(self.update_views)
         self.gui_update_timer.start(50)
         self._update_window_title()
+        
+        # Connect project changes to PDO cache invalidation
+        self.project_explorer.project_changed.connect(self._on_project_structure_changed)
 
     def setup_actions(self):
         style = self.style()
@@ -2493,20 +2553,8 @@ class CANBusObserver(QMainWindow):
             traceback.print_exc()
 
     def _create_pdo_databases(self) -> List[object]:
-        """Create PDO databases from enabled CANopen nodes"""
-        pdo_databases = []
-        for node_config in self.project.canopen_nodes:
-            if node_config.enabled and node_config.pdo_decoding_enabled:
-                try:
-                    # Create slave name from file and node ID
-                    slave_name = f"{node_config.path.stem}_Node{node_config.node_id}"
-                    pdo_db = dcf_2_db(str(node_config.path), node_config.node_id, slave_name)
-                    pdo_databases.append(pdo_db)
-                    print(f"Created PDO database for node {node_config.node_id}")
-                except Exception as e:
-                    print(f"Error creating PDO database for node {node_config.node_id}: {e}")
-        
-        return pdo_databases
+        """Create PDO databases from enabled CANopen nodes using manager"""
+        return self.pdo_manager.get_all_active_databases(self.project.canopen_nodes)
 
     def on_project_changed(self):
         active_dbcs = self.project.get_active_dbcs()
@@ -2793,6 +2841,7 @@ class CANBusObserver(QMainWindow):
         self.clear_data()
         self.project = Project()
         self.current_project_path = None
+        self.pdo_manager.invalidate_cache()  # Clear PDO cache
         self.project_explorer.set_project(self.project)
         self.transmit_panel.set_config([])
         self._set_dirty(False)
@@ -2811,6 +2860,7 @@ class CANBusObserver(QMainWindow):
                 data = json.load(f)
             self.disconnect_can()
             self.clear_data()
+            self.pdo_manager.invalidate_cache()  # Clear PDO cache
             self.project = Project.from_dict(
                 data.get("project", {}), self.interface_manager
             )
@@ -2885,6 +2935,12 @@ class CANBusObserver(QMainWindow):
             self.restoreState(state)
         if last_project and Path(last_project).exists():
             self._open_project(last_project)
+
+    def _on_project_structure_changed(self):
+        """Handle project structure changes that might affect PDO databases"""
+        # This is called when the project structure changes
+        # We could be more selective about cache invalidation here
+        pass
 
     def closeEvent(self, event):
         if not self._prompt_save_if_dirty():
