@@ -64,6 +64,8 @@ from PySide6.QtWidgets import (
     QStyle,
     QDialog,
     QTextEdit,
+    QSplitter,
+    QProgressBar,
 )
 
 from PySide6.QtCore import (
@@ -1661,6 +1663,396 @@ class SignalTransmitPanel(QGroupBox):
             pass
 
 
+class ObjectDictionaryViewer(QWidget):
+    """CANopen Object Dictionary Viewer with SDO read/write capabilities"""
+    
+    def __init__(self, canopen_network):
+        super().__init__()
+        self.canopen_network = canopen_network
+        self.current_node = None
+        self.current_node_id = None
+        self.setup_ui()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Node info header
+        self.node_info_label = QLabel("No CANopen node selected")
+        self.node_info_label.setStyleSheet("font-weight: bold; padding: 5px;")
+        layout.addWidget(self.node_info_label)
+        
+        # Splitter for tree and details
+        splitter = QSplitter(Qt.Horizontal)
+        layout.addWidget(splitter)
+        
+        # Object dictionary tree
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Index", "Sub", "Name", "Type", "Access", "Value"])
+        self.tree.setAlternatingRowColors(True)
+        self.tree.itemSelectionChanged.connect(self.on_item_selected)
+        splitter.addWidget(self.tree)
+        
+        # Details panel
+        details_widget = QWidget()
+        details_layout = QVBoxLayout(details_widget)
+        
+        # Object details
+        self.details_group = QGroupBox("Object Details")
+        details_form = QFormLayout(self.details_group)
+        
+        self.index_label = QLabel("-")
+        self.subindex_label = QLabel("-")
+        self.name_label = QLabel("-")
+        self.type_label = QLabel("-")
+        self.access_label = QLabel("-")
+        
+        details_form.addRow("Index:", self.index_label)
+        details_form.addRow("Sub-Index:", self.subindex_label)
+        details_form.addRow("Name:", self.name_label)
+        details_form.addRow("Data Type:", self.type_label)
+        details_form.addRow("Access:", self.access_label)
+        
+        details_layout.addWidget(self.details_group)
+        
+        # SDO operations
+        self.sdo_group = QGroupBox("SDO Operations")
+        sdo_layout = QVBoxLayout(self.sdo_group)
+        
+        # Current value display
+        value_layout = QHBoxLayout()
+        value_layout.addWidget(QLabel("Current Value:"))
+        self.current_value_label = QLabel("-")
+        self.current_value_label.setStyleSheet("border: 1px solid gray; padding: 2px;")
+        value_layout.addWidget(self.current_value_label)
+        sdo_layout.addLayout(value_layout)
+        
+        # Read button
+        self.read_btn = QPushButton("Read Value")
+        self.read_btn.clicked.connect(self.read_sdo)
+        self.read_btn.setEnabled(False)
+        sdo_layout.addWidget(self.read_btn)
+        
+        # Write section
+        write_layout = QHBoxLayout()
+        write_layout.addWidget(QLabel("New Value:"))
+        self.write_value_edit = QLineEdit()
+        self.write_btn = QPushButton("Write")
+        self.write_btn.clicked.connect(self.write_sdo)
+        self.write_btn.setEnabled(False)
+        write_layout.addWidget(self.write_value_edit)
+        write_layout.addWidget(self.write_btn)
+        sdo_layout.addLayout(write_layout)
+        
+        # Progress bar for operations
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        sdo_layout.addWidget(self.progress_bar)
+        
+        # Status label
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("color: gray;")
+        sdo_layout.addWidget(self.status_label)
+        
+        details_layout.addWidget(self.sdo_group)
+        details_layout.addStretch()
+        
+        splitter.addWidget(details_widget)
+        splitter.setSizes([400, 300])
+        
+    def set_node(self, node_config: CANopenNode):
+        """Set the current CANopen node to display"""
+        self.current_node_config = node_config
+        self.current_node_id = node_config.node_id
+        
+        # Update node info
+        self.node_info_label.setText(
+            f"CANopen Node {node_config.node_id} - {node_config.path.name}"
+        )
+        
+        # Try to get the node from the network
+        try:
+            if self.current_node_id in self.canopen_network.nodes:
+                self.current_node = self.canopen_network.nodes[self.current_node_id]
+                self.populate_object_dictionary()
+            else:
+                # Load the EDS/DCF file to show the dictionary structure
+                self.load_eds_file(node_config.path)
+        except Exception as e:
+            self.status_label.setText(f"Error loading node: {e}")
+            self.status_label.setStyleSheet("color: red;")
+            
+    def load_eds_file(self, eds_path: Path):
+        """Load EDS/DCF file and populate the object dictionary tree"""
+        try:
+            import canopen
+            # Create a temporary node to read the EDS file
+            temp_node = canopen.RemoteNode(1, str(eds_path))
+            self.populate_from_eds(temp_node.object_dictionary)
+        except Exception as e:
+            self.status_label.setText(f"Error loading EDS file: {e}")
+            self.status_label.setStyleSheet("color: red;")
+            
+    def populate_object_dictionary(self):
+        """Populate the tree with object dictionary entries"""
+        if not self.current_node:
+            return
+            
+        self.tree.clear()
+        
+        try:
+            od = self.current_node.object_dictionary
+            self.populate_from_eds(od)
+        except Exception as e:
+            self.status_label.setText(f"Error populating dictionary: {e}")
+            self.status_label.setStyleSheet("color: red;")
+            
+    def populate_from_eds(self, object_dictionary):
+        """Populate tree from object dictionary"""
+        self.tree.clear()
+        
+        # Group objects by category
+        categories = {
+            "Communication Parameters (0x1000-0x1FFF)": [],
+            "Manufacturer Specific (0x2000-0x5FFF)": [],
+            "Profile Specific (0x6000-0x9FFF)": [],
+            "Reserved (0xA000-0xFFFF)": []
+        }
+        
+        for index, obj in object_dictionary.items():
+            if isinstance(index, int):
+                if 0x1000 <= index <= 0x1FFF:
+                    category = "Communication Parameters (0x1000-0x1FFF)"
+                elif 0x2000 <= index <= 0x5FFF:
+                    category = "Manufacturer Specific (0x2000-0x5FFF)"
+                elif 0x6000 <= index <= 0x9FFF:
+                    category = "Profile Specific (0x6000-0x9FFF)"
+                else:
+                    category = "Reserved (0xA000-0xFFFF)"
+                    
+                categories[category].append((index, obj))
+        
+        # Create category items
+        for category_name, objects in categories.items():
+            if not objects:
+                continue
+                
+            category_item = QTreeWidgetItem(self.tree, [category_name])
+            category_item.setExpanded(True)
+            
+            for index, obj in sorted(objects):
+                self.add_object_to_tree(category_item, index, obj)
+                
+    def add_object_to_tree(self, parent_item, index, obj):
+        """Add an object dictionary entry to the tree"""
+        try:
+            # Handle different object types
+            if hasattr(obj, 'subindices') and obj.subindices:
+                # Array or record with subindices
+                obj_item = QTreeWidgetItem(parent_item, [
+                    f"0x{index:04X}", "", 
+                    getattr(obj, 'name', f"Object_{index:04X}"),
+                    getattr(obj, 'data_type', 'Unknown'),
+                    self.get_access_string(getattr(obj, 'access_type', None)),
+                    ""
+                ])
+                obj_item.setData(0, Qt.UserRole, {'index': index, 'subindex': None, 'obj': obj})
+                
+                # Add subindices
+                for subindex, subobj in obj.subindices.items():
+                    if isinstance(subindex, int):
+                        sub_item = QTreeWidgetItem(obj_item, [
+                            f"0x{index:04X}",
+                            f"0x{subindex:02X}",
+                            getattr(subobj, 'name', f"Sub_{subindex:02X}"),
+                            getattr(subobj, 'data_type', 'Unknown'),
+                            self.get_access_string(getattr(subobj, 'access_type', None)),
+                            ""
+                        ])
+                        sub_item.setData(0, Qt.UserRole, {
+                            'index': index, 
+                            'subindex': subindex, 
+                            'obj': subobj
+                        })
+            else:
+                # Simple variable
+                obj_item = QTreeWidgetItem(parent_item, [
+                    f"0x{index:04X}", "0x00",
+                    getattr(obj, 'name', f"Object_{index:04X}"),
+                    getattr(obj, 'data_type', 'Unknown'),
+                    self.get_access_string(getattr(obj, 'access_type', None)),
+                    ""
+                ])
+                obj_item.setData(0, Qt.UserRole, {
+                    'index': index, 
+                    'subindex': 0, 
+                    'obj': obj
+                })
+                
+        except Exception as e:
+            print(f"Error adding object 0x{index:04X} to tree: {e}")
+            
+    def get_access_string(self, access_type):
+        """Convert access type to readable string"""
+        if access_type is None:
+            return "Unknown"
+        
+        access_map = {
+            'ro': 'Read Only',
+            'wo': 'Write Only', 
+            'rw': 'Read/Write',
+            'const': 'Constant'
+        }
+        
+        if hasattr(access_type, 'name'):
+            return access_map.get(access_type.name.lower(), str(access_type))
+        return access_map.get(str(access_type).lower(), str(access_type))
+        
+    def on_item_selected(self):
+        """Handle tree item selection"""
+        selected_items = self.tree.selectedItems()
+        if not selected_items:
+            self.clear_details()
+            return
+            
+        item = selected_items[0]
+        data = item.data(0, Qt.UserRole)
+        
+        if not data or 'index' not in data:
+            self.clear_details()
+            return
+            
+        self.show_object_details(data)
+        
+    def show_object_details(self, data):
+        """Show details for selected object"""
+        index = data['index']
+        subindex = data['subindex']
+        obj = data['obj']
+        
+        # Update details
+        self.index_label.setText(f"0x{index:04X}")
+        self.subindex_label.setText(f"0x{subindex:02X}" if subindex is not None else "-")
+        self.name_label.setText(getattr(obj, 'name', 'Unknown'))
+        self.type_label.setText(getattr(obj, 'data_type', 'Unknown'))
+        self.access_label.setText(self.get_access_string(getattr(obj, 'access_type', None)))
+        
+        # Enable/disable SDO operations based on access type
+        access_type = getattr(obj, 'access_type', None)
+        can_read = access_type in ['ro', 'rw'] if access_type else True
+        can_write = access_type in ['wo', 'rw'] if access_type else True
+        
+        # Only enable if we have a connected node
+        has_connection = (self.current_node is not None and 
+                         self.canopen_network.bus is not None)
+        
+        self.read_btn.setEnabled(can_read and has_connection and subindex is not None)
+        self.write_btn.setEnabled(can_write and has_connection and subindex is not None)
+        
+        # Store current selection for SDO operations
+        self.selected_index = index
+        self.selected_subindex = subindex if subindex is not None else 0
+        
+    def clear_details(self):
+        """Clear the details panel"""
+        self.index_label.setText("-")
+        self.subindex_label.setText("-")
+        self.name_label.setText("-")
+        self.type_label.setText("-")
+        self.access_label.setText("-")
+        self.current_value_label.setText("-")
+        self.read_btn.setEnabled(False)
+        self.write_btn.setEnabled(False)
+        
+    def read_sdo(self):
+        """Read value via SDO"""
+        if not self.current_node or not hasattr(self, 'selected_index'):
+            return
+            
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)  # Indeterminate progress
+        self.status_label.setText("Reading...")
+        self.status_label.setStyleSheet("color: blue;")
+        
+        try:
+            # Perform SDO read
+            value = self.current_node.sdo[self.selected_index][self.selected_subindex].raw
+            
+            # Display the value
+            if isinstance(value, bytes):
+                display_value = value.hex(' ').upper()
+            else:
+                display_value = str(value)
+                
+            self.current_value_label.setText(display_value)
+            self.status_label.setText("Read successful")
+            self.status_label.setStyleSheet("color: green;")
+            
+        except Exception as e:
+            self.status_label.setText(f"Read failed: {e}")
+            self.status_label.setStyleSheet("color: red;")
+            
+        finally:
+            self.progress_bar.setVisible(False)
+            
+    def write_sdo(self):
+        """Write value via SDO"""
+        if not self.current_node or not hasattr(self, 'selected_index'):
+            return
+            
+        value_text = self.write_value_edit.text().strip()
+        if not value_text:
+            self.status_label.setText("Please enter a value to write")
+            self.status_label.setStyleSheet("color: red;")
+            return
+            
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)  # Indeterminate progress
+        self.status_label.setText("Writing...")
+        self.status_label.setStyleSheet("color: blue;")
+        
+        try:
+            # Try to parse the value
+            if value_text.startswith('0x') or value_text.startswith('0X'):
+                # Hexadecimal
+                value = int(value_text, 16)
+            elif value_text.replace('.', '').replace('-', '').isdigit():
+                # Try as float first, then int
+                if '.' in value_text:
+                    value = float(value_text)
+                else:
+                    value = int(value_text)
+            else:
+                # String value
+                value = value_text
+                
+            # Perform SDO write
+            self.current_node.sdo[self.selected_index][self.selected_subindex].raw = value
+            
+            self.status_label.setText("Write successful")
+            self.status_label.setStyleSheet("color: green;")
+            self.write_value_edit.clear()
+            
+            # Automatically read back the value
+            QTimer.singleShot(100, self.read_sdo)
+            
+        except Exception as e:
+            self.status_label.setText(f"Write failed: {e}")
+            self.status_label.setStyleSheet("color: red;")
+            
+        finally:
+            self.progress_bar.setVisible(False)
+            
+    def clear_node(self):
+        """Clear the current node"""
+        self.current_node = None
+        self.current_node_id = None
+        self.node_info_label.setText("No CANopen node selected")
+        self.tree.clear()
+        self.clear_details()
+        self.status_label.setText("Ready")
+        self.status_label.setStyleSheet("color: gray;")
+
+
 # --- Main Application Window ---
 class CANBusObserver(QMainWindow):
     def __init__(self):
@@ -1795,6 +2187,10 @@ class CANBusObserver(QMainWindow):
         trace_layout.addWidget(self.trace_view)
         trace_layout.addWidget(self.autoscroll_cb)
         self.tab_widget.addTab(trace_view_widget, "Trace")
+        
+        # Add Object Dictionary tab
+        self.object_dictionary_viewer = ObjectDictionaryViewer(self.canopen_network)
+        self.tab_widget.addTab(self.object_dictionary_viewer, "Object Dictionary")
 
     def setup_docks(self):
         self.project_explorer = ProjectExplorer(self.project, self)
@@ -1833,6 +2229,9 @@ class CANBusObserver(QMainWindow):
         self.project_explorer.project_changed.connect(self.on_project_changed)
         self.project_explorer.tree.currentItemChanged.connect(
             self.properties_panel.show_properties
+        )
+        self.project_explorer.tree.currentItemChanged.connect(
+            self.on_project_explorer_selection_changed
         )
 
     def setup_menubar(self):
@@ -1957,6 +2356,13 @@ class CANBusObserver(QMainWindow):
             current_item.text() if current_item else "",
         )
         self.properties_panel.project = self.project
+        
+        # Update object dictionary viewer
+        current_item = self.project_explorer.tree.currentItem()
+        if current_item:
+            self.on_project_explorer_selection_changed(current_item, None)
+        else:
+            self.object_dictionary_viewer.clear_node()
 
     def on_transmit_row_selected(self, row, id_text):
         self.signal_transmit_panel.clear_panel()
@@ -1971,6 +2377,20 @@ class CANBusObserver(QMainWindow):
     def on_signal_data_encoded(self, data_bytes):
         if (row := self.transmit_panel.table.currentRow()) >= 0:
             self.transmit_panel.update_row_data(row, data_bytes)
+            
+    def on_project_explorer_selection_changed(self, current, previous):
+        """Handle project explorer selection changes"""
+        if not current:
+            self.object_dictionary_viewer.clear_node()
+            return
+            
+        data = current.data(0, Qt.UserRole)
+        if isinstance(data, CANopenNode) and data.enabled:
+            # CANopen node selected
+            self.object_dictionary_viewer.set_node(data)
+        else:
+            # Non-CANopen item selected
+            self.object_dictionary_viewer.clear_node()
 
     def connect_can(self):
         self.can_reader = CANReaderThread(
