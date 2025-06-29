@@ -95,6 +95,51 @@ if TYPE_CHECKING:
 
 faulthandler.enable()
 
+# --- Custom CANopen Network backend ---
+class CustomCANopenNetwork(canopen.Network):
+    """Custom CANopen network class that delegates sending to the main application."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # This callback will be set by the CANBusObserver instance after creation
+        self.send_frame_callback = None
+
+    def connect(self, *args, **kwargs):
+        # The bus is managed by CANBusObserver's CANReaderThread, so we don't
+        # need to do anything specific here.
+        pass
+
+    def disconnect(self):
+        # Similar to connect(), bus management is external.
+        pass
+
+    def send_message(self, can_id, data, remote=False):
+        """
+        Constructs a can.Message and sends it via the configured callback.
+        This overrides the default canopen.Network.send_message, which would try
+        to use its own internal bus object.
+        """
+        if self.send_frame_callback:
+            try:
+                # The python-canopen library can pass data as a list of ints.
+                # The can.Message constructor handles this conversion automatically.
+                message = can.Message(
+                    arbitration_id=can_id,
+                    is_extended_id=False,  # CANopen uses standard 11-bit IDs
+                    is_remote_frame=remote,
+                    data=data
+                )
+                # Call the main application's sending method
+                self.send_frame_callback(message)
+                print(f"CANopen message sent: ID={can_id:#04x}, Data={data.hex(' ')}")
+            except Exception as e:
+                print(f"Error creating/sending CANopen message: {e}")
+        else:
+            # This is a fallback in case the callback wasn't set.
+            print(f"Warning: CANopen network tried to send a message, but no send callback is configured. ID: {can_id:#04x}")
+
+
+
 # --- Data Structures ---
 TRACE_BUFFER_LIMIT = 5000
 
@@ -1244,7 +1289,7 @@ class ScanWorker(QObject):
     finished = Signal()
     error = Signal(str)
 
-    def __init__(self, network: canopen.Network):
+    def __init__(self, network: CustomCANopenNetwork):
         super().__init__()
         self.network = network
 
@@ -1259,7 +1304,7 @@ class ScanWorker(QObject):
 class CANopenRootEditor(QWidget):
     settings_changed = Signal()
 
-    def __init__(self, project: Project, network: canopen.Network):
+    def __init__(self, project: Project, network: CustomCANopenNetwork):
         super().__init__()
         self.project = project
         self.network = network
@@ -1455,6 +1500,10 @@ class ProjectExplorer(QGroupBox):
         self.project = project
         self.main_window = main_window
         self.setup_ui()
+    
+    def expand_all_items(self):
+        """Expands all items in the project tree."""
+        self.tree.expandAll()
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -2189,10 +2238,13 @@ class ObjectDictionaryViewer(QWidget):
             # Perform SDO read
             if self.selected_subindex == 0:
                 # Simple variable - access directly
-                value = self.current_node.sdo[self.selected_index].raw
+                entry = self.current_node.sdo[self.selected_index]
             else:
                 # Complex object with subindex
-                value = self.current_node.sdo[self.selected_index][self.selected_subindex].raw
+                entry = self.current_node.sdo[self.selected_index][self.selected_subindex]
+
+            entry.sdo_node.RESPONSE_TIMEOUT = 1.0  # Set a reasonable timeout
+            value = entry.raw
             
             # Display the value
             if isinstance(value, bytes):
@@ -2279,7 +2331,8 @@ class CANBusObserver(QMainWindow):
         super().__init__()
         self.setWindowTitle("CANPeek")
         self.setGeometry(100, 100, 1400, 900)
-        self.canopen_network = canopen.Network()
+        self.canopen_network = CustomCANopenNetwork()
+        self.canopen_network.send_frame_callback = self.send_can_frame
         self.MAX_RECENT_PROJECTS = 10
         self.recent_projects_paths = []
         self.interface_manager = CANInterfaceManager()
@@ -2502,6 +2555,8 @@ class CANBusObserver(QMainWindow):
                 self.canopen_network.notify(
                     frame.arbitration_id, frame.data, frame.timestamp
                 )
+                if frame.arbitration_id == 0x58C:
+                    print("Received SDO frame:", frame)
             self.frame_batch.append(frame)
         except Exception as e:
             print(f"Error processing frame: {e}")
@@ -2576,7 +2631,7 @@ class CANBusObserver(QMainWindow):
                         print(f"Error adding CANopen node {node_config.node_id}: {e}")
         if self.can_reader and self.can_reader.bus:
             self.canopen_network.bus = self.can_reader.bus
-            self.canopen_network.connect()
+            # self.canopen_network.connect()
         self.transmit_panel.set_dbc_databases(active_dbcs)
         current_item = self.transmit_panel.table.currentItem()
         self.on_transmit_row_selected(
@@ -2636,7 +2691,7 @@ class CANBusObserver(QMainWindow):
             self.on_can_error("Failed to establish bus object in reader thread.")
             return
         self.canopen_network.bus = self.can_reader.bus
-        self.canopen_network.connect()
+        # self.canopen_network.connect()
         self.connect_action.setEnabled(False)
         self.disconnect_action.setEnabled(True)
         self.transmit_panel.setEnabled(True)
@@ -2872,6 +2927,7 @@ class CANBusObserver(QMainWindow):
             self.statusBar().showMessage(
                 f"Project '{self.current_project_path.name}' loaded."
             )
+            self.project_explorer.expand_all_items() # <--- ADD THIS LINE
         except Exception as e:
             QMessageBox.critical(
                 self, "Open Project Error", f"Failed to load project:\n{e}"
