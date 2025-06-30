@@ -28,7 +28,6 @@ from contextlib import contextmanager
 from docstring_parser import parse
 import enum
 from . import rc_icons
-from .dcf2db import dcf_2_db
 
 import asyncio
 from qasync import QEventLoop, QApplication
@@ -91,7 +90,18 @@ from PySide6.QtGui import QAction, QKeyEvent, QIcon, QPixmap
 
 import can
 import cantools
-import canopen
+
+from .co.canopen_utils import (
+    CANopenDecoder,
+    CANopenNode,
+    CANopenNodeEditor,
+    CANopenRootEditor,
+    PDOEditor,
+    PDODatabaseManager,
+    ObjectDictionaryViewer,
+)
+
+from .can_utils import CANFrame, Project, CANFrameFilter, DBCFile, DisplayItem
 
 if TYPE_CHECKING:
     from __main__ import ProjectExplorer, CANInterfaceManager, CANBusObserver
@@ -102,179 +112,6 @@ faulthandler.enable()
 
 # --- Data Structures ---
 TRACE_BUFFER_LIMIT = 5000
-
-
-@dataclass
-class CANFrame:
-    timestamp: float
-    arbitration_id: int
-    data: bytes
-    dlc: int
-    is_extended: bool = False
-    is_error: bool = False
-    is_remote: bool = False
-    channel: str = "CAN1"
-
-
-@dataclass
-class DisplayItem:  # Used for Grouped View
-    parent: Optional["DisplayItem"]
-    data_source: Any
-    is_signal: bool = False
-    children: List["DisplayItem"] = field(default_factory=list)
-    children_populated: bool = False
-    row_in_parent: int = 0
-
-
-@dataclass
-class DBCFile:
-    path: Path
-    database: object
-    enabled: bool = True
-
-
-@dataclass
-class CANopenNode:
-    path: Path
-    node_id: int
-    enabled: bool = True
-    pdo_decoding_enabled: bool = True  # Add PDO decoding option
-
-    def to_dict(self) -> Dict:
-        return {
-            "path": str(self.path),
-            "node_id": self.node_id,
-            "enabled": self.enabled,
-            "pdo_decoding_enabled": self.pdo_decoding_enabled,  # Add to serialization
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict) -> "CANopenNode":
-        path = Path(data["path"])
-        if not path.exists():
-            raise FileNotFoundError(f"EDS/DCF file not found: {path}")
-        return cls(
-            path=path, 
-            node_id=data["node_id"], 
-            enabled=data["enabled"],
-            pdo_decoding_enabled=data.get("pdo_decoding_enabled", True)  # Add with default
-        )
-
-
-@dataclass
-class CANFrameFilter:
-    name: str = "New Filter"
-    enabled: bool = True
-    min_id: int = 0x000
-    max_id: int = 0x7FF
-    mask: int = 0x7FF
-    accept_extended: bool = True
-    accept_standard: bool = True
-    accept_data: bool = True
-    accept_remote: bool = True
-
-    def matches(self, frame: CANFrame) -> bool:
-        if frame.is_extended and not self.accept_extended:
-            return False
-        if not frame.is_extended and not self.accept_standard:
-            return False
-        if frame.is_remote and not self.accept_remote:
-            return False
-        if not frame.is_remote and not self.accept_data:
-            return False
-        return self.min_id <= (frame.arbitration_id & self.mask) <= self.max_id
-
-
-@dataclass
-class Project:
-    dbcs: List[DBCFile] = field(default_factory=list)
-    filters: List[CANFrameFilter] = field(default_factory=list)
-    canopen_enabled: bool = False
-    canopen_nodes: List[CANopenNode] = field(default_factory=list)
-    can_interface: str = "virtual"
-    can_config: Dict[str, Any] = field(default_factory=lambda: {"channel": "vcan0"})
-
-    def get_active_dbcs(self) -> List[object]:
-        return [dbc.database for dbc in self.dbcs if dbc.enabled]
-
-    def get_active_filters(self) -> List[CANFrameFilter]:
-        return [f for f in self.filters if f.enabled]
-
-    def to_dict(self) -> Dict:
-        serializable_can_config = {
-            k: v.name if isinstance(v, enum.Enum) else v
-            for k, v in self.can_config.items()
-        }
-        return {
-            "dbcs": [
-                {"path": str(dbc.path), "enabled": dbc.enabled} for dbc in self.dbcs
-            ],
-            "filters": [asdict(f) for f in self.filters],
-            "canopen_enabled": self.canopen_enabled,
-            "canopen_nodes": [node.to_dict() for node in self.canopen_nodes],
-            "can_interface": self.can_interface,
-            "can_config": serializable_can_config,
-        }
-
-    @classmethod
-    def from_dict(
-        cls, data: Dict, interface_manager: "CANInterfaceManager"
-    ) -> "Project":
-        project = cls()
-        project.canopen_enabled = data.get("canopen_enabled", False)
-        project.can_interface = data.get("can_interface", "virtual")
-
-        for node_data in data.get("canopen_nodes", []):
-            try:
-                project.canopen_nodes.append(CANopenNode.from_dict(node_data))
-            except Exception as e:
-                print(f"Warning: Could not load CANopen node from project: {e}")
-
-        config_from_file = data.get("can_config", {})
-        hydrated_config = {}
-        param_defs = interface_manager.get_interface_params(project.can_interface)
-
-        if param_defs:
-            for key, value in config_from_file.items():
-                if key not in param_defs:
-                    hydrated_config[key] = value
-                    continue
-
-                param_info = param_defs[key]
-                expected_type = param_info.get("type")
-                is_enum = False
-                try:
-                    if inspect.isclass(expected_type) and issubclass(
-                        expected_type, enum.Enum
-                    ):
-                        is_enum = True
-                except TypeError:
-                    pass
-
-                if is_enum and isinstance(value, str):
-                    try:
-                        hydrated_config[key] = expected_type[value]
-                    except KeyError:
-                        hydrated_config[key] = param_info.get("default")
-                else:
-                    hydrated_config[key] = value
-        else:
-            hydrated_config = config_from_file
-
-        project.can_config = hydrated_config
-        project.filters = [
-            CANFrameFilter(**f_data) for f_data in data.get("filters", [])
-        ]
-        for dbc_data in data.get("dbcs", []):
-            try:
-                path = Path(dbc_data["path"])
-                if not path.exists():
-                    raise FileNotFoundError(f"DBC file not found: {path}")
-                db = cantools.database.load_file(path)
-                project.dbcs.append(DBCFile(path, db, dbc_data.get("enabled", True)))
-            except Exception as e:
-                print(f"Warning: Could not load DBC from project file: {e}")
-        return project
 
 
 class LogCaptureHandler(logging.Handler):
@@ -300,49 +137,6 @@ def capture_logs(logger_name: str):
     finally:
         target_logger.handlers = original_handlers
         target_logger.setLevel(original_level)
-
-
-class PDODatabaseManager:
-    """Manages PDO databases with caching to avoid duplicate creation"""
-    
-    def __init__(self):
-        self._cache = {}  # Cache: (path, node_id) -> database
-    
-    def get_pdo_database(self, node: CANopenNode):
-        """Get or create PDO database for a CANopen node"""
-        if not node.pdo_decoding_enabled:
-            return None
-            
-        cache_key = (str(node.path), node.node_id)
-        
-        if cache_key not in self._cache:
-            try:
-                slave_name = f"{node.path.stem}_Node{node.node_id}"
-                self._cache[cache_key] = dcf_2_db(str(node.path), node.node_id, slave_name)
-                print(f"Created PDO database for node {node.node_id}")
-            except Exception as e:
-                print(f"Error creating PDO database for node {node.node_id}: {e}")
-                return None
-        
-        return self._cache[cache_key]
-    
-    def invalidate_cache(self, node: CANopenNode = None):
-        """Invalidate cache for a specific node or all nodes"""
-        if node:
-            cache_key = (str(node.path), node.node_id)
-            self._cache.pop(cache_key, None)
-        else:
-            self._cache.clear()
-    
-    def get_all_active_databases(self, nodes: List[CANopenNode]) -> List[object]:
-        """Get all PDO databases for enabled nodes"""
-        databases = []
-        for node in nodes:
-            if node.enabled and node.pdo_decoding_enabled:
-                db = self.get_pdo_database(node)
-                if db:
-                    databases.append(db)
-        return databases
 
 
 class CANInterfaceManager:
@@ -388,138 +182,6 @@ class CANInterfaceManager:
         return self._interfaces.get(name, {}).get("params")
 
 
-class CANopenDecoder:
-    @staticmethod
-    def decode(frame: CANFrame) -> Optional[Dict]:
-        cob_id = frame.arbitration_id
-        if cob_id == 0x000:
-            return CANopenDecoder._nmt(frame.data)
-        if cob_id == 0x080:
-            return CANopenDecoder._sync()
-        if cob_id == 0x100:
-            return CANopenDecoder._time(frame.data)
-        node_id = cob_id & 0x7F
-        if node_id == 0:
-            return None
-        function_code = cob_id & 0x780
-        if function_code == 0x80:
-            return CANopenDecoder._emcy(frame.data, node_id)
-        if function_code in [0x180, 0x280, 0x380, 0x480]:
-            return CANopenDecoder._pdo("TX", function_code, node_id)
-        if function_code in [0x200, 0x300, 0x400, 0x500]:
-            return CANopenDecoder._pdo("RX", function_code, node_id)
-        if function_code == 0x580:
-            return CANopenDecoder._sdo("TX", frame.data, node_id)
-        if function_code == 0x600:
-            return CANopenDecoder._sdo("RX", frame.data, node_id)
-        if function_code == 0x700:
-            return CANopenDecoder._heartbeat(frame.data, node_id)
-        return None
-
-    @staticmethod
-    def _nmt(data: bytes) -> Dict:
-        if len(data) != 2:
-            return None
-        cs_map = {
-            1: "Start",
-            2: "Stop",
-            128: "Pre-Operational",
-            129: "Reset Node",
-            130: "Reset Comm",
-        }
-        cs, nid = data[0], data[1]
-        target = f"Node {nid}" if nid != 0 else "All Nodes"
-        return {
-            "CANopen Type": "NMT",
-            "Command": cs_map.get(cs, "Unknown"),
-            "Target": target,
-        }
-
-    @staticmethod
-    def _sync() -> Dict:
-        return {"CANopen Type": "SYNC"}
-
-    @staticmethod
-    def _time(data: bytes) -> Dict:
-        return {"CANopen Type": "TIME", "Raw": data.hex(" ")}
-
-    @staticmethod
-    def _emcy(data: bytes, node_id: int) -> Dict:
-        if len(data) != 8:
-            return {
-                "CANopen Type": "EMCY",
-                "CANopen Node": node_id,
-                "Error": "Invalid Length",
-            }
-        err_code, err_reg, _ = struct.unpack("<H B 5s", data)
-        return {
-            "CANopen Type": "EMCY",
-            "CANopen Node": node_id,
-            "Code": f"0x{err_code:04X}",
-            "Register": f"0x{err_reg:02X}",
-        }
-
-    @staticmethod
-    def _pdo(direction: str, function_code: int, node_id: int) -> Dict:
-        pdo_num = (
-            ((function_code - 0x180) // 0x100 + 1)
-            if direction == "TX"
-            else ((function_code - 0x200) // 0x100 + 1)
-        )
-        return {"CANopen Type": f"PDO{pdo_num} {direction}", "CANopen Node": node_id}
-
-    @staticmethod
-    def _sdo(direction: str, data: bytes, node_id: int) -> Dict:
-        if not data:
-            return None
-        cmd, specifier = data[0], (data[0] >> 5) & 0x7
-        base_info = {"CANopen Type": f"SDO {direction}", "CANopen Node": node_id}
-        if specifier in [1, 2]:
-            if len(data) < 4:
-                return {**base_info, "Error": "Invalid SDO Initiate"}
-            command = "Initiate Upload" if specifier == 1 else "Initiate Download"
-            idx, sub = struct.unpack_from("<HB", data, 1)
-            base_info.update(
-                {"Command": command, "Index": f"0x{idx:04X}", "Sub-Index": sub}
-            )
-        elif specifier in [0, 3]:
-            base_info.update(
-                {"Command": "Segment " + ("Upload" if specifier == 3 else "Download")}
-            )
-        elif specifier == 4:
-            if len(data) < 8:
-                return {**base_info, "Error": "Invalid SDO Abort"}
-            idx, sub, code = struct.unpack_from("<HBL", data, 1)
-            base_info.update(
-                {
-                    "Command": "Abort",
-                    "Index": f"0x{idx:04X}",
-                    "Sub-Index": sub,
-                    "Code": f"0x{code:08X}",
-                }
-            )
-        else:
-            base_info.update({"Command": f"Unknown ({cmd:#04x})"})
-        return base_info
-
-    @staticmethod
-    def _heartbeat(data: bytes, node_id: int) -> Dict:
-        if len(data) != 1:
-            return None
-        state_map = {
-            0: "Boot-up",
-            4: "Stopped",
-            5: "Operational",
-            127: "Pre-operational",
-        }
-        state = data[0] & 0x7F
-        return {
-            "CANopen Type": "Heartbeat",
-            "CANopen Node": node_id,
-            "State": state_map.get(state, f"Unknown ({state})"),
-        }
-
-
 # --- Models ---
 class CANTraceModel(QAbstractTableModel):
     def __init__(self):
@@ -536,7 +198,9 @@ class CANTraceModel(QAbstractTableModel):
         self.frames.extend(frames)
         self.endResetModel()
 
-    def set_config(self, dbs: List[object], co_enabled: bool, pdo_dbs: List[object] = None):
+    def set_config(
+        self, dbs: List[object], co_enabled: bool, pdo_dbs: List[object] = None
+    ):
         self.dbc_databases = dbs
         self.canopen_enabled = co_enabled
         self.pdo_databases = pdo_dbs or []  # Set PDO databases
@@ -575,7 +239,7 @@ class CANTraceModel(QAbstractTableModel):
 
     def _decode_frame(self, frame: CANFrame) -> str:
         decoded_parts = []
-        
+
         # Try DBC databases first
         for db in self.dbc_databases:
             try:
@@ -588,7 +252,7 @@ class CANTraceModel(QAbstractTableModel):
                 return " | ".join(decoded_parts)
             except (KeyError, ValueError):
                 continue
-        
+
         # Try PDO databases
         for db in self.pdo_databases:
             try:
@@ -601,7 +265,7 @@ class CANTraceModel(QAbstractTableModel):
                 return " | ".join(decoded_parts)
             except (KeyError, ValueError):
                 continue
-        
+
         # Fallback to CANopen decoding
         if self.canopen_enabled:
             if co_info := CANopenDecoder.decode(frame):
@@ -609,7 +273,7 @@ class CANTraceModel(QAbstractTableModel):
                     f"{k}={v}" for k, v in co_info.items() if k != "CANopen Type"
                 )
                 decoded_parts.append(f"CANopen {co_info['CANopen Type']}: {details}")
-        
+
         return " | ".join(decoded_parts)
 
 
@@ -806,7 +470,7 @@ class CANGroupedModel(QAbstractItemModel):
 class CANAsyncReader(QObject):
     frame_received = Signal(object)
     error_occurred = Signal(str)
-    
+
     def __init__(self, interface: str, config: Dict[str, Any]):
         super().__init__()
         self.interface = interface
@@ -816,44 +480,36 @@ class CANAsyncReader(QObject):
         self.notifier = None
         self.reader = None
         self.read_task = None
-        
+
     # @property
     # def notifier(self):
     #     """Expose the notifier for canopen-asyncio integration"""
     #     return self._notifier
-        
+
     async def start_reading(self):
         """Start async CAN reading"""
         try:
             self.bus = can.Bus(
-                interface=self.interface, 
-                receive_own_messages=True, 
-                **self.config
+                interface=self.interface, receive_own_messages=True, **self.config
             )
-            
+
             # Create async reader and notifier
             # self.reader = can.AsyncBufferedReader()
-            
+
             # Get the current event loop
             loop = asyncio.get_running_loop()
-            
-            # Create notifier with the loop
-            self.notifier = can.Notifier(
-                self.bus, 
-                [self.rx_messages], 
-                loop=loop
-            )
-            
-            self.running = True
-            
 
-            
+            # Create notifier with the loop
+            self.notifier = can.Notifier(self.bus, [self.rx_messages], loop=loop)
+
+            self.running = True
+
             return True
-            
+
         except Exception as e:
             self.error_occurred.emit(f"Failed to start CAN reading: {e}")
             return False
-        
+
     def rx_messages(self, msg: can.Message) -> None:
         """Regular callback function. Can also be a coroutine."""
         # print(msg)
@@ -867,18 +523,18 @@ class CANAsyncReader(QObject):
             msg.is_remote_frame,
         )
         self.frame_received.emit(frame)
-        
+
     def stop_reading(self):
         """Stop async CAN reading"""
         self.running = False
-        
+
         if self.read_task and not self.read_task.done():
             self.read_task.cancel()
-            
+
         if self.notifier:
             self.notifier.stop()
             self.notifier = None
-            
+
         if self.bus:
             try:
                 self.bus.shutdown()
@@ -886,10 +542,10 @@ class CANAsyncReader(QObject):
                 print(f"Error shutting down CAN bus: {e}")
             finally:
                 self.bus = None
-                
+
         self.reader = None
         self.read_task = None
-    
+
     def send_frame(self, message: can.Message):
         """Send a CAN frame"""
         if self.bus and self.running:
@@ -930,64 +586,6 @@ class DBCEditor(QWidget):
             self.table.setItem(
                 r, 3, QTableWidgetItem(", ".join(s.name for s in m.signals))
             )
-
-
-class PDOEditor(QWidget):
-    def __init__(self, node: CANopenNode, pdo_manager: PDODatabaseManager):
-        super().__init__()
-        self.node = node
-        self.pdo_manager = pdo_manager
-        self.pdo_database = None
-        self.setup_ui()
-        self.load_pdo_database()
-
-    def setup_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        
-        group = QGroupBox(f"PDO Content: {self.node.path.name} (Node {self.node.node_id})")
-        layout = QVBoxLayout(group)
-        main_layout.addWidget(group)
-        
-        self.table = QTableWidget()
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Message", "ID (hex)", "DLC", "Signals"])
-        layout.addWidget(self.table)
-        
-        self.status_label = QLabel("Loading PDO database...")
-        layout.addWidget(self.status_label)
-
-    def load_pdo_database(self):
-        """Load PDO database using the manager"""
-        try:
-            self.pdo_database = self.pdo_manager.get_pdo_database(self.node)
-            if self.pdo_database:
-                self.populate_table()
-                self.status_label.setText(f"Loaded {len(self.pdo_database.messages)} PDO messages")
-            else:
-                self.status_label.setText("PDO decoding not enabled or failed to load")
-                self.table.setRowCount(0)
-        except Exception as e:
-            self.status_label.setText(f"Error loading PDO database: {str(e)}")
-            self.table.setRowCount(0)
-
-    def populate_table(self):
-        if not self.pdo_database:
-            return
-            
-        messages = sorted(self.pdo_database.messages, key=lambda m: m.frame_id)
-        self.table.setRowCount(len(messages))
-        
-        for r, m in enumerate(messages):
-            self.table.setItem(r, 0, QTableWidgetItem(m.name))
-            self.table.setItem(r, 1, QTableWidgetItem(f"0x{m.frame_id:X}"))
-            self.table.setItem(r, 2, QTableWidgetItem(str(m.length)))
-            self.table.setItem(
-                r, 3, QTableWidgetItem(", ".join(s.name for s in m.signals))
-            )
-        
-        self.table.resizeColumnsToContents()
 
 
 class FilterEditor(QWidget):
@@ -1200,224 +798,6 @@ class ConnectionEditor(QWidget):
         self.project_changed.emit()
 
 
-class CANopenNodeEditor(QWidget):
-    node_changed = Signal()
-
-    def __init__(self, node: CANopenNode, pdo_manager: PDODatabaseManager):
-        super().__init__()
-        self.node = node
-        self.pdo_manager = pdo_manager
-        self.pdo_editor = None
-        self.setup_ui()
-
-    def setup_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Node properties group
-        group = QGroupBox("CANopen Node Properties")
-        layout = QFormLayout(group)
-        main_layout.addWidget(group)
-        
-        path_edit = QLineEdit(str(self.node.path))
-        path_edit.setReadOnly(True)
-        layout.addRow("EDS/DCF File:", path_edit)
-        
-        self.node_id_spinbox = QSpinBox()
-        self.node_id_spinbox.setRange(1, 127)
-        self.node_id_spinbox.setValue(self.node.node_id)
-        layout.addRow("Node ID:", self.node_id_spinbox)
-        self.node_id_spinbox.valueChanged.connect(self._update_node)
-        
-        # Add PDO decoding checkbox
-        self.pdo_decoding_cb = QCheckBox("Enable PDO Decoding")
-        self.pdo_decoding_cb.setChecked(self.node.pdo_decoding_enabled)
-        self.pdo_decoding_cb.setToolTip("Decode PDO messages using EDS/DCF file")
-        layout.addRow(self.pdo_decoding_cb)
-        self.pdo_decoding_cb.toggled.connect(self._update_node)
-        self.pdo_decoding_cb.toggled.connect(self._toggle_pdo_content)
-        
-        # PDO content area (initially hidden)
-        self._setup_pdo_content()
-        
-    def _setup_pdo_content(self):
-        """Setup PDO content viewer"""
-        if self.node.pdo_decoding_enabled:
-            self.pdo_editor = PDOEditor(self.node, self.pdo_manager)
-            self.layout().addWidget(self.pdo_editor)
-        
-    def _toggle_pdo_content(self, enabled: bool):
-        """Show/hide PDO content based on checkbox state"""
-        if enabled and not self.pdo_editor:
-            self.pdo_editor = PDOEditor(self.node, self.pdo_manager)
-            self.layout().addWidget(self.pdo_editor)
-        elif not enabled and self.pdo_editor:
-            self.pdo_editor.deleteLater()
-            self.pdo_editor = None
-
-    def _update_node(self):
-        old_node_id = self.node.node_id
-        old_pdo_enabled = self.node.pdo_decoding_enabled
-        
-        self.node.node_id = self.node_id_spinbox.value()
-        self.node.pdo_decoding_enabled = self.pdo_decoding_cb.isChecked()
-        
-        # Invalidate cache if node ID changed
-        if old_node_id != self.node.node_id:
-            # Invalidate old cache entry
-            old_node = CANopenNode(self.node.path, old_node_id, self.node.enabled, old_pdo_enabled)
-            self.pdo_manager.invalidate_cache(old_node)
-            
-            # Reload PDO content if it's visible
-            if self.pdo_editor:
-                self.pdo_editor.load_pdo_database()
-        
-        self.node_changed.emit()
-
-
-class ScanWorker(QObject):
-    finished = Signal()
-    error = Signal(str)
-
-    def __init__(self, network: canopen.Network):
-        super().__init__()
-        self.network = network
-
-    def run(self):
-        try:
-            self.network.scanner.search()
-            self.finished.emit()
-        except Exception as e:
-            self.error.emit(str(e))
-
-
-class CANopenRootEditor(QWidget):
-    settings_changed = Signal()
-
-    def __init__(self, project: Project, network: canopen.Network):
-        super().__init__()
-        self.project = project
-        self.network = network
-        self.scan_thread = None
-        self.scan_worker = None
-        self.passive_scan_timer = QTimer(self)
-        self.passive_scan_timer.setInterval(1000)
-        self.passive_scan_timer.timeout.connect(self._update_discovered_nodes)
-        self.last_known_nodes = set()
-        self.setup_ui()
-
-    def setup_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        group = QGroupBox("CANopen Settings")
-        layout = QFormLayout(group)
-        main_layout.addWidget(group)
-        self.enabled_cb = QCheckBox("Enable CANopen Processing")
-        self.enabled_cb.setChecked(self.project.canopen_enabled)
-        layout.addRow(self.enabled_cb)
-        scan_group = QGroupBox("Node Discovery")
-        scan_layout = QVBoxLayout(scan_group)
-        passive_layout = QFormLayout()
-        self.discovery_status_label = QLabel("Disconnected")
-        passive_layout.addRow("Status:", self.discovery_status_label)
-        discovered_nodes_layout = QHBoxLayout()
-        self.discovered_nodes_text = QLineEdit()
-        self.discovered_nodes_text.setReadOnly(True)
-        self.discovered_nodes_text.setPlaceholderText("No nodes detected")
-        self.clear_nodes_button = QPushButton("Clear")
-        discovered_nodes_layout.addWidget(self.discovered_nodes_text)
-        discovered_nodes_layout.addWidget(self.clear_nodes_button)
-        passive_layout.addRow("Discovered Nodes:", discovered_nodes_layout)
-        scan_layout.addLayout(passive_layout)
-        self.active_scan_button = QPushButton("Actively Scan for Nodes")
-        scan_layout.addWidget(self.active_scan_button)
-        layout.addRow(scan_group)
-        self.enabled_cb.toggled.connect(self._update_settings)
-        self.active_scan_button.clicked.connect(self._start_active_scan)
-        self.clear_nodes_button.clicked.connect(self._clear_discovered_nodes)
-
-    def set_connection_status(self, is_connected: bool):
-        self.active_scan_button.setEnabled(is_connected)
-        self.clear_nodes_button.setEnabled(is_connected)
-        if is_connected:
-            self.discovery_status_label.setText("Passively Listening...")
-            self.passive_scan_timer.start()
-        else:
-            self.discovery_status_label.setText("Disconnected")
-            self.passive_scan_timer.stop()
-            self._clear_discovered_nodes()
-
-    def _update_settings(self):
-        self.project.canopen_enabled = self.enabled_cb.isChecked()
-        self.settings_changed.emit()
-
-    def _clear_discovered_nodes(self):
-        # if self.network.bus:
-        #     self.network.scanner.reset()
-        self.last_known_nodes.clear()
-        self.discovered_nodes_text.clear()
-
-    def _update_discovered_nodes(self):
-        if not self.network.bus:
-            return
-        current_nodes = set(self.network.scanner.nodes)
-        if current_nodes != self.last_known_nodes:
-            self.last_known_nodes = current_nodes
-            self.discovered_nodes_text.setText(
-             
-                ", ".join(map(str, sorted(list(current_nodes))))
-            )
-
-    def _start_active_scan(self):
-        # Check if a scan is already running by checking the thread object
-        if self.scan_thread is not None:
-            return
-
-        self.active_scan_button.setEnabled(False)
-        self.discovery_status_label.setText("Actively Scanning...")
-
-        self.scan_thread = QThread()
-        self.scan_worker = ScanWorker(self.network)
-        self.scan_worker.moveToThread(self.scan_thread)
-
-        self.scan_thread.started.connect(self.scan_worker.run)
-        self.scan_worker.finished.connect(self.on_active_scan_finished)
-        self.scan_worker.error.connect(self.on_active_scan_error)
-
-        # Proper cleanup
-        self.scan_worker.finished.connect(self.scan_worker.deleteLater)
-        self.scan_thread.finished.connect(
-            self._on_scan_thread_finished
-        )  # Use our cleanup slot
-
-        self.scan_thread.start()
-
-    def _on_scan_thread_finished(self):
-        """Slot to safely clean up the thread and worker objects."""
-        if self.scan_thread:
-            self.scan_thread.deleteLater()
-        self.scan_thread = None
-        self.scan_worker = None
-
-    def on_active_scan_finished(self):
-        self.active_scan_button.setEnabled(True)
-        self.discovery_status_label.setText("Passively Listening...")
-        QTimer.singleShot(250, self._update_discovered_nodes)
-        # Now that the worker's job is done, we can quit the thread
-        if self.scan_thread:
-            self.scan_thread.quit()
-
-    def on_active_scan_error(self, error_msg: str):
-        self.active_scan_button.setEnabled(True)
-        self.discovery_status_label.setText("Active scan error!")
-        QMessageBox.warning(
-            self, "Scan Error", f"An error occurred during active scan:\n{error_msg}"
-        )
-        # Quit the thread on error too
-        if self.scan_thread:
-            self.scan_thread.quit()
-
-
 class PropertiesPanel(QWidget):
     def __init__(
         self,
@@ -1491,7 +871,7 @@ class ProjectExplorer(QGroupBox):
         self.project = project
         self.main_window = main_window
         self.setup_ui()
-    
+
     def expand_all_items(self):
         """Expands all items in the project tree."""
         self.tree.expandAll()
@@ -1890,484 +1270,6 @@ class SignalTransmitPanel(QGroupBox):
             pass
 
 
-class ObjectDictionaryViewer(QWidget):
-    """CANopen Object Dictionary Viewer with SDO read/write capabilities"""
-    frame_to_send = Signal(object)
-    frame_rx_sdo = Signal(object)
-    
-    def __init__(self):
-        super().__init__()
-        self.current_node_id = None
-        self.setup_ui()
-
-        self.frame_rx_sdo.connect(self.on_frame_rx_sdo)
-
-    def on_frame_rx_sdo(self, frame: can.Message):
-        """Handle received SDO frames"""
-        print(f"Received SDO frame: {frame}")
-        res_command, res_index, res_subindex = canopen.sdo.constants.SDO_STRUCT.unpack_from(frame.data)
-
-        res_data = frame.data[4:8]
-
-        if res_command & 0xE0 != canopen.sdo.constants.RESPONSE_UPLOAD:
-            print(f"Unexpected response 0x{res_command:02X}")
-
-        # # Check that the message is for us
-        # if res_index != index or res_subindex != subindex:
-        #     raise SdoCommunicationError(
-        #         f"Node returned a value for {pretty_index(res_index, res_subindex)} instead, "
-        #         "maybe there is another SDO client communicating "
-        #         "on the same SDO channel?")
-
-        exp_data = None
-        if res_command & canopen.sdo.constants.EXPEDITED:
-            # Expedited upload
-            if res_command & canopen.sdo.constants.SIZE_SPECIFIED:
-                size = 4 - ((res_command >> 2) & 0x3)
-                exp_data = res_data[:size]
-            else:
-                exp_data = res_data
-            # self.pos += len(self.exp_data)
-        elif res_command & canopen.sdo.constants.SIZE_SPECIFIED:
-            size, = struct.unpack("<L", res_data)
-            print("Using segmented transfer of %d bytes", self.size)
-        else:
-            print("Using segmented transfer")
-
-        print(f"Received SDO response: Index={res_index}, Subindex={res_subindex}, Data={exp_data.hex()}, Size={size}")
-        # if self.current_node and frame.arbitration_id == self.current_node.sdo_server_id:
-        #     # Process the SDO response
-        #     try:
-        #         sdo_response = self.current_node.sdo.parse_response(frame)
-        #         # Update the current value label with the received value
-        #         self.current_value_label.setText(str(sdo_response.value))
-        #         self.status_label.setText("SDO Read Successful")
-        #         self.status_label.setStyleSheet("color: green;")
-        #     except Exception as e:
-        #         self.status_label.setText(f"SDO Read Error: {e}")
-        #         self.status_label.setStyleSheet("color: red;")
-        
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        
-        # Node info header
-        self.node_info_label = QLabel("No CANopen node selected")
-        self.node_info_label.setStyleSheet("font-weight: bold; padding: 2px;")
-        self.node_info_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        self.node_info_label.setMaximumHeight(20)
-        layout.addWidget(self.node_info_label)
-        
-        # Splitter for tree and details
-        splitter = QSplitter(Qt.Horizontal)
-        layout.addWidget(splitter)
-        
-        # Object dictionary tree
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Index", "Sub", "Name", "Type", "Access", "Value", "Hex Value"])
-        self.tree.setAlternatingRowColors(True)
-        self.tree.itemSelectionChanged.connect(self.on_item_selected)
-        splitter.addWidget(self.tree)
-        
-        # Details panel
-        details_widget = QWidget()
-        details_layout = QVBoxLayout(details_widget)
-        
-        # Object details
-        self.details_group = QGroupBox("Object Details")
-        details_form = QFormLayout(self.details_group)
-        
-        self.index_label = QLabel("-")
-        self.subindex_label = QLabel("-")
-        self.name_label = QLabel("-")
-        self.type_label = QLabel("-")
-        self.access_label = QLabel("-")
-        
-        details_form.addRow("Index:", self.index_label)
-        details_form.addRow("Sub-Index:", self.subindex_label)
-        details_form.addRow("Name:", self.name_label)
-        details_form.addRow("Data Type:", self.type_label)
-        details_form.addRow("Access:", self.access_label)
-        
-        details_layout.addWidget(self.details_group)
-        
-        # SDO operations
-        self.sdo_group = QGroupBox("SDO Operations")
-        sdo_layout = QVBoxLayout(self.sdo_group)
-        
-        # Current value display
-        value_layout = QHBoxLayout()
-        value_layout.addWidget(QLabel("Current Value:"))
-        self.current_value_label = QLabel("-")
-        self.current_value_label.setStyleSheet("border: 1px solid gray; padding: 2px;")
-        value_layout.addWidget(self.current_value_label)
-        sdo_layout.addLayout(value_layout)
-        
-        # Read button
-        self.read_btn = QPushButton("Read Value")
-        self.read_btn.clicked.connect(
-            lambda: asyncio.create_task(self.read_sdo())
-        )
-        self.read_btn.setEnabled(False)
-        sdo_layout.addWidget(self.read_btn)
-        
-        # Write section
-        write_layout = QHBoxLayout()
-        write_layout.addWidget(QLabel("New Value:"))
-        self.write_value_edit = QLineEdit()
-        self.write_btn = QPushButton("Write")
-        self.write_btn.clicked.connect(
-            lambda: asyncio.create_task(self.write_sdo())
-        )
-        self.write_btn.setEnabled(False)
-        write_layout.addWidget(self.write_value_edit)
-        write_layout.addWidget(self.write_btn)
-        sdo_layout.addLayout(write_layout)
-        
-        # Progress bar for operations
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        sdo_layout.addWidget(self.progress_bar)
-        
-        # Status label
-        self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("color: gray;")
-        sdo_layout.addWidget(self.status_label)
-        
-        details_layout.addWidget(self.sdo_group)
-        details_layout.addStretch()
-        
-        splitter.addWidget(details_widget)
-        splitter.setSizes([400, 300])
-        
-    async def set_node(self, node_config: CANopenNode):
-        """Set the current CANopen node to display"""
-        self.current_node_config = node_config
-        self.current_node_id = node_config.node_id
-        
-        # Update node info
-        self.node_info_label.setText(
-            f"CANopen Node {node_config.node_id} - {node_config.path.name}"
-        )
-        
-
-        # Load EDS file for offline viewing
-        try:
-            self.load_eds_file(node_config.path)
-        except Exception as e:
-            self.status_label.setText(f"Error loading EDS file: {e}")
-            self.status_label.setStyleSheet("color: red;")
-        return
-        
-            
-    def load_eds_file(self, eds_path: Path):
-        """Load EDS/DCF file and populate the object dictionary tree"""
-        try:
-            import canopen
-            # Create a temporary node to read the EDS file
-            temp_node = canopen.RemoteNode(1, str(eds_path))
-            self.populate_from_eds(temp_node.object_dictionary)
-        except Exception as e:
-            self.status_label.setText(f"Error loading EDS file: {e}")
-            self.status_label.setStyleSheet("color: red;")
-            
-            
-    def populate_from_eds(self, object_dictionary):
-        """Populate tree from object dictionary"""
-        self.tree.clear()
-        
-        # Group objects by category
-        categories = {
-            "Communication Parameters (0x1000-0x1FFF)": [],
-            "Manufacturer Specific (0x2000-0x5FFF)": [],
-            "Profile Specific (0x6000-0x9FFF)": [],
-            "Reserved (0xA000-0xFFFF)": []
-        }
-        
-        for index, obj in object_dictionary.items():
-            if isinstance(index, int):
-                if 0x1000 <= index <= 0x1FFF:
-                    category = "Communication Parameters (0x1000-0x1FFF)"
-                elif 0x2000 <= index <= 0x5FFF:
-                    category = "Manufacturer Specific (0x2000-0x5FFF)"
-                elif 0x6000 <= index <= 0x9FFF:
-                    category = "Profile Specific (0x6000-0x9FFF)"
-                else:
-                    category = "Reserved (0xA000-0xFFFF)"
-                    
-                categories[category].append((index, obj))
-        
-        # Create category items
-        for category_name, objects in categories.items():
-            if not objects:
-                continue
-                
-            category_item = QTreeWidgetItem(self.tree, [category_name])
-            category_item.setExpanded(True)
-            
-            for index, obj in sorted(objects):
-                self.add_object_to_tree(category_item, index, obj)
-                
-    def add_object_to_tree(self, parent_item, index, obj):
-        """Add an object dictionary entry to the tree"""
-        try:
-            # Handle different object types
-            if hasattr(obj, 'subindices') and obj.subindices:
-                # Array or record with subindices
-                obj_item = QTreeWidgetItem(parent_item, [
-                    f"0x{index:04X}", "", 
-                    getattr(obj, 'name', f"Object_{index:04X}"),
-                    "",
-                    "",
-                    "",
-                    ""
-                ])
-                obj_item.setData(0, Qt.UserRole, {'index': index, 'subindex': None, 'obj': obj})
-                
-                # Add subindices
-                for subindex, subobj in obj.subindices.items():
-                    if isinstance(subindex, int):
-                        sub_item = QTreeWidgetItem(obj_item, [
-                            f"0x{index:04X}",
-                            f"0x{subindex:02X}",
-                            getattr(subobj, 'name', f"Sub_{subindex:02X}"),
-                            str(getattr(subobj, 'data_type', 'Unknown')),
-                            self.get_access_string(getattr(subobj, 'access_type', None)),
-                            "-",
-                            "-"
-                        ])
-                        sub_item.setData(0, Qt.UserRole, {
-                            'index': index, 
-                            'subindex': subindex, 
-                            'obj': subobj
-                        })
-            else:
-                # Simple variable
-                obj_item = QTreeWidgetItem(parent_item, [
-                    f"0x{index:04X}", "0x00",
-                    getattr(obj, 'name', f"Object_{index:04X}"),
-                    str(getattr(obj, 'data_type', 'Unknown')),
-                    self.get_access_string(getattr(obj, 'access_type', None)),
-                    "-",
-                    "-"
-                ])
-                obj_item.setData(0, Qt.UserRole, {
-                    'index': index, 
-                    'subindex': 0, 
-                    'obj': obj
-                })
-                
-        except Exception as e:
-            print(f"Error adding object 0x{index:04X} to tree: {e}")
-    
-    def update_tree_item_value(self, value, raw_value=None):
-        """Update the value columns of the currently selected tree item"""
-        current_item = self.tree.currentItem()
-        if current_item:
-            current_item.setText(5, value)  # Column 5 is the Value column
-            
-            # Generate hex value for column 6
-            if raw_value is not None:
-                if isinstance(raw_value, bytes):
-                    hex_value = raw_value.hex(' ').upper()
-                elif isinstance(raw_value, int):
-                    hex_value = f"0x{raw_value:X}"
-                else:
-                    hex_value = "-"
-                current_item.setText(6, hex_value)  # Column 6 is the Hex Value column
-            else:
-                current_item.setText(6, "-")
-             
-    def get_access_string(self, access_type):
-        """Convert access type to readable string"""
-        if access_type is None:
-            return "Unknown"
-        
-        access_map = {
-            'ro': 'Read Only',
-            'wo': 'Write Only', 
-            'rw': 'Read/Write',
-            'rww': 'Read/Write/Write',
-            'rwr': 'Read/Write/Read',
-            'const': 'Constant'
-        }
-        
-        if hasattr(access_type, 'name'):
-            return access_map.get(access_type.name.lower(), str(access_type))
-        return access_map.get(str(access_type).lower(), str(access_type))
-        
-    def on_item_selected(self):
-        """Handle tree item selection"""
-        selected_items = self.tree.selectedItems()
-        if not selected_items:
-            self.clear_details()
-            return
-            
-        item = selected_items[0]
-        data = item.data(0, Qt.UserRole)
-        
-        if not data or 'index' not in data:
-            self.clear_details()
-            return
-            
-        self.show_object_details(data)
-        
-    def show_object_details(self, data):
-        """Show details for selected object"""
-        index = data['index']
-        subindex = data['subindex']
-        obj = data['obj']
-        
-        # Update details
-        self.index_label.setText(f"0x{index:04X}")
-        self.subindex_label.setText(f"0x{subindex:02X}" if subindex is not None else "-")
-        self.name_label.setText(getattr(obj, 'name', 'Unknown'))
-        self.type_label.setText(str(getattr(obj, 'data_type', 'Unknown')))
-        self.access_label.setText(self.get_access_string(getattr(obj, 'access_type', None)))
-        
-        # Enable/disable SDO operations based on access type
-        access_type = getattr(obj, 'access_type', None)
-        can_read = access_type in ['ro', 'rw', 'rww', 'rwr'] if access_type else True
-        can_write = access_type in ['wo', 'rw', 'rww', 'rwr'] if access_type else True
-        
-        # Only enable if we have a connected node
-        has_connection = True
-        
-        self.read_btn.setEnabled(can_read and has_connection and subindex is not None)
-        self.write_btn.setEnabled(can_write and has_connection and subindex is not None)
-        
-        # Store current selection for SDO operations
-        self.selected_index = index
-        self.selected_subindex = subindex if subindex is not None else 0
-        
-    def clear_details(self):
-        """Clear the details panel"""
-        self.index_label.setText("-")
-        self.subindex_label.setText("-")
-        self.name_label.setText("-")
-        self.type_label.setText("-")
-        self.access_label.setText("-")
-        self.current_value_label.setText("-")
-        self.read_btn.setEnabled(False)
-        self.write_btn.setEnabled(False)
-        
-    async def read_sdo(self):
-        """Read value via SDO using async operations"""
-        print("Reading SDO...")
-        if not self.current_node_id or not hasattr(self, 'selected_index'):
-            return
-            
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)  # Indeterminate progress
-        self.status_label.setText("Reading...")
-        self.status_label.setStyleSheet("color: blue;")
-        
-        try:
-            print(f"Reading SDO: Index 0x{self.selected_index:04X}, Subindex 0x{self.selected_subindex:02X} : {self.current_node_id}]")
-
-            request = bytearray(8)
-            canopen.sdo.constants.SDO_STRUCT.pack_into(request, 0, canopen.sdo.constants.REQUEST_UPLOAD, self.selected_index, self.selected_subindex)
-            print(f"SDO Request: {request.hex(' ').upper()}")
-
-            self.frame_to_send.emit(
-                can.Message(
-                    arbitration_id=0x600 + self.current_node_id,
-                    is_extended_id=0,
-                    is_remote_frame=0,
-                    dlc=8,
-                    data=request
-                )
-            )
-
-    
-
-            value = 0
-            
-            # Display the value
-            if isinstance(value, bytes):
-                display_value = value.hex(' ').upper()
-            else:
-                display_value = str(value)
-                
-            self.current_value_label.setText(display_value)
-            self.status_label.setText("Read successful")
-            self.status_label.setStyleSheet("color: green;")
-            
-            # Update the tree item's value columns
-            self.update_tree_item_value(display_value, value)
-            
-        except Exception as e:
-            self.status_label.setText(f"Read failed: {e}")
-            self.status_label.setStyleSheet("color: red;")
-            
-        finally:
-            self.progress_bar.setVisible(False)
-            
-    async def write_sdo(self):
-        """Write value via SDO using async operations"""
-        if not self.current_node_id or not hasattr(self, 'selected_index'):
-            return
-            
-        value_text = self.write_value_edit.text().strip()
-        if not value_text:
-            self.status_label.setText("Please enter a value to write")
-            self.status_label.setStyleSheet("color: red;")
-            return
-            
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)  # Indeterminate progress
-        self.status_label.setText("Writing...")
-        self.status_label.setStyleSheet("color: blue;")
-        
-        try:
-            # Try to parse the value
-            if value_text.startswith('0x') or value_text.startswith('0X'):
-                # Hexadecimal
-                value = int(value_text, 16)
-            elif value_text.replace('.', '').replace('-', '').isdigit():
-                # Try as float first, then int
-                if '.' in value_text:
-                    value = float(value_text)
-                else:
-                    value = int(value_text)
-            else:
-                # String value
-                value = value_text
-                
-            # Perform async SDO write using canopen-asyncio
-            if self.selected_subindex == 0:
-                entry = self.current_node.sdo[self.selected_index]
-            else:
-                entry = self.current_node.sdo[self.selected_index][self.selected_subindex]
-                
-            # Use async set_raw method from canopen-asyncio
-            await entry.aset_raw(value)
-            
-            self.status_label.setText("Write successful")
-            self.status_label.setStyleSheet("color: green;")
-            self.write_value_edit.clear()
-            
-            # Automatically read back the value after a short delay
-            await asyncio.sleep(0.1)
-            await self.read_sdo()
-            
-        except Exception as e:
-            self.status_label.setText(f"Write failed: {e}")
-            self.status_label.setStyleSheet("color: red;")
-            
-        finally:
-            self.progress_bar.setVisible(False)
-            
-    def clear_node(self):
-        """Clear the current node"""
-        self.current_node = None
-        self.current_node_id = None
-        self.node_info_label.setText("No CANopen node selected")
-        self.tree.clear()
-        self.clear_details()
-        self.status_label.setText("Ready")
-        self.status_label.setStyleSheet("color: gray;")
-
-
 # --- Main Application Window ---
 class CANBusObserver(QMainWindow):
     def __init__(self):
@@ -2429,9 +1331,11 @@ class CANBusObserver(QMainWindow):
 
         icon = QIcon(QPixmap(":/icons/canpeek.png"))
         self.setWindowIcon(icon)
-        
+
         # Connect project changes to PDO cache invalidation
-        self.project_explorer.project_changed.connect(self._on_project_structure_changed)
+        self.project_explorer.project_changed.connect(
+            self._on_project_structure_changed
+        )
 
     def setup_actions(self):
         style = self.style()
@@ -2511,7 +1415,7 @@ class CANBusObserver(QMainWindow):
         trace_layout.addWidget(self.trace_view)
         trace_layout.addWidget(self.autoscroll_cb)
         self.tab_widget.addTab(trace_view_widget, "Trace")
-        
+
         # Add Object Dictionary tab
         self.object_dictionary_viewer = ObjectDictionaryViewer()
         self.object_dictionary_viewer.frame_to_send.connect(self.send_can_frame)
@@ -2665,15 +1569,17 @@ class CANBusObserver(QMainWindow):
     def on_project_changed(self):
         active_dbcs = self.project.get_active_dbcs()
         pdo_databases = self._create_pdo_databases()
-        
-        self.trace_model.set_config(active_dbcs, self.project.canopen_enabled, pdo_databases)
+
+        self.trace_model.set_config(
+            active_dbcs, self.project.canopen_enabled, pdo_databases
+        )
         self.grouped_model.set_config(active_dbcs, self.project.canopen_enabled)
-        
+
         # If already connected, re-add nodes asynchronously
         if self.canopen_network and self.can_reader and self.can_reader.bus:
             # Schedule async node update
             asyncio.create_task(self._update_canopen_nodes())
-        
+
         self.transmit_panel.set_dbc_databases(active_dbcs)
         current_item = self.transmit_panel.table.currentItem()
         self.on_transmit_row_selected(
@@ -2681,7 +1587,7 @@ class CANBusObserver(QMainWindow):
             current_item.text() if current_item else "",
         )
         self.properties_panel.project = self.project
-        
+
         # Update object dictionary viewer
         current_item = self.project_explorer.tree.currentItem()
         if current_item:
@@ -2702,15 +1608,15 @@ class CANBusObserver(QMainWindow):
     def on_signal_data_encoded(self, data_bytes):
         if (row := self.transmit_panel.table.currentRow()) >= 0:
             self.transmit_panel.update_row_data(row, data_bytes)
-    
+
     async def _update_canopen_nodes(self):
         """Update CANopen nodes when project changes while connected"""
         if not self.canopen_network:
             return
-            
+
         # Clear existing nodes
         self.canopen_network.nodes.clear()
-        
+
         # Re-add nodes if CANopen is enabled
         if self.project.canopen_enabled:
             for node_config in self.project.canopen_nodes:
@@ -2722,13 +1628,13 @@ class CANBusObserver(QMainWindow):
                         print(f"Updated CANopen node {node_config.node_id}")
                     except Exception as e:
                         print(f"Error updating CANopen node {node_config.node_id}: {e}")
-            
+
     def on_project_explorer_selection_changed(self, current, previous):
         """Handle project explorer selection changes"""
         if not current:
             self.object_dictionary_viewer.clear_node()
             return
-            
+
         data = current.data(0, Qt.UserRole)
         if isinstance(data, CANopenNode) and data.enabled:
             # CANopen node selected
@@ -2743,12 +1649,12 @@ class CANBusObserver(QMainWindow):
         )
         self.can_reader.frame_received.connect(self._process_frame)
         self.can_reader.error_occurred.connect(self.on_can_error)
-        
+
         if not await self.can_reader.start_reading():
             self.can_reader = None
             self.on_can_error("Failed to establish bus object in reader thread.")
-            return     
-        
+            return
+
         self.connect_action.setEnabled(False)
         self.disconnect_action.setEnabled(True)
         self.transmit_panel.setEnabled(True)
@@ -2766,7 +1672,7 @@ class CANBusObserver(QMainWindow):
             for node in self.canopen_network.nodes.values():
                 if hasattr(node, "pdo"):
                     node.pdo.stop()
-            
+
             # The network will be cleaned up when we stop the reader
             self.canopen_network = None
 
@@ -2987,7 +1893,7 @@ class CANBusObserver(QMainWindow):
             self.statusBar().showMessage(
                 f"Project '{self.current_project_path.name}' loaded."
             )
-            self.project_explorer.expand_all_items() # <--- ADD THIS LINE
+            self.project_explorer.expand_all_items()  # <--- ADD THIS LINE
         except Exception as e:
             QMessageBox.critical(
                 self, "Open Project Error", f"Failed to load project:\n{e}"
@@ -3082,7 +1988,7 @@ def main():
     window = CANBusObserver()
     qdarktheme.setup_theme("auto")
     window.show()
-    
+
     with event_loop:
         event_loop.run_until_complete(app_close_event.wait())
 
