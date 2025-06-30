@@ -1209,7 +1209,7 @@ class CANBusObserver(QMainWindow):
         self.trace_model.set_config(
             active_dbcs, self.project.canopen_enabled, pdo_databases
         )
-        self.grouped_model.set_config(active_dbcs, self.project.canopen_enabled)
+        self.grouped_model.set_config(active_dbcs, self.project.canopen_enabled, pdo_databases)
 
         # If already connected, re-add nodes asynchronously
         if self.canopen_network and self.can_reader and self.can_reader.bus:
