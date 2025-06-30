@@ -5,12 +5,10 @@ CANopen related utilities, widgets, and logic for CANPeek.
 import asyncio
 import struct
 from pathlib import Path
-from typing import Dict, List, Optional, Any, TYPE_CHECKING
-from dataclasses import dataclass
+from typing import Dict, List, Optional
 
 import can
 import canopen
-from canopen.sdo.constants import SDO_STRUCT, REQUEST_UPLOAD, RESPONSE_UPLOAD
 from .dcf2db import dcf_2_db
 
 from PySide6.QtWidgets import (
@@ -34,10 +32,9 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 from PySide6.QtCore import QObject, Signal, Qt, QTimer, QThread
-from PySide6.QtGui import QIcon, QPixmap
 
 # Use TYPE_CHECKING to avoid circular import errors at runtime
-from ..can_utils import CANFrame, Project, CANopenNode
+from ..data_utils import CANFrame, Project, CANopenNode
 
 
 class PDODatabaseManager:

@@ -1,9 +1,11 @@
 from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Any, TYPE_CHECKING
+from typing import Dict, List, Optional, Any
 from pathlib import Path
 import enum
 import inspect
 import cantools
+
+from .interfaces_utils import CANInterfaceManager
 
 
 @dataclass
@@ -121,9 +123,7 @@ class Project:
         }
 
     @classmethod
-    def from_dict(
-        cls, data: Dict, interface_manager: "CANInterfaceManager"
-    ) -> "Project":
+    def from_dict(cls, data: Dict, interface_manager: CANInterfaceManager) -> "Project":
         project = cls()
         project.canopen_enabled = data.get("canopen_enabled", False)
         project.can_interface = data.get("can_interface", "virtual")
