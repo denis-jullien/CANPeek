@@ -28,10 +28,9 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem,
     QSplitter,
     QProgressBar,
-    QMessageBox,
     QSizePolicy,
 )
-from PySide6.QtCore import QObject, Signal, Qt, QTimer, QThread
+from PySide6.QtCore import Signal, Qt
 
 # Use TYPE_CHECKING to avoid circular import errors at runtime
 from ..data_utils import CANFrame, Project, CANopenNode
@@ -353,22 +352,6 @@ class CANopenNodeEditor(QWidget):
         self.node_changed.emit()
 
 
-class ScanWorker(QObject):
-    finished = Signal()
-    error = Signal(str)
-
-    def __init__(self, network: canopen.Network):
-        super().__init__()
-        self.network = network
-
-    def run(self):
-        try:
-            self.network.scanner.search()
-            self.finished.emit()
-        except Exception as e:
-            self.error.emit(str(e))
-
-
 class CANopenRootEditor(QWidget):
     settings_changed = Signal()
 
@@ -376,12 +359,6 @@ class CANopenRootEditor(QWidget):
         super().__init__()
         self.project = project
         self.network = network
-        self.scan_thread = None
-        self.scan_worker = None
-        self.passive_scan_timer = QTimer(self)
-        self.passive_scan_timer.setInterval(1000)
-        self.passive_scan_timer.timeout.connect(self._update_discovered_nodes)
-        self.last_known_nodes = set()
         self.setup_ui()
 
     def setup_ui(self):
@@ -393,106 +370,11 @@ class CANopenRootEditor(QWidget):
         self.enabled_cb = QCheckBox("Enable CANopen Processing")
         self.enabled_cb.setChecked(self.project.canopen_enabled)
         layout.addRow(self.enabled_cb)
-        scan_group = QGroupBox("Node Discovery")
-        scan_layout = QVBoxLayout(scan_group)
-        passive_layout = QFormLayout()
-        self.discovery_status_label = QLabel("Disconnected")
-        passive_layout.addRow("Status:", self.discovery_status_label)
-        discovered_nodes_layout = QHBoxLayout()
-        self.discovered_nodes_text = QLineEdit()
-        self.discovered_nodes_text.setReadOnly(True)
-        self.discovered_nodes_text.setPlaceholderText("No nodes detected")
-        self.clear_nodes_button = QPushButton("Clear")
-        discovered_nodes_layout.addWidget(self.discovered_nodes_text)
-        discovered_nodes_layout.addWidget(self.clear_nodes_button)
-        passive_layout.addRow("Discovered Nodes:", discovered_nodes_layout)
-        scan_layout.addLayout(passive_layout)
-        self.active_scan_button = QPushButton("Actively Scan for Nodes")
-        scan_layout.addWidget(self.active_scan_button)
-        layout.addRow(scan_group)
         self.enabled_cb.toggled.connect(self._update_settings)
-        self.active_scan_button.clicked.connect(self._start_active_scan)
-        self.clear_nodes_button.clicked.connect(self._clear_discovered_nodes)
-
-    def set_connection_status(self, is_connected: bool):
-        self.active_scan_button.setEnabled(is_connected)
-        self.clear_nodes_button.setEnabled(is_connected)
-        if is_connected:
-            self.discovery_status_label.setText("Passively Listening...")
-            self.passive_scan_timer.start()
-        else:
-            self.discovery_status_label.setText("Disconnected")
-            self.passive_scan_timer.stop()
-            self._clear_discovered_nodes()
 
     def _update_settings(self):
         self.project.canopen_enabled = self.enabled_cb.isChecked()
         self.settings_changed.emit()
-
-    def _clear_discovered_nodes(self):
-        # if self.network.bus:
-        #     self.network.scanner.reset()
-        self.last_known_nodes.clear()
-        self.discovered_nodes_text.clear()
-
-    def _update_discovered_nodes(self):
-        if not self.network.bus:
-            return
-        current_nodes = set(self.network.scanner.nodes)
-        if current_nodes != self.last_known_nodes:
-            self.last_known_nodes = current_nodes
-            self.discovered_nodes_text.setText(
-                ", ".join(map(str, sorted(list(current_nodes))))
-            )
-
-    def _start_active_scan(self):
-        # Check if a scan is already running by checking the thread object
-        if self.scan_thread is not None:
-            return
-
-        self.active_scan_button.setEnabled(False)
-        self.discovery_status_label.setText("Actively Scanning...")
-
-        self.scan_thread = QThread()
-        self.scan_worker = ScanWorker(self.network)
-        self.scan_worker.moveToThread(self.scan_thread)
-
-        self.scan_thread.started.connect(self.scan_worker.run)
-        self.scan_worker.finished.connect(self.on_active_scan_finished)
-        self.scan_worker.error.connect(self.on_active_scan_error)
-
-        # Proper cleanup
-        self.scan_worker.finished.connect(self.scan_worker.deleteLater)
-        self.scan_thread.finished.connect(
-            self._on_scan_thread_finished
-        )  # Use our cleanup slot
-
-        self.scan_thread.start()
-
-    def _on_scan_thread_finished(self):
-        """Slot to safely clean up the thread and worker objects."""
-        if self.scan_thread:
-            self.scan_thread.deleteLater()
-        self.scan_thread = None
-        self.scan_worker = None
-
-    def on_active_scan_finished(self):
-        self.active_scan_button.setEnabled(True)
-        self.discovery_status_label.setText("Passively Listening...")
-        QTimer.singleShot(250, self._update_discovered_nodes)
-        # Now that the worker's job is done, we can quit the thread
-        if self.scan_thread:
-            self.scan_thread.quit()
-
-    def on_active_scan_error(self, error_msg: str):
-        self.active_scan_button.setEnabled(True)
-        self.discovery_status_label.setText("Active scan error!")
-        QMessageBox.warning(
-            self, "Scan Error", f"An error occurred during active scan:\n{error_msg}"
-        )
-        # Quit the thread on error too
-        if self.scan_thread:
-            self.scan_thread.quit()
 
 
 class SdoAbortedError(Exception):

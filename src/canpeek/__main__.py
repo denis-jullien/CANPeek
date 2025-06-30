@@ -757,11 +757,6 @@ class PropertiesPanel(QWidget):
         elif data == "canopen_root":
             editor = CANopenRootEditor(self.project, self.main_window.canopen_network)
             editor.settings_changed.connect(self.explorer.rebuild_tree)
-            is_connected = (
-                self.main_window.can_reader is not None
-                and self.main_window.can_reader.running
-            )
-            editor.set_connection_status(is_connected)
             self.current_widget = editor
         elif isinstance(data, CANopenNode):
             editor = CANopenNodeEditor(data, self.main_window.pdo_manager)
