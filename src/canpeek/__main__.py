@@ -34,7 +34,6 @@ __all__ = [
 
 
 from PySide6.QtWidgets import (
-    # QApplication,
     QMainWindow,
     QWidget,
     QVBoxLayout,
@@ -61,6 +60,8 @@ from PySide6.QtWidgets import (
     QToolBar,
     QDockWidget,
     QStyle,
+    QDialog,
+    QTextEdit
 )
 
 from PySide6.QtCore import (
@@ -302,6 +303,73 @@ class FilterEditor(QWidget):
         self.filter_changed.emit()
 
 
+class DocumentationWindow(QDialog):
+    """A separate, non-blocking window for displaying parsed documentation."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Interface Documentation")
+        self.setMinimumSize(600, 450)
+
+        layout = QVBoxLayout(self)
+        self.text_edit = QTextEdit()
+        self.text_edit.setReadOnly(True)
+        self.text_edit.setObjectName("documentationViewer")
+        layout.addWidget(self.text_edit)
+
+    def set_content(self, interface_name: str, parsed_doc: Dict):
+        """
+        Updates the window title and content by building an HTML string
+        from the parsed docstring dictionary, including type information.
+        """
+        self.setWindowTitle(f"Documentation for '{interface_name}'")
+
+        html = """
+        <style>
+            body { font-family: sans-serif; font-size: 14px; }
+            p { margin-bottom: 12px; }
+            dl { margin-left: 10px; }
+            dt { font-weight: bold; color: #af5aed; margin-top: 8px; }
+            dt .param-type { font-style: italic; color: #555555; font-weight: normal; }
+            dd { margin-left: 20px; margin-bottom: 8px; }
+            hr { border: 1px solid #cccccc; }
+        </style>
+        """
+
+        if parsed_doc and parsed_doc.get("description"):
+            desc = parsed_doc["description"].replace("<", "<").replace(">", ">")
+            html += f"<p>{desc.replace(chr(10), '<br>')}</p>"
+
+        if parsed_doc and parsed_doc.get("params"):
+            html += "<hr><h3>Parameters:</h3>"
+            html += "<dl>"
+            for name, param_info in parsed_doc["params"].items():
+                type_name = param_info.get("type_name")
+                description = (
+                    param_info.get("description", "")
+                    .replace("<", "<")
+                    .replace(">", ">")
+                )
+
+                # Build the header line (dt) with optional type info
+                header = f"<strong>{name}</strong>"
+                if type_name:
+                    header += f' <span class="param-type">({type_name})</span>'
+
+                html += f"<dt>{header}:</dt><dd>{description}</dd>"
+            html += "</dl>"
+
+        if not (
+            parsed_doc and (parsed_doc.get("description") or parsed_doc.get("params"))
+        ):
+            html += "<p>No documentation available.</p>"
+
+        self.text_edit.setHtml(html)
+
+
+# Fully dynamic editor for connection settings
+
+
 class ConnectionEditor(QWidget):
     project_changed = Signal()
 
@@ -310,7 +378,15 @@ class ConnectionEditor(QWidget):
         self.project = project
         self.interface_manager = interface_manager
         self.dynamic_widgets = {}
+
+        # Create a single, persistent instance of the documentation window
+        self.docs_window = DocumentationWindow(self)
+
+
         self.setup_ui()
+        # Initial population based on the project's current state
+        self.interface_combo.setCurrentText(self.project.can_interface)
+        self._rebuild_dynamic_fields(self.project.can_interface)
 
     def setup_ui(self):
         main_layout = QVBoxLayout(self)
@@ -321,101 +397,154 @@ class ConnectionEditor(QWidget):
         self.interface_combo = QComboBox()
         self.interface_combo.addItems(self.interface_manager.get_available_interfaces())
         self.form_layout.addRow("Interface:", self.interface_combo)
+        
+        # --- NEW: Button to show the documentation in a separate window ---
+        self.show_docs_button = QPushButton("Show python-can Documentation...")
+        self.form_layout.addRow(self.show_docs_button)
+
+        # --- Dynamic Fields ---
         self.dynamic_fields_container = QWidget()
         self.dynamic_layout = QFormLayout(self.dynamic_fields_container)
         self.dynamic_layout.setContentsMargins(0, 0, 0, 0)
         self.form_layout.addRow(self.dynamic_fields_container)
+
+        # Connect the top-level combo box to its own handler
+
+        # --- Connections and Initial State ---
+        self.show_docs_button.clicked.connect(self._show_documentation_window)
         self.interface_combo.currentTextChanged.connect(self._on_interface_changed)
-        self.interface_combo.setCurrentText(self.project.can_interface)
-        self._rebuild_dynamic_fields(self.project.can_interface)
+
+            # Method to show the documentation dialog
+    def _show_documentation_window(self):
+        interface_name = self.interface_combo.currentText()
+        docstring = self.interface_manager.get_interface_docstring(interface_name)
+        self.docs_window.set_content(interface_name, docstring)
+        self.docs_window.show()
+        # Bring the window to the front
+        self.docs_window.raise_()
+        self.docs_window.activateWindow()
+
+
 
     def _on_interface_changed(self, interface_name: str):
+        """Called ONLY when the interface dropdown changes."""
         self.project.can_interface = interface_name
-        self.project.can_config.clear()
+        # Do NOT clear the config here. We might want to preserve settings
+        # like 'bitrate' if the new interface also has them.
         self._rebuild_dynamic_fields(interface_name)
+        # We must emit project_changed here to update the project tree text
+        self.project_changed.emit()
 
     def _rebuild_dynamic_fields(self, interface_name: str):
+        # Fetch the parsed docstring data once
+        parsed_doc = self.interface_manager.get_interface_docstring(interface_name)
+        param_docs = parsed_doc.get("params", {}) if parsed_doc else {}
+
+        has_docs = bool(
+            parsed_doc and (parsed_doc.get("description") or parsed_doc.get("params"))
+        )
+        self.show_docs_button.setVisible(has_docs)
+
+        # Clear old widgets
         while self.dynamic_layout.count():
             item = self.dynamic_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         self.dynamic_widgets.clear()
+
         params = self.interface_manager.get_interface_params(interface_name)
         if not params:
-            self._update_project()
+            self._update_project_config() # Ensure config is empty if no params
             return
+
         for name, info in params.items():
-            default_value = self.project.can_config.get(name, info.get("default"))
+            # Get value from project's config first, fallback to param default
+            current_value = self.project.can_config.get(name, info.get("default"))
             expected_type = info["type"]
             widget = None
             is_enum = False
             try:
-                if inspect.isclass(expected_type) and issubclass(
-                    expected_type, enum.Enum
-                ):
+                if inspect.isclass(expected_type) and issubclass(expected_type, enum.Enum):
                     is_enum = True
             except TypeError:
                 pass
+
+            # --- Widget Creation ---
             if is_enum:
                 widget = QComboBox()
                 widget.setProperty("enum_class", expected_type)
                 widget.addItems([m.name for m in list(expected_type)])
-                current_value = default_value
                 if isinstance(current_value, enum.Enum):
                     widget.setCurrentText(current_value.name)
-                elif isinstance(current_value, str):
+                elif isinstance(current_value, str) and current_value in [m.name for m in expected_type]:
                     widget.setCurrentText(current_value)
-                widget.currentTextChanged.connect(self._update_project)
+                widget.currentTextChanged.connect(self._update_project_config)
             elif expected_type is bool:
                 widget = QCheckBox()
-                widget.setChecked(
-                    bool(default_value) if default_value is not None else False
-                )
-                widget.toggled.connect(self._update_project)
+                widget.setChecked(bool(current_value) if current_value is not None else False)
+                widget.toggled.connect(self._update_project_config)
             elif name == "bitrate" and expected_type is int:
                 widget = QSpinBox()
                 widget.setRange(1000, 4000000)
                 widget.setSuffix(" bps")
-                widget.setValue(
-                    int(default_value) if default_value is not None else 125000
-                )
-                widget.valueChanged.connect(self._update_project)
-            else:
+                widget.setValue(int(current_value) if current_value is not None else 125000)
+                widget.valueChanged.connect(self._update_project_config)
+            else: # Fallback to QLineEdit
                 widget = QLineEdit()
-                widget.setText(str(default_value) if default_value is not None else "")
-                widget.editingFinished.connect(self._update_project)
+                widget.setText(str(current_value) if current_value is not None else "")
+                widget.editingFinished.connect(self._update_project_config)
+            
             if widget:
+                tooltip_info = param_docs.get(name)
+                if tooltip_info and tooltip_info.get("description"):
+                    tooltip_parts = []
+                    type_name = tooltip_info.get("type_name")
+                    if type_name:
+                        tooltip_parts.append(f"({type_name})")
+                    tooltip_parts.append(tooltip_info["description"])
+                    tooltip_text = " ".join(tooltip_parts)
+                    widget.setToolTip(tooltip_text)
+
+
                 label_text = f"{name.replace('_', ' ').title()}:"
                 self.dynamic_layout.addRow(label_text, widget)
                 self.dynamic_widgets[name] = widget
-        self._update_project()
+        
+        # Perform an initial update to sync the model, just in case
+        self._update_project_config()
 
     def _convert_line_edit_text(self, text: str, param_info: Dict) -> Any:
         text = text.strip()
-        expected_type, default_value = param_info.get("type"), param_info.get("default")
-        if not text and default_value is None:
+        expected_type = param_info.get("type")
+        if text == "" or text.lower() == "none":
             return None
-        if expected_type is int:
-            try:
-                return int(text)
-            except ValueError:
-                return int(text, 16)
-        elif expected_type is float:
-            return float(text)
-        elif expected_type is bool:
-            return text.lower() in ("true", "1", "t", "yes", "y")
+        
+        try:
+            if expected_type is int:
+                return int(text) if not text.startswith('0x') else int(text, 16)
+            if expected_type is float:
+                return float(text)
+            if expected_type is bool:
+                return text.lower() in ("true", "1", "t", "yes", "y")
+        except (ValueError, TypeError):
+            # On parsing error, return None or a sensible default.
+            # Here we return None, the project will use its last known good value.
+            return None
+            
         return text
 
-    def _update_project(self):
-        config = {}
-        params = (
-            self.interface_manager.get_interface_params(self.project.can_interface)
-            or {}
-        )
+    def _update_project_config(self):
+        """The single point of truth for updating the project's CAN config."""
+        # Update the project's interface name from the combo box
+        self.project.can_interface = self.interface_combo.currentText()
+        
+        params = self.interface_manager.get_interface_params(self.project.can_interface) or {}
+        new_config = {}
+
         for name, widget in self.dynamic_widgets.items():
             param_info = params.get(name)
-            if not param_info:
-                continue
+            if not param_info: continue
+            
             value = None
             try:
                 if isinstance(widget, QCheckBox):
@@ -424,18 +553,25 @@ class ConnectionEditor(QWidget):
                     value = widget.value()
                 elif isinstance(widget, QComboBox):
                     enum_class = widget.property("enum_class")
-                    if enum_class:
+                    if enum_class and widget.currentText():
                         value = enum_class[widget.currentText()]
                 elif isinstance(widget, QLineEdit):
                     value = self._convert_line_edit_text(widget.text(), param_info)
             except (ValueError, TypeError, KeyError) as e:
-                print(
-                    f"Warning: Could not get value for '{name}'. Invalid input. Error: {e}"
-                )
-                continue
-            config[name] = value
-        self.project.can_interface = self.interface_combo.currentText()
-        self.project.can_config = config
+                print(f"Warning: Invalid input for '{name}'. Error: {e}")
+                # Keep the old value from the project's config if input is bad
+                value = self.project.can_config.get(name)
+
+            # Only add non-None values to the config to keep it clean
+            if value is not None:
+                new_config[name] = value
+
+        # Update the project's config dictionary in-place.
+        # This is the key fix!
+        self.project.can_config.clear()
+        self.project.can_config.update(new_config)
+        
+        # Notify the rest of the application that the project has changed.
         self.project_changed.emit()
 
 

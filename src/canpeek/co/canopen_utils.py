@@ -367,7 +367,7 @@ class CANopenRootEditor(QWidget):
         group = QGroupBox("CANopen Settings")
         layout = QFormLayout(group)
         main_layout.addWidget(group)
-        self.enabled_cb = QCheckBox("Enable CANopen Processing")
+        self.enabled_cb = QCheckBox("Enable generic CANopen processing")
         self.enabled_cb.setChecked(self.project.canopen_enabled)
         layout.addRow(self.enabled_cb)
         self.enabled_cb.toggled.connect(self._update_settings)
