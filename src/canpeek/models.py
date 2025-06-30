@@ -21,19 +21,24 @@ class DisplayItem:  # Used for Grouped View
     children_populated: bool = False
     row_in_parent: int = 0
 
+
 @dataclass
 class SignalInfo:
     """Represents a single decoded signal or field."""
+
     name: str
     value: Any
     unit: str
 
+
 @dataclass
 class DecodingResult:
     """Represents the complete decoding of a message from a single source."""
+
     source: str  # e.g., "DBC", "PDO", "CANopen"
-    name: str    # e.g., "EngineStatus", "TPDO1_Node5", "NMT"
+    name: str  # e.g., "EngineStatus", "TPDO1_Node5", "NMT"
     signals: List[SignalInfo]
+
 
 # --- Helper Function for Decoding ---
 
@@ -42,11 +47,11 @@ def get_structured_decodings(
     frame: CANFrame,
     dbc_databases: List[cantools.db.Database],
     pdo_databases: List[cantools.db.Database],
-    canopen_enabled: bool
+    canopen_enabled: bool,
 ) -> List[DecodingResult]:
     """
     Decodes a CAN frame from all available sources and returns structured results.
-    
+
     This is the centralized decoding function.
     """
     results: List[DecodingResult] = []
@@ -58,19 +63,23 @@ def get_structured_decodings(
             decoded_signals = db.decode_message(
                 frame.arbitration_id, frame.data, decode_choices=False
             )
-            
+
             signal_infos = [
                 SignalInfo(
                     name=s.name,
                     value=decoded_signals.get(s.name, "N/A"),
-                    unit=s.unit or ""
+                    unit=s.unit or "",
                 )
                 for s in message.signals
             ]
-            
-            results.append(DecodingResult(source=source_name, name=message.name, signals=signal_infos))
+
+            results.append(
+                DecodingResult(
+                    source=source_name, name=message.name, signals=signal_infos
+                )
+            )
         except (KeyError, ValueError):
-            pass # Frame not in this database
+            pass  # Frame not in this database
 
     # 1. Process regular DBCs
     for db in dbc_databases:
@@ -85,9 +94,15 @@ def get_structured_decodings(
         if co_info := CANopenDecoder.decode(frame):
             # The 'CANopen Type' becomes the name, the rest are signals
             canopen_type = co_info.pop("CANopen Type", "Unknown")
-            signal_infos = [SignalInfo(name=k, value=v, unit="") for k, v in co_info.items()]
-            results.append(DecodingResult(source="CANopen", name=canopen_type, signals=signal_infos))
-            
+            signal_infos = [
+                SignalInfo(name=k, value=v, unit="") for k, v in co_info.items()
+            ]
+            results.append(
+                DecodingResult(
+                    source="CANopen", name=canopen_type, signals=signal_infos
+                )
+            )
+
     return results
 
 
@@ -154,12 +169,12 @@ class CANTraceModel(QAbstractTableModel):
         structured_results = get_structured_decodings(
             frame, self.dbc_databases, self.pdo_databases, self.canopen_enabled
         )
-        
+
         output_strings = []
         for result in structured_results:
-            signals_str = ' '.join(f"{s.name}={s.value}" for s in result.signals)
+            signals_str = " ".join(f"{s.name}={s.value}" for s in result.signals)
             output_strings.append(f"{result.source}: {result.name} | {signals_str}")
-            
+
         return " || ".join(output_strings)
 
 
@@ -267,12 +282,14 @@ class CANGroupedModel(QAbstractItemModel):
 
             # Add the actual signals
             for sig_info in result.signals:
-                all_signals.append({
-                    "name": sig_info.name,
-                    "value": sig_info.value,
-                    "unit": sig_info.unit
-                })
-        
+                all_signals.append(
+                    {
+                        "name": sig_info.name,
+                        "value": sig_info.value,
+                        "unit": sig_info.unit,
+                    }
+                )
+
         return all_signals
 
     def clear_frames(self):

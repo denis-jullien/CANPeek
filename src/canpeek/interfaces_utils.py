@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import logging
 from docstring_parser import parse
 
+
 class LogCaptureHandler(logging.Handler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

@@ -11,6 +11,7 @@ from pathlib import Path
 # We'll import it as 'canpeek_app' to avoid confusion with the __main__ block
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.canpeek import __main__ as canpeek_app
+from src.canpeek.co import canopen_utils as canpeek_co_utils
 
 from PySide6.QtCore import Qt  # , QTimer
 # from PySide6.QtWidgets import QCheckBox, QLineEdit, QPushButton
@@ -123,7 +124,7 @@ class TestDecoders:
     def test_canopen_decode(self, frame_id, data, expected_type, expected_node):
         """Test various CANopen message decodings."""
         frame = canpeek_app.CANFrame(0, frame_id, data, len(data))
-        decoded = canpeek_app.CANopenDecoder.decode(frame)
+        decoded = canpeek_co_utils.CANopenDecoder.decode(frame)
         assert decoded is not None
         assert decoded["CANopen Type"] == expected_type
         if expected_node:

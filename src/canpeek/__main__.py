@@ -61,7 +61,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QStyle,
     QDialog,
-    QTextEdit
+    QTextEdit,
 )
 
 from PySide6.QtCore import (
@@ -382,7 +382,6 @@ class ConnectionEditor(QWidget):
         # Create a single, persistent instance of the documentation window
         self.docs_window = DocumentationWindow(self)
 
-
         self.setup_ui()
         # Initial population based on the project's current state
         self.interface_combo.setCurrentText(self.project.can_interface)
@@ -397,7 +396,7 @@ class ConnectionEditor(QWidget):
         self.interface_combo = QComboBox()
         self.interface_combo.addItems(self.interface_manager.get_available_interfaces())
         self.form_layout.addRow("Interface:", self.interface_combo)
-        
+
         # --- NEW: Button to show the documentation in a separate window ---
         self.show_docs_button = QPushButton("Show python-can Documentation...")
         self.form_layout.addRow(self.show_docs_button)
@@ -414,7 +413,8 @@ class ConnectionEditor(QWidget):
         self.show_docs_button.clicked.connect(self._show_documentation_window)
         self.interface_combo.currentTextChanged.connect(self._on_interface_changed)
 
-            # Method to show the documentation dialog
+        # Method to show the documentation dialog
+
     def _show_documentation_window(self):
         interface_name = self.interface_combo.currentText()
         docstring = self.interface_manager.get_interface_docstring(interface_name)
@@ -423,8 +423,6 @@ class ConnectionEditor(QWidget):
         # Bring the window to the front
         self.docs_window.raise_()
         self.docs_window.activateWindow()
-
-
 
     def _on_interface_changed(self, interface_name: str):
         """Called ONLY when the interface dropdown changes."""
@@ -454,7 +452,7 @@ class ConnectionEditor(QWidget):
 
         params = self.interface_manager.get_interface_params(interface_name)
         if not params:
-            self._update_project_config() # Ensure config is empty if no params
+            self._update_project_config()  # Ensure config is empty if no params
             return
 
         for name, info in params.items():
@@ -464,7 +462,9 @@ class ConnectionEditor(QWidget):
             widget = None
             is_enum = False
             try:
-                if inspect.isclass(expected_type) and issubclass(expected_type, enum.Enum):
+                if inspect.isclass(expected_type) and issubclass(
+                    expected_type, enum.Enum
+                ):
                     is_enum = True
             except TypeError:
                 pass
@@ -476,24 +476,30 @@ class ConnectionEditor(QWidget):
                 widget.addItems([m.name for m in list(expected_type)])
                 if isinstance(current_value, enum.Enum):
                     widget.setCurrentText(current_value.name)
-                elif isinstance(current_value, str) and current_value in [m.name for m in expected_type]:
+                elif isinstance(current_value, str) and current_value in [
+                    m.name for m in expected_type
+                ]:
                     widget.setCurrentText(current_value)
                 widget.currentTextChanged.connect(self._update_project_config)
             elif expected_type is bool:
                 widget = QCheckBox()
-                widget.setChecked(bool(current_value) if current_value is not None else False)
+                widget.setChecked(
+                    bool(current_value) if current_value is not None else False
+                )
                 widget.toggled.connect(self._update_project_config)
             elif name == "bitrate" and expected_type is int:
                 widget = QSpinBox()
                 widget.setRange(1000, 4000000)
                 widget.setSuffix(" bps")
-                widget.setValue(int(current_value) if current_value is not None else 125000)
+                widget.setValue(
+                    int(current_value) if current_value is not None else 125000
+                )
                 widget.valueChanged.connect(self._update_project_config)
-            else: # Fallback to QLineEdit
+            else:  # Fallback to QLineEdit
                 widget = QLineEdit()
                 widget.setText(str(current_value) if current_value is not None else "")
                 widget.editingFinished.connect(self._update_project_config)
-            
+
             if widget:
                 tooltip_info = param_docs.get(name)
                 if tooltip_info and tooltip_info.get("description"):
@@ -505,11 +511,10 @@ class ConnectionEditor(QWidget):
                     tooltip_text = " ".join(tooltip_parts)
                     widget.setToolTip(tooltip_text)
 
-
                 label_text = f"{name.replace('_', ' ').title()}:"
                 self.dynamic_layout.addRow(label_text, widget)
                 self.dynamic_widgets[name] = widget
-        
+
         # Perform an initial update to sync the model, just in case
         self._update_project_config()
 
@@ -518,10 +523,10 @@ class ConnectionEditor(QWidget):
         expected_type = param_info.get("type")
         if text == "" or text.lower() == "none":
             return None
-        
+
         try:
             if expected_type is int:
-                return int(text) if not text.startswith('0x') else int(text, 16)
+                return int(text) if not text.startswith("0x") else int(text, 16)
             if expected_type is float:
                 return float(text)
             if expected_type is bool:
@@ -530,21 +535,25 @@ class ConnectionEditor(QWidget):
             # On parsing error, return None or a sensible default.
             # Here we return None, the project will use its last known good value.
             return None
-            
+
         return text
 
     def _update_project_config(self):
         """The single point of truth for updating the project's CAN config."""
         # Update the project's interface name from the combo box
         self.project.can_interface = self.interface_combo.currentText()
-        
-        params = self.interface_manager.get_interface_params(self.project.can_interface) or {}
+
+        params = (
+            self.interface_manager.get_interface_params(self.project.can_interface)
+            or {}
+        )
         new_config = {}
 
         for name, widget in self.dynamic_widgets.items():
             param_info = params.get(name)
-            if not param_info: continue
-            
+            if not param_info:
+                continue
+
             value = None
             try:
                 if isinstance(widget, QCheckBox):
@@ -570,7 +579,7 @@ class ConnectionEditor(QWidget):
         # This is the key fix!
         self.project.can_config.clear()
         self.project.can_config.update(new_config)
-        
+
         # Notify the rest of the application that the project has changed.
         self.project_changed.emit()
 
@@ -1345,7 +1354,9 @@ class CANBusObserver(QMainWindow):
         self.trace_model.set_config(
             active_dbcs, self.project.canopen_enabled, pdo_databases
         )
-        self.grouped_model.set_config(active_dbcs, self.project.canopen_enabled, pdo_databases)
+        self.grouped_model.set_config(
+            active_dbcs, self.project.canopen_enabled, pdo_databases
+        )
 
         # If already connected, re-add nodes asynchronously
         if self.canopen_network and self.can_reader and self.can_reader.bus:
