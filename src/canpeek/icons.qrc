@@ -1,6 +1,7 @@
 <!-- pyside6-rcc icons.qrc -o rc_icons.py -->
 <!DOCTYPE RCC><RCC version="1.0">
 <qresource>
+    <file>icons/canpeek.png</file>
     <file>icons/document-export.png</file>
     <file>icons/document-import.png</file>
     <file>icons/document-open-recent.png</file>
