@@ -791,7 +791,7 @@ class ProjectExplorer(QGroupBox):
 
 class TransmitPanel(QGroupBox):
     frame_to_send = Signal(object)
-    row_selection_changed = Signal(int, str)
+    row_selection_changed = Signal(int, str, str) # row, id_text, data_hex
     config_changed = Signal()
 
     def __init__(self):
@@ -880,16 +880,22 @@ class TransmitPanel(QGroupBox):
 
     def _on_item_changed(self, curr, prev):
         if curr and (not prev or curr.row() != prev.row()):
-            self.row_selection_changed.emit(
-                curr.row(), self.table.item(curr.row(), 1).text()
-            )
+            row = curr.row()
+            # Also get the data from the data column (5)
+            id_text = self.table.item(row, 1).text()
+            data_item = self.table.item(row, 5)
+            data_hex = data_item.text() if data_item else ""
+            
+            self.row_selection_changed.emit(row, id_text, data_hex)
 
     def _on_cell_changed(self, r, c):
         self.config_changed.emit()
-        if c == 1:
-            self.row_selection_changed.emit(r, self.table.item(r, 1).text())
-        elif c == 5:
-            self._update_dlc(r)
+        # Also update on data change
+        if c == 1 or c == 5: 
+            id_text = self.table.item(r, 1).text()
+            data_item = self.table.item(r, 5)
+            data_hex = data_item.text() if data_item else ""
+            self.row_selection_changed.emit(r, id_text, data_hex)
 
     def _update_dlc(self, r):
         try:
@@ -1015,21 +1021,40 @@ class SignalTransmitPanel(QGroupBox):
         self.setTitle("Signal Config")
         self.setVisible(False)
 
-    def populate(self, msg):
+    def populate(self, msg, data_hex: str):
         self.message = msg
+        initial_values = {}
+
+        # Try to decode the existing data to pre-fill the values
+        if data_hex:
+            try:
+                data_bytes = bytes.fromhex(data_hex.replace(" ", ""))
+                # Use allow_truncated=True to handle cases where data is shorter than expected
+                initial_values = msg.decode(data_bytes, decode_choices=False, allow_truncated=True)
+            except (ValueError, KeyError) as e:
+                print(f"Could not decode existing data for signal panel: {e}")
+                initial_values = {} # Fallback to defaults on error
+        
         self.table.blockSignals(True)
         self.table.setRowCount(len(msg.signals))
+        
         for r, s in enumerate(msg.signals):
+            # Use the decoded value if available, otherwise use the signal's default initial value
+            value = initial_values.get(s.name, s.initial if s.initial is not None else 0)
+            
             self.table.setItem(r, 0, QTableWidgetItem(s.name))
             self.table.item(r, 0).setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            self.table.setItem(
-                r, 1, QTableWidgetItem(str(s.initial if s.initial is not None else 0))
-            )
+            
+            self.table.setItem(r, 1, QTableWidgetItem(str(value)))
+            
             self.table.setItem(r, 2, QTableWidgetItem(str(s.unit or "")))
             self.table.item(r, 2).setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            
         self.table.blockSignals(False)
         self.setTitle(f"Signal Config: {msg.name}")
         self.setVisible(True)
+        # Trigger an initial encode to ensure the data field is up-to-date,
+        # especially if we fell back to default values.
         self._encode()
 
     def _encode(self):
@@ -1364,11 +1389,21 @@ class CANBusObserver(QMainWindow):
             asyncio.create_task(self._update_canopen_nodes())
 
         self.transmit_panel.set_dbc_databases(active_dbcs)
-        current_item = self.transmit_panel.table.currentItem()
-        self.on_transmit_row_selected(
-            self.transmit_panel.table.currentRow(),
-            current_item.text() if current_item else "",
-        )
+        
+        row = self.transmit_panel.table.currentRow()
+        id_text = ""
+        data_hex = ""
+        if row >= 0:
+            id_item = self.transmit_panel.table.item(row, 1)
+            if id_item:
+                id_text = id_item.text()
+            
+            data_item = self.transmit_panel.table.item(row, 5)
+            if data_item:
+                data_hex = data_item.text()
+
+        self.on_transmit_row_selected(row, id_text, data_hex)
+
         self.properties_panel.project = self.project
 
         # Update object dictionary viewer
@@ -1378,15 +1413,18 @@ class CANBusObserver(QMainWindow):
         else:
             self.object_dictionary_viewer.clear_node()
 
-    def on_transmit_row_selected(self, row, id_text):
+    def on_transmit_row_selected(self, row: int, id_text: str, data_hex: str):
         self.signal_transmit_panel.clear_panel()
         if row < 0 or not id_text:
             return
         try:
-            if message := self.transmit_panel.get_message_from_id(int(id_text, 16)):
-                self.signal_transmit_panel.populate(message)
+            can_id = int(id_text, 16)
+            message = self.transmit_panel.get_message_from_id(can_id)
+            if message:
+                # Pass the existing data_hex to the populate method
+                self.signal_transmit_panel.populate(message, data_hex)
         except ValueError:
-            pass
+            pass # Invalid ID text, just clear the panel
 
     def on_signal_data_encoded(self, data_bytes):
         if (row := self.transmit_panel.table.currentRow()) >= 0:
