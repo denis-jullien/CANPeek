@@ -30,13 +30,17 @@ import enum
 from . import rc_icons
 from .dcf2db import dcf_2_db
 
+import asyncio
+from qasync import QEventLoop, QApplication
+
+
 __all__ = [
     "rc_icons",  # remove ruff "Remove unused import: `.rc_icons`"
 ]
 
 
 from PySide6.QtWidgets import (
-    QApplication,
+    # QApplication,
     QMainWindow,
     QWidget,
     QVBoxLayout,
@@ -842,71 +846,115 @@ class CANGroupedModel(QAbstractItemModel):
         return None
 
 
-# --- CAN Communication ---
-class CANReaderThread(QThread):
+# Replace the CANReaderThread class (around line 850)
+class CANAsyncReader(QObject):
     frame_received = Signal(object)
     error_occurred = Signal(str)
-    send_frame = Signal(object)
-
+    
     def __init__(self, interface: str, config: Dict[str, Any]):
         super().__init__()
         self.interface = interface
         self.config = config
         self.running = False
         self.bus = None
-        self.daemon = True
-        self.send_frame.connect(self._send_frame_internal)
-
-    def _send_frame_internal(self, message):
+        self.notifier = None
+        self.reader = None
+        self.read_task = None
+        
+    async def start_reading(self):
+        """Start async CAN reading"""
+        try:
+            self.bus = can.Bus(
+                interface=self.interface, 
+                receive_own_messages=True, 
+                **self.config
+            )
+            
+            # Create async reader and notifier
+            self.reader = can.AsyncBufferedReader()
+            
+            # Get the current event loop
+            loop = asyncio.get_running_loop()
+            
+            # Create notifier with the loop
+            self.notifier = can.Notifier(
+                self.bus, 
+                [self.reader], 
+                loop=loop
+            )
+            
+            self.running = True
+            
+            # Start the reading task
+            self.read_task = asyncio.create_task(self._read_messages())
+            
+            return True
+            
+        except Exception as e:
+            self.error_occurred.emit(f"Failed to start CAN reading: {e}")
+            return False
+    
+    async def _read_messages(self):
+        """Async message reading loop"""
+        try:
+            while self.running:
+                try:
+                    # Wait for next message with timeout
+                    msg = await asyncio.wait_for(self.reader.get_message(), timeout=0.1)
+                    
+                    if msg and self.running:
+                        frame = CANFrame(
+                            msg.timestamp,
+                            msg.arbitration_id,
+                            msg.data,
+                            msg.dlc,
+                            msg.is_extended_id,
+                            msg.is_error_frame,
+                            msg.is_remote_frame,
+                        )
+                        self.frame_received.emit(frame)
+                        
+                except asyncio.TimeoutError:
+                    # Timeout is expected, continue loop
+                    continue
+                except Exception as e:
+                    if self.running:
+                        self.error_occurred.emit(f"Message reading error: {e}")
+                    break
+                    
+        except Exception as e:
+            if self.running:
+                self.error_occurred.emit(f"CAN reader error: {e}")
+        
+    def stop_reading(self):
+        """Stop async CAN reading"""
+        self.running = False
+        
+        if self.read_task and not self.read_task.done():
+            self.read_task.cancel()
+            
+        if self.notifier:
+            self.notifier.stop()
+            self.notifier = None
+            
+        if self.bus:
+            try:
+                self.bus.shutdown()
+            except Exception as e:
+                print(f"Error shutting down CAN bus: {e}")
+            finally:
+                self.bus = None
+                
+        self.reader = None
+        self.read_task = None
+    
+    def send_frame(self, message: can.Message):
+        """Send a CAN frame"""
         if self.bus and self.running:
             try:
                 self.bus.send(message)
             except Exception as e:
                 self.error_occurred.emit(f"Send error: {e}")
-
-    def start_reading(self):
-        self.running = True
-        self.start()
-        return True
-
-    def stop_reading(self):
-        self.running = False
-        self.wait(3000)
-
-    def run(self):
-        try:
-            self.bus = can.Bus(
-                interface=self.interface, receive_own_messages=True, **self.config
-            )
-            while self.running:
-                msg = self.bus.recv(timeout=0.1)
-                if msg and self.running:
-                    frame = CANFrame(
-                        msg.timestamp,
-                        msg.arbitration_id,
-                        msg.data,
-                        msg.dlc,
-                        msg.is_extended_id,
-                        msg.is_error_frame,
-                        msg.is_remote_frame,
-                    )
-                    self.frame_received.emit(frame)
-        except can.CanOperationError as e:
-            if self.running:
-                self.error_occurred.emit(
-                    f"CAN bus error: {e}\n\nCheck connection settings and hardware."
-                )
-        except Exception as e:
-            if self.running:
-                self.error_occurred.emit(f"CAN reader error: {e}")
-        finally:
-            if self.bus:
-                try:
-                    self.bus.shutdown()
-                except Exception as e:
-                    print(f"Error shutting down CAN bus: {e}")
-                finally:
-                    self.bus = None
 
 
 # --- UI Classes ---
@@ -2422,7 +2470,9 @@ class CANBusObserver(QMainWindow):
         self.open_project_action.triggered.connect(self._open_project)
         self.save_project_action.triggered.connect(self._save_project)
         self.save_project_as_action.triggered.connect(self._save_project_as)
-        self.connect_action.triggered.connect(self.connect_can)
+        self.connect_action.triggered.connect(
+            lambda: asyncio.create_task(self.connect_can())
+        )
         self.disconnect_action.triggered.connect(self.disconnect_can)
         self.clear_action.triggered.connect(self.clear_data)
         self.save_log_action.triggered.connect(self.save_log)
@@ -2675,14 +2725,18 @@ class CANBusObserver(QMainWindow):
             # Non-CANopen item selected
             self.object_dictionary_viewer.clear_node()
 
-    def connect_can(self):
-        self.can_reader = CANReaderThread(
+    # Update the connect_can method (around line 2683)
+    async def connect_can(self):
+        self.can_reader = CANAsyncReader(
             self.project.can_interface, self.project.can_config
         )
         self.can_reader.frame_received.connect(self._process_frame)
         self.can_reader.error_occurred.connect(self.on_can_error)
-        if self.can_reader.start_reading():
-            QTimer.singleShot(200, self._finalize_connection)
+        
+        if await self.can_reader.start_reading():
+            # Small delay to ensure connection is established
+            await asyncio.sleep(0.2)
+            self._finalize_connection()
         else:
             self.can_reader = None
 
@@ -2702,9 +2756,9 @@ class CANBusObserver(QMainWindow):
         if current_item := self.project_explorer.tree.currentItem():
             self.properties_panel.show_properties(current_item)
 
+    # Update the disconnect_can method (around line 2715)
     def disconnect_can(self):
         # Disconnect the canopen network
-        # self.canopen_network.disconnect()
         for node in self.canopen_network.nodes.values():
             if hasattr(node, "pdo"):
                 node.pdo.stop()
@@ -2724,9 +2778,10 @@ class CANBusObserver(QMainWindow):
         if current_item := self.project_explorer.tree.currentItem():
             self.properties_panel.show_properties(current_item)
 
+    # Update the send_can_frame method (around line 2732)
     def send_can_frame(self, message: can.Message):
         if self.can_reader and self.can_reader.running:
-            self.can_reader.send_frame.emit(message)
+            self.can_reader.send_frame(message)
         else:
             QMessageBox.warning(
                 self, "Not Connected", "Connect to a CAN bus before sending frames."
@@ -3010,12 +3065,21 @@ class CANBusObserver(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+
+    event_loop = QEventLoop(app)
+    asyncio.set_event_loop(event_loop)
+
+    app_close_event = asyncio.Event()
+    app.aboutToQuit.connect(app_close_event.set)
+
     app.setOrganizationName("CANPeek")
     app.setApplicationName("CANPeek")
     window = CANBusObserver()
     qdarktheme.setup_theme("auto")
     window.show()
-    sys.exit(app.exec())
+    
+    with event_loop:
+        event_loop.run_until_complete(app_close_event.wait())
 
 
 if __name__ == "__main__":

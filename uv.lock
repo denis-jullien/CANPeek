@@ -102,15 +102,15 @@ wheels = [
 ]
 
 [[package]]
-name = "canopen"
-version = "2.3.0"
+name = "canopen-asyncio"
+version = "2.3.1.dev86"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "python-can" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1a/b3/733e5f98c995d7f3e82853bc5ee2f0677df6203d51d8a4387af188322523/canopen-2.3.0.tar.gz", hash = "sha256:792084a93c138d5b2a406ddd2d4eb5ce208f03bd8fda60f81ad2bb8d56c6b827", size = 101292, upload-time = "2024-06-13T20:36:05.515Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/75/b6/b9f3b3fa438a0e48af55d7478d2c325aaa11c61466fda01fd0e2fa8433b2/canopen_asyncio-2.3.1.dev86.tar.gz", hash = "sha256:9e3aa67577a0d32c9ac2e484c1bd93b91d700a1e03780b172b2e0f83718e8940", size = 95234, upload-time = "2025-06-20T20:19:14.65Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/7f/bef6f0e7d237d00705e921a286598e15cc1b9188878ef51b9fec22484c0c/canopen-2.3.0-py3-none-any.whl", hash = "sha256:7a62274af6ded7ee85ee96f4ada3afa38bc8607a91f306dcc202c3c8cf2850d7", size = 64196, upload-time = "2024-06-13T20:35:59.519Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/7c/979dcfac77dde0ec15456c71ed600fc3a4c1110a35bcd029220a138d4aac/canopen_asyncio-2.3.1.dev86-py3-none-any.whl", hash = "sha256:414211d5df0e200984261b893b94cdc83756bb721104464b7c730453acc8bac7", size = 73326, upload-time = "2025-06-20T20:19:12.855Z" },
 ]
 
 [[package]]
@@ -118,13 +118,14 @@ name = "canpeek"
 version = "0.5.0"
 source = { editable = "." }
 dependencies = [
-    { name = "canopen" },
+    { name = "canopen-asyncio" },
     { name = "cantools" },
     { name = "dcf-tools" },
     { name = "docstring-parser" },
     { name = "pyqtdarktheme-fork" },
     { name = "pyside6" },
     { name = "python-can" },
+    { name = "qasync" },
 ]
 
 [package.optional-dependencies]
@@ -150,7 +151,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "canalystii", marker = "extra == 'interfaces'", specifier = ">=0.1" },
-    { name = "canopen", specifier = ">=2.3.0" },
+    { name = "canopen-asyncio", specifier = ">=2.3.0" },
     { name = "cantools", specifier = ">=40.2.3" },
     { name = "dcf-tools", specifier = ">=2.4.2" },
     { name = "docstring-parser", specifier = ">=0.16" },
@@ -162,6 +163,7 @@ requires-dist = [
     { name = "pyserial", marker = "extra == 'interfaces'", specifier = ">=3.5" },
     { name = "pyside6", specifier = ">=6.9.1" },
     { name = "python-can", specifier = ">=4.5.0" },
+    { name = "qasync", specifier = ">=0.27.1" },
     { name = "uptime", marker = "extra == 'interfaces'", specifier = ">=3.0.1" },
     { name = "usb", marker = "extra == 'interfaces'", specifier = ">=0.0.83.dev0" },
 ]
@@ -583,6 +585,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/fe/0f/25911a9f080464c59fab9027482f822b86bf0608957a5fcc6eaac85aa515/PyYAML-6.0.2-cp313-cp313-musllinux_1_1_x86_64.whl", hash = "sha256:68ccc6023a3400877818152ad9a1033e3db8625d899c72eacb5a668902e4d652", size = 751597, upload-time = "2024-08-06T20:32:56.985Z" },
     { url = "https://files.pythonhosted.org/packages/14/0d/e2c3b43bbce3cf6bd97c840b46088a3031085179e596d4929729d8d68270/PyYAML-6.0.2-cp313-cp313-win32.whl", hash = "sha256:bc2fa7c6b47d6bc618dd7fb02ef6fdedb1090ec036abab80d4681424b84c1183", size = 140527, upload-time = "2024-08-06T20:33:03.001Z" },
     { url = "https://files.pythonhosted.org/packages/fa/de/02b54f42487e3d3c6efb3f89428677074ca7bf43aae402517bc7cca949f3/PyYAML-6.0.2-cp313-cp313-win_amd64.whl", hash = "sha256:8388ee1976c416731879ac16da0aff3f63b286ffdd57cdeb95f3f2e085687563", size = 156446, upload-time = "2024-08-06T20:33:04.33Z" },
+]
+
+[[package]]
+name = "qasync"
+version = "0.27.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1c/e0/7c7c973f52e1765d6ddfc41e9272294f65d5d52b8f5f5eae92adf411ad46/qasync-0.27.1.tar.gz", hash = "sha256:8dc768fd1ee5de1044c7c305eccf2d39d24d87803ea71189d4024fb475f4985f", size = 14287, upload-time = "2023-11-19T14:19:55.535Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/51/06/bc628aa2981bcfd452a08ee435b812fd3eee4ada8acb8a76c4a09d1a5a77/qasync-0.27.1-py3-none-any.whl", hash = "sha256:5d57335723bc7d9b328dadd8cb2ed7978640e4bf2da184889ce50ee3ad2602c7", size = 14866, upload-time = "2023-11-19T14:19:54.345Z" },
 ]
 
 [[package]]
