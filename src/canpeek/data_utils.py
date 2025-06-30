@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
 from pathlib import Path
 import enum
 import inspect
@@ -18,16 +18,6 @@ class CANFrame:
     is_error: bool = False
     is_remote: bool = False
     channel: str = "CAN1"
-
-
-@dataclass
-class DisplayItem:  # Used for Grouped View
-    parent: Optional["DisplayItem"]
-    data_source: Any
-    is_signal: bool = False
-    children: List["DisplayItem"] = field(default_factory=list)
-    children_populated: bool = False
-    row_in_parent: int = 0
 
 
 @dataclass
