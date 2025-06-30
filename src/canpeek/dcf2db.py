@@ -13,12 +13,12 @@ def dcf_2_messages(filename, nodeid: int, slave_name:str):
     messages = []
 
     for n, tpdo in dev.tpdo.items():
-        print(hex(tpdo.cob_id))
+        # print(hex(tpdo.cob_id))
 
         current_len = 0
         sigs = []
         for mapn, subObject in tpdo.mapping.items():
-            print("\t", hex(subObject.index), subObject.sub_index, subObject.name)
+            # print("\t", hex(subObject.index), subObject.sub_index, subObject.name)
             # debug(subObject.data_type.name(), subObject.data_type.bits())
 
             if "INTEGER" in subObject.data_type.name():

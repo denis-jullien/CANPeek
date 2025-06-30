@@ -91,7 +91,7 @@ from PySide6.QtGui import QAction, QKeyEvent, QIcon, QPixmap
 
 import can
 import cantools
-import canopen_asyncio as canopen
+import canopen
 
 if TYPE_CHECKING:
     from __main__ import ProjectExplorer, CANInterfaceManager, CANBusObserver
@@ -832,7 +832,7 @@ class CANAsyncReader(QObject):
             )
             
             # Create async reader and notifier
-            self.reader = can.AsyncBufferedReader()
+            # self.reader = can.AsyncBufferedReader()
             
             # Get the current event loop
             loop = asyncio.get_running_loop()
@@ -840,52 +840,33 @@ class CANAsyncReader(QObject):
             # Create notifier with the loop
             self.notifier = can.Notifier(
                 self.bus, 
-                [self.reader], 
+                [self.rx_messages], 
                 loop=loop
             )
             
             self.running = True
             
-            # Start the reading task
-            self.read_task = asyncio.create_task(self._read_messages())
+
             
             return True
             
         except Exception as e:
             self.error_occurred.emit(f"Failed to start CAN reading: {e}")
             return False
-    
-    async def _read_messages(self):
-        """Async message reading loop"""
-        try:
-            while self.running:
-                try:
-                    # Wait for next message with timeout
-                    msg = await asyncio.wait_for(self.reader.get_message(), timeout=0.1)
-                    
-                    if msg and self.running:
-                        frame = CANFrame(
-                            msg.timestamp,
-                            msg.arbitration_id,
-                            msg.data,
-                            msg.dlc,
-                            msg.is_extended_id,
-                            msg.is_error_frame,
-                            msg.is_remote_frame,
-                        )
-                        self.frame_received.emit(frame)
-                        
-                except asyncio.TimeoutError:
-                    # Timeout is expected, continue loop
-                    continue
-                except Exception as e:
-                    if self.running:
-                        self.error_occurred.emit(f"Message reading error: {e}")
-                    break
-                    
-        except Exception as e:
-            if self.running:
-                self.error_occurred.emit(f"CAN reader error: {e}")
+        
+    def rx_messages(self, msg: can.Message) -> None:
+        """Regular callback function. Can also be a coroutine."""
+        # print(msg)
+        frame = CANFrame(
+            msg.timestamp,
+            msg.arbitration_id,
+            msg.data,
+            msg.dlc,
+            msg.is_extended_id,
+            msg.is_error_frame,
+            msg.is_remote_frame,
+        )
+        self.frame_received.emit(frame)
         
     def stop_reading(self):
         """Stop async CAN reading"""
@@ -1371,8 +1352,8 @@ class CANopenRootEditor(QWidget):
         self.settings_changed.emit()
 
     def _clear_discovered_nodes(self):
-        if self.network.bus:
-            self.network.scanner.reset()
+        # if self.network.bus:
+        #     self.network.scanner.reset()
         self.last_known_nodes.clear()
         self.discovered_nodes_text.clear()
 
@@ -1383,6 +1364,7 @@ class CANopenRootEditor(QWidget):
         if current_nodes != self.last_known_nodes:
             self.last_known_nodes = current_nodes
             self.discovered_nodes_text.setText(
+             
                 ", ".join(map(str, sorted(list(current_nodes))))
             )
 
@@ -1910,13 +1892,60 @@ class SignalTransmitPanel(QGroupBox):
 
 class ObjectDictionaryViewer(QWidget):
     """CANopen Object Dictionary Viewer with SDO read/write capabilities"""
+    frame_to_send = Signal(object)
+    frame_rx_sdo = Signal(object)
     
-    def __init__(self, canopen_network):
+    def __init__(self):
         super().__init__()
-        self.canopen_network = canopen_network
-        self.current_node = None
         self.current_node_id = None
         self.setup_ui()
+
+        self.frame_rx_sdo.connect(self.on_frame_rx_sdo)
+
+    def on_frame_rx_sdo(self, frame: can.Message):
+        """Handle received SDO frames"""
+        print(f"Received SDO frame: {frame}")
+        res_command, res_index, res_subindex = canopen.sdo.constants.SDO_STRUCT.unpack_from(frame.data)
+
+        res_data = frame.data[4:8]
+
+        if res_command & 0xE0 != canopen.sdo.constants.RESPONSE_UPLOAD:
+            print(f"Unexpected response 0x{res_command:02X}")
+
+        # # Check that the message is for us
+        # if res_index != index or res_subindex != subindex:
+        #     raise SdoCommunicationError(
+        #         f"Node returned a value for {pretty_index(res_index, res_subindex)} instead, "
+        #         "maybe there is another SDO client communicating "
+        #         "on the same SDO channel?")
+
+        exp_data = None
+        if res_command & canopen.sdo.constants.EXPEDITED:
+            # Expedited upload
+            if res_command & canopen.sdo.constants.SIZE_SPECIFIED:
+                size = 4 - ((res_command >> 2) & 0x3)
+                exp_data = res_data[:size]
+            else:
+                exp_data = res_data
+            # self.pos += len(self.exp_data)
+        elif res_command & canopen.sdo.constants.SIZE_SPECIFIED:
+            size, = struct.unpack("<L", res_data)
+            print("Using segmented transfer of %d bytes", self.size)
+        else:
+            print("Using segmented transfer")
+
+        print(f"Received SDO response: Index={res_index}, Subindex={res_subindex}, Data={exp_data.hex()}, Size={size}")
+        # if self.current_node and frame.arbitration_id == self.current_node.sdo_server_id:
+        #     # Process the SDO response
+        #     try:
+        #         sdo_response = self.current_node.sdo.parse_response(frame)
+        #         # Update the current value label with the received value
+        #         self.current_value_label.setText(str(sdo_response.value))
+        #         self.status_label.setText("SDO Read Successful")
+        #         self.status_label.setStyleSheet("color: green;")
+        #     except Exception as e:
+        #         self.status_label.setText(f"SDO Read Error: {e}")
+        #         self.status_label.setStyleSheet("color: red;")
         
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -2020,44 +2049,15 @@ class ObjectDictionaryViewer(QWidget):
             f"CANopen Node {node_config.node_id} - {node_config.path.name}"
         )
         
-        # Check if canopen_network is available
-        if self.canopen_network is None:
-            self.status_label.setText("Connect to CAN bus to access node")
-            self.status_label.setStyleSheet("color: orange;")
-            # Load EDS file for offline viewing
-            try:
-                self.load_eds_file(node_config.path)
-            except Exception as e:
-                self.status_label.setText(f"Error loading EDS file: {e}")
-                self.status_label.setStyleSheet("color: red;")
-            return
-        
-        # Try to get or create the node in the network
+
+        # Load EDS file for offline viewing
         try:
-            if self.current_node_id in self.canopen_network.nodes:
-                self.current_node = self.canopen_network.nodes[self.current_node_id]
-            else:
-                # Add the node to the network using canopen-asyncio
-                self.current_node = await self.canopen_network.aadd_node(
-                    self.current_node_id, 
-                    str(node_config.path)
-                )
-                
-            self.populate_object_dictionary()
-            
-            # # If we have a bus connection, read PDOs
-            # if hasattr(self.canopen_network, 'bus') and self.canopen_network.bus:
-            #     try:
-            #         # Read PDO configuration from the remote node
-            #         await self.current_node.tpdo.aread()
-            #         await self.current_node.rpdo.aread()
-            #         print(f"PDO configuration read for node {self.current_node_id}")
-            #     except Exception as e:
-            #         print(f"Could not read PDO configuration: {e}")
-                    
+            self.load_eds_file(node_config.path)
         except Exception as e:
-            self.status_label.setText(f"Error loading node: {e}")
+            self.status_label.setText(f"Error loading EDS file: {e}")
             self.status_label.setStyleSheet("color: red;")
+        return
+        
             
     def load_eds_file(self, eds_path: Path):
         """Load EDS/DCF file and populate the object dictionary tree"""
@@ -2070,19 +2070,6 @@ class ObjectDictionaryViewer(QWidget):
             self.status_label.setText(f"Error loading EDS file: {e}")
             self.status_label.setStyleSheet("color: red;")
             
-    def populate_object_dictionary(self):
-        """Populate the tree with object dictionary entries"""
-        if not self.current_node:
-            return
-            
-        self.tree.clear()
-        
-        try:
-            od = self.current_node.object_dictionary
-            self.populate_from_eds(od)
-        except Exception as e:
-            self.status_label.setText(f"Error populating dictionary: {e}")
-            self.status_label.setStyleSheet("color: red;")
             
     def populate_from_eds(self, object_dictionary):
         """Populate tree from object dictionary"""
@@ -2243,8 +2230,7 @@ class ObjectDictionaryViewer(QWidget):
         can_write = access_type in ['wo', 'rw', 'rww', 'rwr'] if access_type else True
         
         # Only enable if we have a connected node
-        has_connection = (self.current_node is not None and 
-                         self.canopen_network.bus is not None)
+        has_connection = True
         
         self.read_btn.setEnabled(can_read and has_connection and subindex is not None)
         self.write_btn.setEnabled(can_write and has_connection and subindex is not None)
@@ -2266,7 +2252,8 @@ class ObjectDictionaryViewer(QWidget):
         
     async def read_sdo(self):
         """Read value via SDO using async operations"""
-        if not self.current_node or not hasattr(self, 'selected_index'):
+        print("Reading SDO...")
+        if not self.current_node_id or not hasattr(self, 'selected_index'):
             return
             
         self.progress_bar.setVisible(True)
@@ -2275,16 +2262,25 @@ class ObjectDictionaryViewer(QWidget):
         self.status_label.setStyleSheet("color: blue;")
         
         try:
-            # Perform async SDO read using canopen-asyncio
-            if self.selected_subindex == 0:
-                # Simple variable - access directly
-                entry = self.current_node.sdo[self.selected_index]
-            else:
-                # Complex object with subindex
-                entry = self.current_node.sdo[self.selected_index][self.selected_subindex]
+            print(f"Reading SDO: Index 0x{self.selected_index:04X}, Subindex 0x{self.selected_subindex:02X} : {self.current_node_id}]")
 
-            # Use async get_raw method from canopen-asyncio
-            value = await entry.aget_raw()
+            request = bytearray(8)
+            canopen.sdo.constants.SDO_STRUCT.pack_into(request, 0, canopen.sdo.constants.REQUEST_UPLOAD, self.selected_index, self.selected_subindex)
+            print(f"SDO Request: {request.hex(' ').upper()}")
+
+            self.frame_to_send.emit(
+                can.Message(
+                    arbitration_id=0x600 + self.current_node_id,
+                    is_extended_id=0,
+                    is_remote_frame=0,
+                    dlc=8,
+                    data=request
+                )
+            )
+
+    
+
+            value = 0
             
             # Display the value
             if isinstance(value, bytes):
@@ -2308,7 +2304,7 @@ class ObjectDictionaryViewer(QWidget):
             
     async def write_sdo(self):
         """Write value via SDO using async operations"""
-        if not self.current_node or not hasattr(self, 'selected_index'):
+        if not self.current_node_id or not hasattr(self, 'selected_index'):
             return
             
         value_text = self.write_value_edit.text().strip()
@@ -2430,6 +2426,9 @@ class CANBusObserver(QMainWindow):
         self.gui_update_timer.timeout.connect(self.update_views)
         self.gui_update_timer.start(50)
         self._update_window_title()
+
+        icon = QIcon(QPixmap(":/icons/canpeek.png"))
+        self.setWindowIcon(icon)
         
         # Connect project changes to PDO cache invalidation
         self.project_explorer.project_changed.connect(self._on_project_structure_changed)
@@ -2514,7 +2513,8 @@ class CANBusObserver(QMainWindow):
         self.tab_widget.addTab(trace_view_widget, "Trace")
         
         # Add Object Dictionary tab
-        self.object_dictionary_viewer = ObjectDictionaryViewer(self.canopen_network)
+        self.object_dictionary_viewer = ObjectDictionaryViewer()
+        self.object_dictionary_viewer.frame_to_send.connect(self.send_can_frame)
         self.tab_widget.addTab(self.object_dictionary_viewer, "Object Dictionary")
 
     def setup_docks(self):
@@ -2606,6 +2606,9 @@ class CANBusObserver(QMainWindow):
             #     if frame.arbitration_id == 0x58C:
             #         print("Received SDO frame:", frame)
             self.frame_batch.append(frame)
+            if frame.arbitration_id & 0x580 == 0x580:
+                # This is an SDO frame, process it
+                self.object_dictionary_viewer.frame_rx_sdo.emit(frame)
         except Exception as e:
             print(f"Error processing frame: {e}")
 
@@ -2741,40 +2744,10 @@ class CANBusObserver(QMainWindow):
         self.can_reader.frame_received.connect(self._process_frame)
         self.can_reader.error_occurred.connect(self.on_can_error)
         
-        if await self.can_reader.start_reading():
-            # Small delay to ensure connection is established
-            await asyncio.sleep(0.2)
-            await self._finalize_connection()
-        else:
+        if not await self.can_reader.start_reading():
             self.can_reader = None
-
-    async def _finalize_connection(self):
-        if not self.can_reader or not self.can_reader.bus:
             self.on_can_error("Failed to establish bus object in reader thread.")
-            return
-        
-        # Create the canopen network with the existing bus and notifier
-        loop = asyncio.get_running_loop()
-        self.canopen_network = canopen.Network(
-            bus=self.can_reader.bus,
-            notifier=self.can_reader.notifier,  # Assuming CANAsyncReader exposes this
-            loop=loop
-        )
-        
-        # Update the ObjectDictionaryViewer's canopen_network reference
-        self.object_dictionary_viewer.canopen_network = self.canopen_network
-        
-        # Add CANopen nodes after network is created and connected (using async version)
-        if self.project.canopen_enabled:
-            for node_config in self.project.canopen_nodes:
-                if node_config.enabled and node_config.path.exists():
-                    try:
-                        await self.canopen_network.aadd_node(
-                            node_config.node_id, str(node_config.path)
-                        )
-                        print(f"Added CANopen node {node_config.node_id}")
-                    except Exception as e:
-                        print(f"Error adding CANopen node {node_config.node_id}: {e}")
+            return     
         
         self.connect_action.setEnabled(False)
         self.disconnect_action.setEnabled(True)
@@ -2796,9 +2769,6 @@ class CANBusObserver(QMainWindow):
             
             # The network will be cleaned up when we stop the reader
             self.canopen_network = None
-
-        # Reset the ObjectDictionaryViewer's canopen_network reference
-        self.object_dictionary_viewer.canopen_network = None
 
         if self.can_reader:
             self.can_reader.stop_reading()
