@@ -695,11 +695,11 @@ class PropertiesPanel(QWidget):
         self.placeholder.hide()
 
 
-class ProjectExplorer(QGroupBox):
+class ProjectExplorer(QWidget):
     project_changed = Signal()
 
     def __init__(self, project: Project, main_window: "CANBusObserver"):
-        super().__init__("Project Explorer")
+        super().__init__()
         self.project = project
         self.main_window = main_window
         self.setup_ui()
@@ -762,6 +762,33 @@ class ProjectExplorer(QGroupBox):
 
     def add_item(self, parent, text, data=None, checked=None):
         item = QTreeWidgetItem(parent or self.tree, [text])
+
+        style = self.style()
+        icon = None
+
+        if data == "connection_settings":
+            icon = style.standardIcon(
+                QStyle.SP_DriveNetIcon
+            )  # QIcon(QPixmap(":/icons/network-wired.png"))
+        elif data == "dbc_root":
+            icon = style.standardIcon(QStyle.SP_DirIcon)
+        elif data == "filter_root":
+            icon = style.standardIcon(QStyle.SP_DirIcon)
+        elif data == "canopen_root":
+            # Using a custom icon from your resource file
+            icon = style.standardIcon(
+                QStyle.SP_ComputerIcon
+            )  # style.standardIcon(QStyle.SP_FileDialogListView)#QIcon(QPixmap(":/icons/canopen.png"))
+        # elif isinstance(data, DBCFile):
+        #     icon = style.standardIcon(QStyle.SP_FileIcon)#QIcon(QPixmap(":/icons/document-properties.png"))
+        # elif isinstance(data, CANFrameFilter):
+        #     icon = style.standardIcon(QStyle.SP_DialogApplyButton)#QIcon(QPixmap(":/icons/view-filter.png"))
+        # elif isinstance(data, CANopenNode):
+        #     icon = style.standardIcon(QStyle.SP_FileIcon)#QIcon(QPixmap(":/icons/network-server.png"))
+
+        if icon:
+            item.setIcon(0, icon)
+
         if data:
             item.setData(0, Qt.UserRole, data)
         if checked is not None:
@@ -854,13 +881,13 @@ class TransmitViewColumn(enum.IntEnum):
     SENT = 8
 
 
-class TransmitPanel(QGroupBox):
+class TransmitPanel(QWidget):
     frame_to_send = Signal(object)
     row_selection_changed = Signal(int, str, str)  # row, id_text, data_hex
     config_changed = Signal()
 
     def __init__(self):
-        super().__init__("Transmit")
+        super().__init__()
         self.timers: Dict[int, QTimer] = {}
         self.dbcs: List[object] = []
         self.setup_ui()
@@ -1463,7 +1490,7 @@ class CANBusObserver(QMainWindow):
 
     def setup_docks(self):
         self.project_explorer = ProjectExplorer(self.project, self)
-        explorer_dock = QDockWidget("Project", self)
+        explorer_dock = QDockWidget("Project Explorer", self)
         explorer_dock.setObjectName("ProjectExplorerDock")
         explorer_dock.setWidget(self.project_explorer)
         self.addDockWidget(Qt.RightDockWidgetArea, explorer_dock)
