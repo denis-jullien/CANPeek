@@ -110,6 +110,7 @@ def get_structured_decodings(
 # --- Models ---
 class TraceViewColumn(enum.IntEnum):
     """Defines the columns for the CANTraceModel."""
+
     TIMESTAMP = 0
     DIRECTION = 1
     ID = 2
@@ -118,12 +119,13 @@ class TraceViewColumn(enum.IntEnum):
     DATA = 5
     DECODED = 6
 
+
 class CANTraceModel(QAbstractTableModel):
     def __init__(self):
         super().__init__()
 
         # Programmatically create headers from the Enum
-        self.headers = [col.name.replace('_', ' ').title() for col in TraceViewColumn]
+        self.headers = [col.name.replace("_", " ").title() for col in TraceViewColumn]
         self.headers[TraceViewColumn.DIRECTION] = "Rx/Tx"  # Custom header name
 
         self.frames: deque[CANFrame] = deque(maxlen=10000)
@@ -169,14 +171,22 @@ class CANTraceModel(QAbstractTableModel):
         except ValueError:
             return None
 
-        if col == TraceViewColumn.TIMESTAMP: return f"{frame.timestamp:.6f}"
-        if col == TraceViewColumn.DIRECTION: return "Rx" if frame.is_rx else "Tx"
-        if col == TraceViewColumn.ID: return f"0x{frame.arbitration_id:X}"
+        if col == TraceViewColumn.TIMESTAMP:
+            return f"{frame.timestamp:.6f}"
+        if col == TraceViewColumn.DIRECTION:
+            return "Rx" if frame.is_rx else "Tx"
+        if col == TraceViewColumn.ID:
+            return f"0x{frame.arbitration_id:X}"
         if col == TraceViewColumn.TYPE:
-            return ("Ext" if frame.is_extended else "Std") + (" RTR" if frame.is_remote else "")
-        if col == TraceViewColumn.DLC: return str(frame.dlc)
-        if col == TraceViewColumn.DATA: return frame.data.hex(" ")
-        if col == TraceViewColumn.DECODED: return self._decode_frame(frame)
+            return ("Ext" if frame.is_extended else "Std") + (
+                " RTR" if frame.is_remote else ""
+            )
+        if col == TraceViewColumn.DLC:
+            return str(frame.dlc)
+        if col == TraceViewColumn.DATA:
+            return frame.data.hex(" ")
+        if col == TraceViewColumn.DECODED:
+            return self._decode_frame(frame)
 
         return None
 
@@ -193,8 +203,10 @@ class CANTraceModel(QAbstractTableModel):
 
         return " || ".join(output_strings)
 
+
 class GroupedViewColumn(enum.IntEnum):
     """Defines the columns for the CANGroupedModel."""
+
     ID = 0
     NAME = 1
     DLC = 2
@@ -202,11 +214,12 @@ class GroupedViewColumn(enum.IntEnum):
     CYCLE_TIME = 4
     COUNT = 5
 
+
 class CANGroupedModel(QAbstractItemModel):
     def __init__(self):
         super().__init__()
         # Programmatically create headers from the Enum, this replaces underscores with spaces for display
-        self.headers = [col.name.replace('_', ' ').title() for col in GroupedViewColumn]
+        self.headers = [col.name.replace("_", " ").title() for col in GroupedViewColumn]
         self.top_level_items: List[DisplayItem] = []
         self.dbc_databases: List[cantools.db.Database] = []
         self.pdo_databases: List[cantools.db.Database] = []
@@ -330,8 +343,7 @@ class CANGroupedModel(QAbstractItemModel):
             return
         self.beginResetModel()
         for frame in frames:
-
-            if not frame.is_rx: # TODO : make this configurable ?
+            if not frame.is_rx:  # TODO : make this configurable ?
                 continue  # Skip Tx frames
 
             can_id = frame.arbitration_id
@@ -399,22 +411,32 @@ class CANGroupedModel(QAbstractItemModel):
 
         if item.is_signal:
             sig = item.data_source
-            if col == GroupedViewColumn.ID: return f"  └ {sig['name']}"
-            if col == GroupedViewColumn.NAME: return sig.get('unit', '')
-            if col == GroupedViewColumn.DATA: return f"{sig['value']}"
+            if col == GroupedViewColumn.ID:
+                return f"  └ {sig['name']}"
+            if col == GroupedViewColumn.NAME:
+                return sig.get("unit", "")
+            if col == GroupedViewColumn.DATA:
+                return f"{sig['value']}"
         else:
             frame: CANFrame = item.data_source
             can_id = frame.arbitration_id
 
-            if col == GroupedViewColumn.ID: return f"0x{can_id:X}"
-            if col == GroupedViewColumn.NAME: return self._get_message_name(can_id)
-            if col == GroupedViewColumn.DLC: return str(frame.dlc)
-            if col == GroupedViewColumn.DATA: return frame.data.hex(" ")
-            if col == GroupedViewColumn.COUNT: return str(self.frame_counts.get(can_id, 0))
+            if col == GroupedViewColumn.ID:
+                return f"0x{can_id:X}"
+            if col == GroupedViewColumn.NAME:
+                return self._get_message_name(can_id)
+            if col == GroupedViewColumn.DLC:
+                return str(frame.dlc)
+            if col == GroupedViewColumn.DATA:
+                return frame.data.hex(" ")
+            if col == GroupedViewColumn.COUNT:
+                return str(self.frame_counts.get(can_id, 0))
             if col == GroupedViewColumn.CYCLE_TIME:
                 ts_list = self.timestamps.get(can_id, [])
                 if len(ts_list) > 1:
-                    cycle_times = [ts_list[i] - ts_list[i - 1] for i in range(1, len(ts_list))]
+                    cycle_times = [
+                        ts_list[i] - ts_list[i - 1] for i in range(1, len(ts_list))
+                    ]
                     avg_cycle_ms = sum(cycle_times) / len(cycle_times) * 1000
                     return f"{avg_cycle_ms:.1f} ms"
                 return "-"
