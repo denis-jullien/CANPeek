@@ -221,7 +221,7 @@ class DBCEditor(QWidget):
         if self.dbc_file.channel:
             self.channel_combo.setCurrentText(self.dbc_file.channel)
         else:
-            self.channel_combo.setCurrentIndex(0)
+            self.channel_combo.setCurrentText("")
         self.channel_combo.currentTextChanged.connect(self._on_channel_changed)
         form_layout.addRow("Channel:", self.channel_combo)
 
@@ -309,7 +309,7 @@ class FilterEditor(QWidget):
         if self.filter.channel:
             self.channel_combo.setCurrentText(self.filter.channel)
         else:
-            self.channel_combo.setCurrentIndex(0)
+            self.channel_combo.setCurrentText("")
         self.channel_combo.currentTextChanged.connect(self._update_filter)
         layout.addRow("Channel:", self.channel_combo)
 
@@ -854,7 +854,28 @@ class ProjectExplorer(QWidget):
             elif isinstance(data, CANopenNode):
                 self.project.canopen_nodes.remove(data)
             elif isinstance(data, Connection):
+                removed_conn_name = data.name
                 self.project.connections.remove(data)
+
+                # Clean up references in other project items
+                for dbc in self.project.dbcs:
+                    if dbc.channel == removed_conn_name:
+                        dbc.channel = None
+                for filt in self.project.filters:
+                    if filt.channel == removed_conn_name:
+                        filt.channel = None
+                for node in self.project.canopen_nodes:
+                    if node.channel == removed_conn_name:
+                        node.channel = None
+
+                # Clean up CANAsyncReader if it exists
+                if removed_conn_name in self.main_window.can_readers:
+                    reader = self.main_window.can_readers.pop(removed_conn_name)
+                    reader.stop_reading()
+                    reader.deleteLater()
+                self.main_window.transmit_panel.set_connections(
+                    self.main_window.can_readers
+                )
             self.rebuild_tree()
 
     def add_canopen_node(self):

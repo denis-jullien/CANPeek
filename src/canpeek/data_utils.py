@@ -14,9 +14,9 @@ class CANFrame:
     arbitration_id: int
     data: bytes
     dlc: int
-    is_extended: bool
-    is_error: bool
-    is_remote: bool
+    is_extended: bool = False
+    is_error: bool = False
+    is_remote: bool = False
     channel: Optional[str] = None
     is_rx: bool = True
 

@@ -141,7 +141,7 @@ class TestUIModels:
         model.set_data([sample_can_frame])
 
         assert model.rowCount() == 1
-        assert model.columnCount() == 7
+        assert model.columnCount() == 8
 
         # Check data formatting
         assert (
@@ -180,10 +180,10 @@ class TestUIModels:
 class TestUIWidgets:
     """Tests for individual UI widgets, driven by qtbot."""
 
-    def test_filter_editor_updates_data(self, qtbot):
+    def test_filter_editor_updates_data(self, qtbot, sample_project):
         """Test that editing a field in FilterEditor updates the underlying filter object."""
         can_filter = canpeek_app.CANFrameFilter()
-        editor = canpeek_app.FilterEditor(can_filter)
+        editor = canpeek_app.FilterEditor(can_filter, sample_project)
         qtbot.addWidget(editor)
 
         # Change the name
