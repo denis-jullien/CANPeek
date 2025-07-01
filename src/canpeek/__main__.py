@@ -1074,10 +1074,10 @@ class SignalTransmitPanel(QGroupBox):
     def setup_ui(self):
         layout = QVBoxLayout(self)
         self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Signal", "Value", "Unit"])
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Signal", "Value", "Unit", "Min", "Max"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        # self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table)
         self.table.cellChanged.connect(self._encode)
 
@@ -1115,6 +1115,20 @@ class SignalTransmitPanel(QGroupBox):
             
             self.table.setItem(r, 2, QTableWidgetItem(str(s.unit or "")))
             self.table.item(r, 2).setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+
+            # --- Min (Col 3) - NEW ---
+            min_val = s.minimum if s.minimum is not None else "N/A"
+            min_item = QTableWidgetItem(str(min_val))
+            min_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            min_item.setToolTip(f"Minimum allowed value for {s.name}")
+            self.table.setItem(r, 3, min_item)
+
+            # --- Max (Col 4) - NEW ---
+            max_val = s.maximum if s.maximum is not None else "N/A"
+            max_item = QTableWidgetItem(str(max_val))
+            max_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            max_item.setToolTip(f"Maximum allowed value for {s.name}")
+            self.table.setItem(r, 4, max_item)
             
         self.table.blockSignals(False)
         self.setTitle(f"Signal Config: {msg.name}")
