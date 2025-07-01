@@ -6,6 +6,7 @@ import asyncio
 import struct
 from pathlib import Path
 from typing import Dict, List, Optional
+import uuid
 
 import can
 import canopen
@@ -309,14 +310,21 @@ class CANopenNodeEditor(QWidget):
         self.node_id_spinbox.valueChanged.connect(self._update_node)
 
         self.channel_combo = QComboBox()
-        self.channel_combo.addItems([conn.name for conn in self.project.connections])
-        if self.node.channel:
-            if self.node.channel == -1:
-                self.channel_combo.setCurrentIndex(-1)
-            else:
-                self.channel_combo.setCurrentText(self.node.channel)
-        else:
-            self.channel_combo.setCurrentIndex(0)
+        # self.channel_combo.addItem("", None)  # "All" option with None as data
+        self.connection_map = {conn.name: conn.id for conn in self.project.connections}
+        for conn in self.project.connections:
+            self.channel_combo.addItem(conn.name, conn.id)
+
+        self.channel_combo.setCurrentIndex(-1)# Reset to no selection
+
+        if self.node.connection_id:
+            # Find the name corresponding to the stored connection_id
+            for name, conn_id in self.connection_map.items():
+                if conn_id == self.node.connection_id:
+                    self.channel_combo.setCurrentText(name)
+                    break
+
+
         self.channel_combo.currentTextChanged.connect(self._update_node)
         layout.addRow("Channel:", self.channel_combo)
 
@@ -351,7 +359,7 @@ class CANopenNodeEditor(QWidget):
         old_pdo_enabled = self.node.pdo_decoding_enabled
 
         self.node.node_id = self.node_id_spinbox.value()
-        self.node.channel = self.channel_combo.currentText()
+        self.node.connection_id = self.channel_combo.currentData()
         self.node.pdo_decoding_enabled = self.pdo_decoding_cb.isChecked()
 
         # Invalidate cache if node ID changed
@@ -412,6 +420,7 @@ class ObjectDictionaryViewer(QWidget):
     def __init__(self):
         super().__init__()
         self.current_node_id = None
+        self.current_node_connection_id: Optional[uuid.UUID] = None
         # Use a queue to handle multi-frame responses (for segmented transfers)
         self.sdo_response_queue = asyncio.Queue(maxsize=127)
         # Use an event to signal cancellation of an ongoing transfer
@@ -426,7 +435,7 @@ class ObjectDictionaryViewer(QWidget):
         if (
             not self.current_node_id
             or frame.arbitration_id != (0x580 + self.current_node_id)
-            or frame.channel != self.current_node_channel
+            or frame.connection_id != self.current_node_connection_id
         ):
             return
 
@@ -581,7 +590,7 @@ class ObjectDictionaryViewer(QWidget):
         """Set the current CANopen node to display"""
         self.current_node_config = node_config
         self.current_node_id = node_config.node_id
-        self.current_node_channel = node_config.channel
+        self.current_node_connection_id = node_config.connection_id
 
         # Update node info
         self.node_info_label.setText(
@@ -845,10 +854,9 @@ class ObjectDictionaryViewer(QWidget):
                     arbitration_id=0x600 + self.current_node_id,
                     is_extended_id=False,
                     dlc=8,
-                    data=request,
-                    channel=self.current_node_channel,
+                    data=request
                 ),
-                self.current_node_channel,
+                self.current_node_connection_id,
             )
 
             # 2. --- Wait for and process the first response ---
@@ -897,9 +905,9 @@ class ObjectDictionaryViewer(QWidget):
                             is_extended_id=False,
                             dlc=8,
                             data=bytes([segment_req_cs, 0, 0, 0, 0, 0, 0, 0]),
-                            channel=self.current_node_channel,
+                            connection_id=self.current_node_connection_id,
                         ),
-                        self.current_node_channel,
+                        self.current_node_connection_id,
                     )
 
                     # Wait for the segment response
@@ -1098,9 +1106,9 @@ class ObjectDictionaryViewer(QWidget):
                     is_extended_id=False,
                     dlc=8,
                     data=init_request,
-                    channel=self.current_node_channel,
+                    connection_id=self.current_node_connection_id,
                 ),
-                self.current_node_channel,
+                self.current_node_connection_id,
             )
 
             # 3. --- Wait for initiation response ---
@@ -1152,9 +1160,9 @@ class ObjectDictionaryViewer(QWidget):
                             arbitration_id=0x600 + self.current_node_id,
                             dlc=8,
                             data=seg_request,
-                            channel=self.current_node_channel,
+                            connection_id=self.current_node_connection_id,
                         ),
-                        self.current_node_channel,
+                        self.current_node_connection_id,
                     )
 
                     # Wait for segment acknowledgment

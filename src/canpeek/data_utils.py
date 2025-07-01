@@ -4,6 +4,7 @@ from pathlib import Path
 import enum
 import inspect
 import cantools
+import uuid
 
 from .interfaces_utils import CANInterfaceManager
 
@@ -17,7 +18,8 @@ class CANFrame:
     is_extended: bool = False
     is_error: bool = False
     is_remote: bool = False
-    channel: Optional[str] = None
+    bus: str | None = None  
+    connection_id: Optional[uuid.UUID] = None
     is_rx: bool = True
 
 
@@ -26,14 +28,14 @@ class DBCFile:
     path: Path
     database: object
     enabled: bool = True
-    channel: str | int | None = None
+    connection_id: Optional[uuid.UUID] = None
 
 
 @dataclass
 class CANFrameFilter:
     name: str = "New Filter"
     enabled: bool = True
-    channel: Optional[str] = None
+    connection_id: Optional[uuid.UUID] = None
     min_id: int = 0x000
     max_id: int = 0x7FF
     mask: int = 0x7FF
@@ -43,7 +45,9 @@ class CANFrameFilter:
     accept_remote: bool = True
 
     def matches(self, frame: CANFrame) -> bool:
-        if self.channel is not None and self.channel != frame.channel:
+        # This will need to be updated to use connection_id from frame
+        # For now, keeping it as channel for compatibility until frame is updated
+        if self.connection_id is not None and self.connection_id != frame.connection_id:
             return False
         if frame.is_extended and not self.accept_extended:
             return False
@@ -61,7 +65,7 @@ class CANopenNode:
     path: Path
     node_id: int
     enabled: bool = True
-    channel: Optional[str] = None
+    connection_id: Optional[uuid.UUID] = None
     pdo_decoding_enabled: bool = True
 
     def to_dict(self) -> Dict:
@@ -69,7 +73,7 @@ class CANopenNode:
             "path": str(self.path),
             "node_id": self.node_id,
             "enabled": self.enabled,
-            "channel": self.channel,
+            "connection_id": str(self.connection_id) if self.connection_id else None,
             "pdo_decoding_enabled": self.pdo_decoding_enabled,
         }
 
@@ -82,13 +86,14 @@ class CANopenNode:
             path=path,
             node_id=data["node_id"],
             enabled=data["enabled"],
-            channel=data.get("channel"),
+            connection_id=uuid.UUID(data["connection_id"]) if data.get("connection_id") else None,
             pdo_decoding_enabled=data.get("pdo_decoding_enabled", True),
         )
 
 
 @dataclass
 class Connection:
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
     name: str = ""
     interface: str = "virtual"
     config: Dict[str, Any] = field(default_factory=dict)
@@ -106,6 +111,7 @@ class Connection:
             k: v.name if isinstance(v, enum.Enum) else v for k, v in self.config.items()
         }
         return {
+            "id": str(self.id),
             "name": self.name,
             "interface": self.interface,
             "config": serializable_config,
@@ -149,6 +155,7 @@ class Connection:
             hydrated_config = config_from_file
 
         return cls(
+            id=uuid.UUID(data["id"]) if data.get("id") else uuid.uuid4(),
             name=data.get("name", "default"),
             interface=interface,
             config=hydrated_config,
@@ -168,16 +175,22 @@ class Project:
         return [dbc for dbc in self.dbcs if dbc.enabled]
 
     def get_active_filters(self) -> List[CANFrameFilter]:
-        return [f for f in self.filters if f.enabled and f.channel != -1]
+        return [f for f in self.filters if f.enabled and f.connection_id is not None]
 
     def get_active_connections(self) -> List[Connection]:
         return [c for c in self.connections if c.enabled]
+
+    def get_connection_name(self, connection_id: uuid.UUID) -> str:
+        for conn in self.connections:
+            if conn.id == connection_id:
+                return conn.name
+        return None
 
     def to_dict(self) -> Dict:
         return {
             "connections": [c.to_dict() for c in self.connections],
             "dbcs": [
-                {"path": str(dbc.path), "enabled": dbc.enabled, "channel": dbc.channel}
+                {"path": str(dbc.path), "enabled": dbc.enabled, "connection_id": str(dbc.connection_id) if dbc.connection_id else None}
                 for dbc in self.dbcs
             ],
             "filters": [asdict(f) for f in self.filters],
@@ -190,12 +203,16 @@ class Project:
         project = cls()
 
         if "can_interface" in data:
+            # This part handles legacy project files where connections were not
+            # explicitly defined but inferred from 'can_interface' and 'can_config'.
+            # We create a new Connection object with a UUID for these.
             conn = Connection.from_dict(
                 {
                     "name": data["can_interface"],
                     "interface": data["can_interface"],
                     "config": data.get("can_config", {}),
                     "enabled": True,
+                    "id": str(uuid.uuid4()) # Assign a new UUID for legacy connections
                 },
                 interface_manager,
             )
@@ -231,7 +248,10 @@ class Project:
                 db = cantools.database.load_file(path)
                 project.dbcs.append(
                     DBCFile(
-                        path, db, dbc_data.get("enabled", True), dbc_data.get("channel")
+                        path,
+                        db,
+                        dbc_data.get("enabled", True),
+                        uuid.UUID(dbc_data["connection_id"]) if dbc_data.get("connection_id") else None
                     )
                 )
             except Exception as e:

@@ -26,6 +26,7 @@ from . import rc_icons
 
 import asyncio
 from qasync import QEventLoop, QApplication
+import uuid
 
 
 __all__ = [
@@ -159,8 +160,9 @@ class CANAsyncReader(QObject):
             msg.is_extended_id,
             msg.is_error_frame,
             msg.is_remote_frame,
-            self.connection.name,
-            msg.is_rx,
+            bus=self.connection.name,
+            connection_id=self.connection.id,
+            is_rx=msg.is_rx,
         )
         self.frame_received.emit(frame)
 
@@ -215,16 +217,23 @@ class DBCEditor(QWidget):
         form_layout = QFormLayout()
 
         self.channel_combo = QComboBox()
-        self.channel_combo.addItem("All")
-        self.channel_combo.addItems([conn.name for conn in self.project.connections])
-        if self.dbc_file.channel:
-            if self.dbc_file.channel == -1:
+        self.channel_combo.addItem("All", None)  # "All" option with None as data
+        self.connection_map = {conn.name: conn.id for conn in self.project.connections}
+        for conn in self.project.connections:
+            self.channel_combo.addItem(conn.name, conn.id)
+
+        if self.dbc_file.connection_id:
+            if self.dbc_file.connection_id == -1:
                 self.channel_combo.setCurrentIndex(-1)
             else:
-                self.channel_combo.setCurrentText(self.dbc_file.channel)
-
+                # Find the name corresponding to the stored connection_id
+                for name, conn_id in self.connection_map.items():
+                    if conn_id == self.dbc_file.connection_id:
+                        self.channel_combo.setCurrentText(name)
+                        break
         else:
-            self.channel_combo.setCurrentIndex(0)
+            self.channel_combo.setCurrentIndex(0) # Select "All"
+
         self.channel_combo.currentTextChanged.connect(self._on_channel_changed)
         form_layout.addRow("Channel:", self.channel_combo)
 
@@ -245,11 +254,8 @@ class DBCEditor(QWidget):
         self.table.resizeColumnsToContents()
 
     def _on_channel_changed(self, text: str):
-        if text == "All":
-            self.dbc_file.channel = None
-        else:
-            self.dbc_file.channel = text
-        print(f"Channel: {self.dbc_file.channel}")
+        selected_id = self.channel_combo.currentData()
+        self.dbc_file.connection_id = selected_id
         self.project_changed.emit()
 
     def populate_table(self):
@@ -308,15 +314,23 @@ class FilterEditor(QWidget):
         layout.addRow("Name:", self.name_edit)
 
         self.channel_combo = QComboBox()
-        self.channel_combo.addItem("All")
-        self.channel_combo.addItems([conn.name for conn in self.project.connections])
-        if self.filter.channel:
-            if self.filter.channel == -1:
+        self.channel_combo.addItem("All", None)  # "All" option with None as data
+        self.connection_map = {conn.name: conn.id for conn in self.project.connections}
+        for conn in self.project.connections:
+            self.channel_combo.addItem(conn.name, conn.id)
+
+        if self.filter.connection_id:
+            if self.filter.connection_id == -1:
                 self.channel_combo.setCurrentIndex(-1)
             else:
-                self.channel_combo.setCurrentText(self.filter.channel)
+                # Find the name corresponding to the stored connection_id
+                for name, conn_id in self.connection_map.items():
+                    if conn_id == self.filter.connection_id:
+                        self.channel_combo.setCurrentText(name)
+                        break
         else:
-            self.channel_combo.setCurrentIndex(0)
+            self.channel_combo.setCurrentIndex(0) # Select "All"
+
         self.channel_combo.currentTextChanged.connect(self._update_filter)
         layout.addRow("Channel:", self.channel_combo)
 
@@ -358,11 +372,8 @@ class FilterEditor(QWidget):
 
     def _update_filter(self):
         self.filter.name = self.name_edit.text()
-        channel = self.channel_combo.currentText()
-        if channel == "All":
-            self.filter.channel = None
-        else:
-            self.filter.channel = channel
+        selected_id = self.channel_combo.currentData()
+        self.filter.connection_id = selected_id
         try:
             self.filter.min_id = int(self.min_id_edit.text(), 16)
         except ValueError:
@@ -760,41 +771,43 @@ class ProjectExplorer(QWidget):
             self.add_item(self.conn_root, conn.name, conn, conn.enabled)
 
         self.dbc_root = self.add_item(None, "Symbol Files (.dbc)", "dbc_root")
-        [
+        for dbc in self.project.dbcs:
+            conn_name = self.project.get_connection_name(dbc.connection_id) if dbc.connection_id else "Unassigned"
             self.add_item(
                 self.dbc_root,
                 dbc.path.name,
                 dbc,
                 dbc.enabled,
-                invalid=(dbc.channel == -1),
+                invalid=(dbc.connection_id == -1),
+                tooltip=f"Assigned to: {conn_name}" if dbc.connection_id else "Unassigned",
             )
-            for dbc in self.project.dbcs
-        ]
+
         self.filter_root = self.add_item(None, "Message Filters", "filter_root")
-        [
+        for f in self.project.filters:
+            conn_name = self.project.get_connection_name(f.connection_id) if f.connection_id else "Unassigned"
             self.add_item(
-                self.filter_root, f.name, f, f.enabled, invalid=(f.channel == -1)
+                self.filter_root,
+                f.name,
+                f,
+                f.enabled,
+                invalid=(f.connection_id == -1),
+                tooltip=f"Assigned to: {conn_name}" if f.connection_id else "Unassigned",
             )
-            for f in self.project.filters
-        ]
 
         self.co_root = self.add_item(None, "CANopen", "canopen_root")
         bus_items = {}
         for node in self.project.canopen_nodes:
-            if node.channel is None or node.channel == -1:
-                channel = "Unassigned"
-            else:
-                channel = node.channel
-
-            if channel not in bus_items:
-                bus_items[channel] = self.add_item(
+            conn_name = self.project.get_connection_name(node.connection_id) if node.connection_id else None
+            
+            if node.connection_id not in bus_items:
+                bus_items[node.connection_id] = self.add_item(
                     self.co_root,
-                    channel,
-                    f"canopen_bus_{channel}",
-                    invalid=(channel == "Unassigned"),
+                    conn_name if conn_name else "Unassigned",
+                    f"canopen_bus_{node.connection_id}",
+                    invalid=(conn_name is None),
                 )
             self.add_item(
-                bus_items[channel],
+                bus_items[node.connection_id],
                 f"{node.path.name} [ID: {node.node_id}]",
                 node,
                 node.enabled,
@@ -804,7 +817,7 @@ class ProjectExplorer(QWidget):
         self.tree.blockSignals(False)
         self.project_changed.emit()
 
-    def add_item(self, parent, text, data=None, checked=None, invalid=False):
+    def add_item(self, parent, text, data=None, checked=None, invalid=False, tooltip=None):
         item = QTreeWidgetItem(parent or self.tree, [text])
         style = self.style()
         icon = None
@@ -827,7 +840,7 @@ class ProjectExplorer(QWidget):
 
         if invalid:
             item.setBackground(0, QColor(255, 0, 0, 128))
-            item.setToolTip(0, "This item is invalid and cannot be used.")
+            item.setToolTip(0, tooltip or "This item is invalid and cannot be used.")
 
         return item
 
@@ -859,7 +872,7 @@ class ProjectExplorer(QWidget):
 
     def add_connection(self):
         self.project.connections.append(
-            Connection(name=f"Connection {len(self.project.connections) + 1}")
+            Connection(name=f"Connection {len(self.project.connections) + 1}", config={"channel": f"vcan{len(self.project.connections)}"})
         )
         self.rebuild_tree()
 
@@ -897,23 +910,23 @@ class ProjectExplorer(QWidget):
             elif isinstance(data, CANopenNode):
                 self.project.canopen_nodes.remove(data)
             elif isinstance(data, Connection):
-                removed_conn_name = data.name
+                removed_conn_id = data.id
                 self.project.connections.remove(data)
 
                 # Clean up references in other project items
                 for dbc in self.project.dbcs:
-                    if dbc.channel == removed_conn_name:
-                        dbc.channel = -1
+                    if dbc.connection_id == removed_conn_id:
+                        dbc.connection_id = -1
                 for filt in self.project.filters:
-                    if filt.channel == removed_conn_name:
-                        filt.channel = -1
+                    if filt.connection_id == removed_conn_id:
+                        filt.connection_id = -1
                 for node in self.project.canopen_nodes:
-                    if node.channel == removed_conn_name:
-                        node.channel = -1
+                    if node.connection_id == removed_conn_id:
+                        node.connection_id = -1
 
                 # Clean up CANAsyncReader if it exists
-                if removed_conn_name in self.main_window.can_readers:
-                    reader = self.main_window.can_readers.pop(removed_conn_name)
+                if removed_conn_id in self.main_window.can_readers:
+                    reader = self.main_window.can_readers.pop(removed_conn_id)
                     reader.stop_reading()
                     reader.deleteLater()
                 self.main_window.transmit_panel.set_connections(
@@ -929,13 +942,13 @@ class ProjectExplorer(QWidget):
             "CANopen Object Dictionary (*.eds *.dcf);;All Files (*)",
         )
         if fns:
-            default_channel = None
+            default_connection_id = None
             if self.project.connections:
-                default_channel = self.project.connections[0].name
+                default_connection_id = self.project.connections[0].id
 
             for fn in fns:
                 self.project.canopen_nodes.append(
-                    CANopenNode(path=Path(fn), node_id=1, channel=default_channel)
+                    CANopenNode(path=Path(fn), node_id=1, connection_id=default_connection_id)
                 )
             self.rebuild_tree()
 
@@ -969,11 +982,14 @@ class TransmitPanel(QWidget):
     def set_dbc_databases(self, dbs):
         self.dbcs = dbs
 
-    def set_connections(self, connections: Dict[str, CANAsyncReader]):
+    def set_connections(self, connections: Dict[uuid.UUID, CANAsyncReader]):
         self.connections = connections
         self.connection_combo.clear()
         if connections:
-            self.connection_combo.addItems(sorted(connections.keys()))
+            # Sort connections by name for display
+            sorted_connections = sorted(connections.values(), key=lambda reader: reader.connection.name)
+            for reader in sorted_connections:
+                self.connection_combo.addItem(reader.connection.name, reader.connection.id)
             self.connection_combo.setEnabled(True)
         else:
             self.connection_combo.setEnabled(False)
@@ -1173,8 +1189,8 @@ class TransmitPanel(QWidget):
         ]
 
     def send_from_row(self, r):
-        connection_name = self.connection_combo.currentText()
-        if not connection_name:
+        connection_id = self.connection_combo.currentData()
+        if not connection_id:
             QMessageBox.warning(
                 self, "No Connection", "Please select a connection to send from."
             )
@@ -1196,7 +1212,7 @@ class TransmitPanel(QWidget):
                     self.table.item(r, TransmitViewColumn.DATA).text().replace(" ", "")
                 ),
             )
-            self.frame_to_send.emit(message_to_send, connection_name)
+            self.frame_to_send.emit(message_to_send, connection_id)
 
             sent_item = self.table.item(r, TransmitViewColumn.SENT)
             current_count = int(sent_item.text())
@@ -1442,8 +1458,8 @@ class CANBusObserver(QMainWindow):
         self.project = Project()
         self.current_project_path: Optional[Path] = None
         self.project_dirty = False
-        self.can_readers: Dict[str, CANAsyncReader] = {}
-        self.bus_states: Dict[str, can.BusState] = {}
+        self.can_readers: Dict[uuid.UUID, CANAsyncReader] = {}
+        self.bus_states: Dict[uuid.UUID, can.BusState] = {}
 
         file_loggers = {
             "ASCWriter": ".asc",
@@ -1817,13 +1833,14 @@ class CANBusObserver(QMainWindow):
         if not isinstance(sender_reader, CANAsyncReader):
             return
 
-        conn_name = sender_reader.connection.name
-        self.bus_states[conn_name] = state
+        conn_id = sender_reader.connection.id
+        self.bus_states[conn_id] = state
 
         state_strings = []
-        for name, s in sorted(self.bus_states.items()):
+        for conn_id, s in sorted(self.bus_states.items(), key=lambda item: self.project.get_connection_name(item[0])):
+            conn_name = self.project.get_connection_name(conn_id)
             state_strings.append(
-                f"<span style='color: {self._get_state_color(s)};'>{name}: {s.name.title()}</span>"
+                f"<span style='color: {self._get_state_color(s)};'>{conn_name}: {s.name.title()}</span>"
             )
 
         self.bus_state_label.setText("Bus States: " + ", ".join(state_strings))
@@ -1868,7 +1885,7 @@ class CANBusObserver(QMainWindow):
                 self.properties_panel.current_widget.set_connected_state(True)
 
     async def _connect_single(self, connection: Connection) -> bool:
-        if connection.name in self.can_readers:
+        if connection.id in self.can_readers:
             return True  # Already connected
 
         reader = CANAsyncReader(connection)
@@ -1877,7 +1894,7 @@ class CANBusObserver(QMainWindow):
         reader.bus_state_changed.connect(self._update_bus_state)
 
         if await reader.start_reading():
-            self.can_readers[connection.name] = reader
+            self.can_readers[connection.id] = reader
             return True
         else:
             reader.deleteLater()
@@ -1902,13 +1919,15 @@ class CANBusObserver(QMainWindow):
             if isinstance(self.properties_panel.current_widget, ConnectionEditor):
                 self.properties_panel.current_widget.set_connected_state(False)
 
-    def send_can_frame(self, message: can.Message, connection_name: str):
-        if reader := self.can_readers.get(connection_name):
+    def send_can_frame(self, message: can.Message, connection_id: uuid.UUID):
+        print(f"Sending frame: {message} on connection {connection_id}")
+        if reader := self.can_readers.get(connection_id):
             if reader.running:
                 reader.send_frame(message)
         else:
+            conn_name = self.project.get_connection_name(connection_id)
             QMessageBox.warning(
-                self, "Not Connected", f"Connection '{connection_name}' is not active."
+                self, "Not Connected", f"Connection '{conn_name}' is not active."
             )
 
     def on_can_error(self, error_message: str):

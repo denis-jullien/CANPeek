@@ -4,10 +4,11 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import List, Optional, Any, Dict
 import enum
+import uuid
 
 from PySide6.QtCore import QAbstractItemModel, QAbstractTableModel, QModelIndex, Qt
 
-from .data_utils import CANFrame, DBCFile
+from .data_utils import CANFrame, DBCFile, Project
 from .co.canopen_utils import CANopenDecoder
 
 # --- Data Structures ---
@@ -84,7 +85,7 @@ def get_structured_decodings(
 
     # 1. Process regular DBCs
     for dbc in dbc_files:
-        if dbc.channel is None or dbc.channel == frame.channel:
+        if dbc.connection_id is None or dbc.connection_id == frame.connection_id:
             _process_database(dbc.database, "DBC")
 
     # 2. Process CANopen PDO databases
@@ -113,7 +114,7 @@ class TraceViewColumn(enum.IntEnum):
     """Defines the columns for the CANTraceModel."""
 
     TIMESTAMP = 0
-    CHANNEL = 1
+    BUS = 1
     DIRECTION = 2
     ID = 3
     TYPE = 4
@@ -175,8 +176,8 @@ class CANTraceModel(QAbstractTableModel):
 
         if col == TraceViewColumn.TIMESTAMP:
             return f"{frame.timestamp:.6f}"
-        if col == TraceViewColumn.CHANNEL:
-            return frame.channel
+        if col == TraceViewColumn.BUS:
+            return str(frame.bus)
         if col == TraceViewColumn.DIRECTION:
             return "Rx" if frame.is_rx else "Tx"
         if col == TraceViewColumn.ID:
@@ -212,7 +213,7 @@ class GroupedViewColumn(enum.IntEnum):
     """Defines the columns for the CANGroupedModel."""
 
     ID = 0
-    CHANNEL = 1
+    BUS = 1
     NAME = 2
     DLC = 3
     DATA = 4
@@ -351,8 +352,8 @@ class CANGroupedModel(QAbstractItemModel):
             if not frame.is_rx:  # TODO : make this configurable ?
                 continue  # Skip Tx frames
 
-            # Use a unique key for each channel/ID pair
-            item_key = (frame.channel, frame.arbitration_id)
+            # Use a unique key for each connection_id/ID pair
+            item_key = (frame.connection_id, frame.arbitration_id)
 
             self.frame_counts[item_key] = self.frame_counts.get(item_key, 0) + 1
             if item_key not in self.timestamps:
@@ -373,11 +374,11 @@ class CANGroupedModel(QAbstractItemModel):
                     item.children_populated = False
         self.endResetModel()
 
-    def _get_message_name(self, can_id: int, channel: str) -> str:
+    def _get_message_name(self, can_id: int, connection_id: uuid.UUID) -> str:
         """Helper to get a message name from any available database."""
         # Prioritize regular DBCs
         for db in self.dbc_files:
-            if db.channel is None or db.channel == channel:
+            if db.connection_id is None or db.connection_id == connection_id:
                 try:
                     return db.database.get_message_by_frame_id(can_id).name
                 except KeyError:
@@ -406,7 +407,7 @@ class CANGroupedModel(QAbstractItemModel):
             if item.is_signal:
                 return None
 
-            item_key = (item.data_source.channel, item.data_source.arbitration_id)
+            item_key = (item.data_source.connection_id, item.data_source.arbitration_id)
             if col == GroupedViewColumn.ID:
                 return item.data_source.arbitration_id
             if col == GroupedViewColumn.COUNT:
@@ -429,14 +430,14 @@ class CANGroupedModel(QAbstractItemModel):
         else:
             frame: CANFrame = item.data_source
             can_id = frame.arbitration_id
-            item_key = (frame.channel, frame.arbitration_id)
+            item_key = (frame.connection_id, frame.arbitration_id)
 
             if col == GroupedViewColumn.ID:
                 return f"0x{can_id:X}"
-            if col == GroupedViewColumn.CHANNEL:
-                return frame.channel
+            if col == GroupedViewColumn.BUS:
+                return str(frame.bus)
             if col == GroupedViewColumn.NAME:
-                return self._get_message_name(can_id, frame.channel)
+                return self._get_message_name(can_id, frame.connection_id)
             if col == GroupedViewColumn.DLC:
                 return str(frame.dlc)
             if col == GroupedViewColumn.DATA:
