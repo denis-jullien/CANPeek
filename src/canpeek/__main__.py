@@ -199,13 +199,12 @@ class CANAsyncReader(QObject):
 
 # --- UI Classes ---
 class DBCEditor(QWidget):
-    
     message_to_transmit = Signal(object)
 
     def __init__(self, dbc_file: DBCFile):
         super().__init__()
         self.dbc_file = dbc_file
-        self.sorted_messages = [] # Store sorted messages for transmission
+        self.sorted_messages = []  # Store sorted messages for transmission
         self.setup_ui()
 
     def setup_ui(self):
@@ -228,7 +227,9 @@ class DBCEditor(QWidget):
 
     def populate_table(self):
         # Store the sorted list in the instance variable
-        self.sorted_messages = sorted(self.dbc_file.database.messages, key=lambda m: m.frame_id)
+        self.sorted_messages = sorted(
+            self.dbc_file.database.messages, key=lambda m: m.frame_id
+        )
         self.table.setRowCount(len(self.sorted_messages))
         for r, m in enumerate(self.sorted_messages):
             self.table.setItem(r, 0, QTableWidgetItem(m.name))
@@ -252,7 +253,7 @@ class DBCEditor(QWidget):
         action = QAction(f"Add '{message.name}' to Transmit Panel", self)
         action.triggered.connect(lambda: self._emit_transmit_signal(row))
         menu.addAction(action)
-        
+
         menu.exec(self.table.viewport().mapToGlobal(position))
 
     def _emit_transmit_signal(self, row: int):
@@ -616,7 +617,6 @@ class ConnectionEditor(QWidget):
 
 
 class PropertiesPanel(QWidget):
-
     message_to_transmit = Signal(object)
 
     def __init__(
@@ -828,7 +828,7 @@ class ProjectExplorer(QGroupBox):
 
 class TransmitPanel(QGroupBox):
     frame_to_send = Signal(object)
-    row_selection_changed = Signal(int, str, str) # row, id_text, data_hex
+    row_selection_changed = Signal(int, str, str)  # row, id_text, data_hex
     config_changed = Signal()
 
     def __init__(self):
@@ -882,19 +882,21 @@ class TransmitPanel(QGroupBox):
         r = self.table.rowCount()
         self.table.insertRow(r)
         self._setup_row_widgets(r)
-        
+
         # Now, populate the new row with data from the message object
         self.table.blockSignals(True)
-        
+
         # ID
         self.table.item(r, 1).setText(f"{message.frame_id:X}")
-        
+
         # Type (Std/Ext)
-        self.table.cellWidget(r, 2).setCurrentIndex(1 if message.is_extended_frame else 0)
-        
+        self.table.cellWidget(r, 2).setCurrentIndex(
+            1 if message.is_extended_frame else 0
+        )
+
         # DLC
         self.table.item(r, 4).setText(str(message.length))
-        
+
         # Data (encode with defaults to get initial values)
         try:
             initial_data = message.encode({}, scaling=False, padding=True)
@@ -904,7 +906,7 @@ class TransmitPanel(QGroupBox):
             self.table.item(r, 5).setText("00 " * message.length)
 
         self.table.blockSignals(False)
-        self.config_changed.emit() # Mark project as dirty
+        self.config_changed.emit()  # Mark project as dirty
 
     def remove_frames(self):
         if self.table.selectionModel().selectedRows():
@@ -951,13 +953,13 @@ class TransmitPanel(QGroupBox):
             id_text = self.table.item(row, 1).text()
             data_item = self.table.item(row, 5)
             data_hex = data_item.text() if data_item else ""
-            
+
             self.row_selection_changed.emit(row, id_text, data_hex)
 
     def _on_cell_changed(self, r, c):
         self.config_changed.emit()
         # Also update on data change
-        if c == 1 or c == 5: 
+        if c == 1 or c == 5:
             id_text = self.table.item(r, 1).text()
             data_item = self.table.item(r, 5)
             data_hex = data_item.text() if data_item else ""
@@ -974,12 +976,12 @@ class TransmitPanel(QGroupBox):
     def update_row_data(self, r, data):
         # Block signals on the table to prevent re-triggering the change cascade
         self.table.blockSignals(True)
-        
+
         self.table.item(r, 5).setText(data.hex(" "))
         self.table.item(r, 4).setText(str(len(data)))
-        
+
         self.table.blockSignals(False)
-        
+
         # We still want to mark the project as dirty after the change
         self.config_changed.emit()
 
@@ -1080,7 +1082,9 @@ class SignalTransmitPanel(QGroupBox):
         layout = QVBoxLayout(self)
         self.table = QTableWidget()
         self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(["Signal", "Value", "Unit", "Min", "Max", "Status"])
+        self.table.setHorizontalHeaderLabels(
+            ["Signal", "Value", "Unit", "Min", "Max", "Status"]
+        )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table)
@@ -1100,7 +1104,7 @@ class SignalTransmitPanel(QGroupBox):
             status_item.setToolTip(text)
         else:
             status_item.setForeground(Qt.green)
-        
+
         status_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         self.table.setItem(row, 5, status_item)
 
@@ -1113,23 +1117,27 @@ class SignalTransmitPanel(QGroupBox):
             try:
                 data_bytes = bytes.fromhex(data_hex.replace(" ", ""))
                 # Use allow_truncated=True to handle cases where data is shorter than expected
-                initial_values = msg.decode(data_bytes, decode_choices=False, allow_truncated=True)
+                initial_values = msg.decode(
+                    data_bytes, decode_choices=False, allow_truncated=True
+                )
             except (ValueError, KeyError) as e:
                 print(f"Could not decode existing data for signal panel: {e}")
-                initial_values = {} # Fallback to defaults on error
-        
+                initial_values = {}  # Fallback to defaults on error
+
         self.table.blockSignals(True)
         self.table.setRowCount(len(msg.signals))
-        
+
         for r, s in enumerate(msg.signals):
             # Use the decoded value if available, otherwise use the signal's default initial value
-            value = initial_values.get(s.name, s.initial if s.initial is not None else 0)
-            
+            value = initial_values.get(
+                s.name, s.initial if s.initial is not None else 0
+            )
+
             self.table.setItem(r, 0, QTableWidgetItem(s.name))
             self.table.item(r, 0).setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            
+
             self.table.setItem(r, 1, QTableWidgetItem(str(value)))
-            
+
             self.table.setItem(r, 2, QTableWidgetItem(str(s.unit or "")))
             self.table.item(r, 2).setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
 
@@ -1148,7 +1156,7 @@ class SignalTransmitPanel(QGroupBox):
             self.table.setItem(r, 4, max_item)
 
             self.table.setItem(r, 5, QTableWidgetItem(""))
-            
+
         self.table.blockSignals(False)
         self.setTitle(f"Signal Config: {msg.name}")
         self.setVisible(True)
@@ -1167,7 +1175,7 @@ class SignalTransmitPanel(QGroupBox):
         # --- 1. Build the data dictionary from the table ---
         data_dict = {}
         parse_errors = False
-        
+
         # We don't need to block signals here as we are just reading
         for r in range(self.table.rowCount()):
             signal_name = self.table.item(r, 0).text()
@@ -1177,17 +1185,17 @@ class SignalTransmitPanel(QGroupBox):
             except (ValueError, TypeError):
                 parse_errors = True
                 # We will set the status message for this *after* reading all values
-        
+
         # --- Temporarily block signals to prevent recursion when updating status ---
         self.table.blockSignals(True)
-        
+
         # Update status based on initial parsing
         for r in range(self.table.rowCount()):
             signal_name = self.table.item(r, 0).text()
             if signal_name not in data_dict:
                 self._set_status(r, "Invalid number", is_error=True)
             else:
-                self._set_status(r, "", is_error=False) # Clear previous parse errors
+                self._set_status(r, "", is_error=False)  # Clear previous parse errors
 
         self.table.blockSignals(False)
         # --------------------------------------------------------------------------
@@ -1198,7 +1206,7 @@ class SignalTransmitPanel(QGroupBox):
         # --- 2. Attempt to encode and handle validation errors ---
         try:
             encoded_data = self.message.encode(data_dict, strict=True)
-            
+
             # Block signals again for the success case
             self.table.blockSignals(True)
             for r in range(self.table.rowCount()):
@@ -1209,7 +1217,7 @@ class SignalTransmitPanel(QGroupBox):
 
         except (cantools.database.errors.EncodeError, ValueError, KeyError) as e:
             error_str = str(e)
-            
+
             # Block signals while we update rows with error messages
             self.table.blockSignals(True)
             found_error_signal = False
@@ -1220,10 +1228,10 @@ class SignalTransmitPanel(QGroupBox):
                     found_error_signal = True
                 else:
                     self._set_status(r, "OK", is_error=False)
-            
+
             if not found_error_signal:
                 self._set_status(0, error_str, is_error=True)
-            
+
             self.table.blockSignals(False)
 
 
@@ -1409,7 +1417,9 @@ class CANBusObserver(QMainWindow):
             "properties": properties_dock,
             "transmit": transmit_dock,
         }
-        self.properties_panel.message_to_transmit.connect(self._add_message_to_transmit_panel)
+        self.properties_panel.message_to_transmit.connect(
+            self._add_message_to_transmit_panel
+        )
         self.transmit_panel.frame_to_send.connect(self.send_can_frame)
         self.transmit_panel.row_selection_changed.connect(self.on_transmit_row_selected)
         self.signal_transmit_panel.data_encoded.connect(self.on_signal_data_encoded)
@@ -1451,7 +1461,7 @@ class CANBusObserver(QMainWindow):
         self.connection_label = QLabel("Disconnected")
         self.statusBar().addPermanentWidget(self.frame_count_label)
         self.statusBar().addPermanentWidget(self.connection_label)
-    
+
     def _add_message_to_transmit_panel(self, message: cantools.db.Message):
         """Slot to handle request to add a DBC message to the transmit panel."""
         self.transmit_panel.add_message_frame(message)
@@ -1553,7 +1563,7 @@ class CANBusObserver(QMainWindow):
             id_item = self.transmit_panel.table.item(row, 1)
             if id_item:
                 id_text = id_item.text()
-            
+
             data_item = self.transmit_panel.table.item(row, 5)
             if data_item:
                 data_hex = data_item.text()
@@ -1580,7 +1590,7 @@ class CANBusObserver(QMainWindow):
                 # Pass the existing data_hex to the populate method
                 self.signal_transmit_panel.populate(message, data_hex)
         except ValueError:
-            pass # Invalid ID text, just clear the panel
+            pass  # Invalid ID text, just clear the panel
 
     def on_signal_data_encoded(self, data_bytes):
         if (row := self.transmit_panel.table.currentRow()) >= 0:
