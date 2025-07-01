@@ -313,7 +313,7 @@ class CANopenNodeEditor(QWidget):
         if self.node.channel:
             if self.node.channel == -1:
                 self.channel_combo.setCurrentIndex(-1)
-            else :
+            else:
                 self.channel_combo.setCurrentText(self.node.channel)
         else:
             self.channel_combo.setCurrentIndex(0)

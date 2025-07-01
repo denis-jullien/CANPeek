@@ -220,7 +220,7 @@ class DBCEditor(QWidget):
         if self.dbc_file.channel:
             if self.dbc_file.channel == -1:
                 self.channel_combo.setCurrentIndex(-1)
-            else :
+            else:
                 self.channel_combo.setCurrentText(self.dbc_file.channel)
 
         else:
@@ -747,12 +747,20 @@ class ProjectExplorer(QWidget):
 
         self.dbc_root = self.add_item(None, "Symbol Files (.dbc)", "dbc_root")
         [
-            self.add_item(self.dbc_root, dbc.path.name, dbc, dbc.enabled, invalid=(dbc.channel==-1))
+            self.add_item(
+                self.dbc_root,
+                dbc.path.name,
+                dbc,
+                dbc.enabled,
+                invalid=(dbc.channel == -1),
+            )
             for dbc in self.project.dbcs
         ]
         self.filter_root = self.add_item(None, "Message Filters", "filter_root")
         [
-            self.add_item(self.filter_root, f.name, f, f.enabled, invalid=(f.channel==-1))
+            self.add_item(
+                self.filter_root, f.name, f, f.enabled, invalid=(f.channel == -1)
+            )
             for f in self.project.filters
         ]
 
@@ -766,7 +774,10 @@ class ProjectExplorer(QWidget):
 
             if channel not in bus_items:
                 bus_items[channel] = self.add_item(
-                    self.co_root, channel, f"canopen_bus_{channel}", invalid=(channel == "Unassigned")
+                    self.co_root,
+                    channel,
+                    f"canopen_bus_{channel}",
+                    invalid=(channel == "Unassigned"),
                 )
             self.add_item(
                 bus_items[channel],
