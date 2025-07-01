@@ -26,7 +26,7 @@ class DBCFile:
     path: Path
     database: object
     enabled: bool = True
-    channel: Optional[str] = None
+    channel: str | int | None = None
 
 
 @dataclass
@@ -168,7 +168,7 @@ class Project:
         return [dbc for dbc in self.dbcs if dbc.enabled]
 
     def get_active_filters(self) -> List[CANFrameFilter]:
-        return [f for f in self.filters if f.enabled]
+        return [f for f in self.filters if f.enabled and f.channel != -1]
 
     def get_active_connections(self) -> List[Connection]:
         return [c for c in self.connections if c.enabled]

@@ -72,8 +72,7 @@ from PySide6.QtCore import (
     QSortFilterProxyModel,
     QSettings,
 )
-from PySide6.QtGui import QAction, QKeyEvent, QIcon, QPixmap
-
+from PySide6.QtGui import QAction, QKeyEvent, QIcon, QPixmap, QColor
 
 import can
 import cantools
@@ -219,9 +218,13 @@ class DBCEditor(QWidget):
         self.channel_combo.addItem("All")
         self.channel_combo.addItems([conn.name for conn in self.project.connections])
         if self.dbc_file.channel:
-            self.channel_combo.setCurrentText(self.dbc_file.channel)
+            if self.dbc_file.channel == -1:
+                self.channel_combo.setCurrentIndex(-1)
+            else :
+                self.channel_combo.setCurrentText(self.dbc_file.channel)
+
         else:
-            self.channel_combo.setCurrentText("")
+            self.channel_combo.setCurrentIndex(0)
         self.channel_combo.currentTextChanged.connect(self._on_channel_changed)
         form_layout.addRow("Channel:", self.channel_combo)
 
@@ -246,6 +249,7 @@ class DBCEditor(QWidget):
             self.dbc_file.channel = None
         else:
             self.dbc_file.channel = text
+        print(f"Channel: {self.dbc_file.channel}")
         self.project_changed.emit()
 
     def populate_table(self):
@@ -307,9 +311,12 @@ class FilterEditor(QWidget):
         self.channel_combo.addItem("All")
         self.channel_combo.addItems([conn.name for conn in self.project.connections])
         if self.filter.channel:
-            self.channel_combo.setCurrentText(self.filter.channel)
+            if self.filter.channel == -1:
+                self.channel_combo.setCurrentIndex(-1)
+            else:
+                self.channel_combo.setCurrentText(self.filter.channel)
         else:
-            self.channel_combo.setCurrentText("")
+            self.channel_combo.setCurrentIndex(0)
         self.channel_combo.currentTextChanged.connect(self._update_filter)
         layout.addRow("Channel:", self.channel_combo)
 
@@ -671,13 +678,15 @@ class PropertiesPanel(QWidget):
             self.current_widget = editor
         elif isinstance(data, CANFrameFilter):
             editor = FilterEditor(data, self.project)
-            editor.filter_changed.connect(lambda: item.setText(0, data.name))
+            # editor.filter_changed.connect(lambda: item.setText(0, data.name))
             editor.filter_changed.connect(self.explorer.project_changed.emit)
+            editor.filter_changed.connect(self.explorer.rebuild_tree)
             self.current_widget = editor
         elif isinstance(data, DBCFile):
             editor = DBCEditor(data, self.project)
             # Connect the editor's signal to the panel's signal
             editor.message_to_transmit.connect(self.message_to_transmit.emit)
+            editor.project_changed.connect(self.explorer.rebuild_tree)
             self.current_widget = editor
         elif isinstance(data, tuple) and len(data) == 2 and data[0] == "pdo_content":
             # PDO content viewer for CANopen node
@@ -738,22 +747,26 @@ class ProjectExplorer(QWidget):
 
         self.dbc_root = self.add_item(None, "Symbol Files (.dbc)", "dbc_root")
         [
-            self.add_item(self.dbc_root, dbc.path.name, dbc, dbc.enabled)
+            self.add_item(self.dbc_root, dbc.path.name, dbc, dbc.enabled, invalid=(dbc.channel==-1))
             for dbc in self.project.dbcs
         ]
         self.filter_root = self.add_item(None, "Message Filters", "filter_root")
         [
-            self.add_item(self.filter_root, f.name, f, f.enabled)
+            self.add_item(self.filter_root, f.name, f, f.enabled, invalid=(f.channel==-1))
             for f in self.project.filters
         ]
 
         self.co_root = self.add_item(None, "CANopen", "canopen_root")
         bus_items = {}
         for node in self.project.canopen_nodes:
-            channel = node.channel or "Unassigned"
+            if node.channel is None or node.channel == -1:
+                channel = "Unassigned"
+            else:
+                channel = node.channel
+
             if channel not in bus_items:
                 bus_items[channel] = self.add_item(
-                    self.co_root, channel, f"canopen_bus_{channel}"
+                    self.co_root, channel, f"canopen_bus_{channel}", invalid=(channel == "Unassigned")
                 )
             self.add_item(
                 bus_items[channel],
@@ -766,7 +779,7 @@ class ProjectExplorer(QWidget):
         self.tree.blockSignals(False)
         self.project_changed.emit()
 
-    def add_item(self, parent, text, data=None, checked=None):
+    def add_item(self, parent, text, data=None, checked=None, invalid=False):
         item = QTreeWidgetItem(parent or self.tree, [text])
         style = self.style()
         icon = None
@@ -786,6 +799,11 @@ class ProjectExplorer(QWidget):
         if checked is not None:
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+
+        if invalid:
+            item.setBackground(0, QColor(255, 0, 0, 128))
+            item.setToolTip(0, "This item is invalid and cannot be used.")
+
         return item
 
     def on_item_changed(self, item, column):
@@ -860,13 +878,13 @@ class ProjectExplorer(QWidget):
                 # Clean up references in other project items
                 for dbc in self.project.dbcs:
                     if dbc.channel == removed_conn_name:
-                        dbc.channel = None
+                        dbc.channel = -1
                 for filt in self.project.filters:
                     if filt.channel == removed_conn_name:
-                        filt.channel = None
+                        filt.channel = -1
                 for node in self.project.canopen_nodes:
                     if node.channel == removed_conn_name:
-                        node.channel = None
+                        node.channel = -1
 
                 # Clean up CANAsyncReader if it exists
                 if removed_conn_name in self.main_window.can_readers:

@@ -311,7 +311,10 @@ class CANopenNodeEditor(QWidget):
         self.channel_combo = QComboBox()
         self.channel_combo.addItems([conn.name for conn in self.project.connections])
         if self.node.channel:
-            self.channel_combo.setCurrentText(self.node.channel)
+            if self.node.channel == -1:
+                self.channel_combo.setCurrentIndex(-1)
+            else :
+                self.channel_combo.setCurrentText(self.node.channel)
         else:
             self.channel_combo.setCurrentIndex(0)
         self.channel_combo.currentTextChanged.connect(self._update_node)
