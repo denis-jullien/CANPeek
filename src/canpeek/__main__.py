@@ -199,9 +199,13 @@ class CANAsyncReader(QObject):
 
 # --- UI Classes ---
 class DBCEditor(QWidget):
+    
+    message_to_transmit = Signal(object)
+
     def __init__(self, dbc_file: DBCFile):
         super().__init__()
         self.dbc_file = dbc_file
+        self.sorted_messages = [] # Store sorted messages for transmission
         self.setup_ui()
 
     def setup_ui(self):
@@ -215,19 +219,46 @@ class DBCEditor(QWidget):
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["Message", "ID (hex)", "DLC", "Signals"])
         layout.addWidget(self.table)
+
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.open_context_menu)
+
         self.populate_table()
         self.table.resizeColumnsToContents()
 
     def populate_table(self):
-        messages = sorted(self.dbc_file.database.messages, key=lambda m: m.frame_id)
-        self.table.setRowCount(len(messages))
-        for r, m in enumerate(messages):
+        # Store the sorted list in the instance variable
+        self.sorted_messages = sorted(self.dbc_file.database.messages, key=lambda m: m.frame_id)
+        self.table.setRowCount(len(self.sorted_messages))
+        for r, m in enumerate(self.sorted_messages):
             self.table.setItem(r, 0, QTableWidgetItem(m.name))
             self.table.setItem(r, 1, QTableWidgetItem(f"0x{m.frame_id:X}"))
             self.table.setItem(r, 2, QTableWidgetItem(str(m.length)))
             self.table.setItem(
                 r, 3, QTableWidgetItem(", ".join(s.name for s in m.signals))
             )
+
+    # --- Add these two new methods ---
+    def open_context_menu(self, position):
+        """Creates and shows the context menu."""
+        item = self.table.itemAt(position)
+        if not item:
+            return
+
+        row = item.row()
+        message = self.sorted_messages[row]
+
+        menu = QMenu()
+        action = QAction(f"Add '{message.name}' to Transmit Panel", self)
+        action.triggered.connect(lambda: self._emit_transmit_signal(row))
+        menu.addAction(action)
+        
+        menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _emit_transmit_signal(self, row: int):
+        """Emits the signal with the selected message object."""
+        message = self.sorted_messages[row]
+        self.message_to_transmit.emit(message)
 
 
 class FilterEditor(QWidget):
@@ -585,6 +616,9 @@ class ConnectionEditor(QWidget):
 
 
 class PropertiesPanel(QWidget):
+
+    message_to_transmit = Signal(object)
+
     def __init__(
         self,
         project: Project,
@@ -626,7 +660,10 @@ class PropertiesPanel(QWidget):
             editor.filter_changed.connect(self.explorer.project_changed.emit)
             self.current_widget = editor
         elif isinstance(data, DBCFile):
-            self.current_widget = DBCEditor(data)
+            editor = DBCEditor(data)
+            # Connect the editor's signal to the panel's signal
+            editor.message_to_transmit.connect(self.message_to_transmit.emit)
+            self.current_widget = editor
         elif isinstance(data, tuple) and len(data) == 2 and data[0] == "pdo_content":
             # PDO content viewer for CANopen node
             node = data[1]
@@ -839,6 +876,35 @@ class TransmitPanel(QGroupBox):
         self.table.insertRow(r)
         self._setup_row_widgets(r)
         self.config_changed.emit()
+
+    def add_message_frame(self, message: cantools.db.Message):
+        """Adds a new row to the transmit table based on a DBC message definition."""
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        self._setup_row_widgets(r)
+        
+        # Now, populate the new row with data from the message object
+        self.table.blockSignals(True)
+        
+        # ID
+        self.table.item(r, 1).setText(f"{message.frame_id:X}")
+        
+        # Type (Std/Ext)
+        self.table.cellWidget(r, 2).setCurrentIndex(1 if message.is_extended_frame else 0)
+        
+        # DLC
+        self.table.item(r, 4).setText(str(message.length))
+        
+        # Data (encode with defaults to get initial values)
+        try:
+            initial_data = message.encode({}, scaling=False, padding=True)
+            self.table.item(r, 5).setText(initial_data.hex(" "))
+        except Exception as e:
+            print(f"Could not encode initial data for {message.name}: {e}")
+            self.table.item(r, 5).setText("00 " * message.length)
+
+        self.table.blockSignals(False)
+        self.config_changed.emit() # Mark project as dirty
 
     def remove_frames(self):
         if self.table.selectionModel().selectedRows():
@@ -1258,6 +1324,7 @@ class CANBusObserver(QMainWindow):
             "properties": properties_dock,
             "transmit": transmit_dock,
         }
+        self.properties_panel.message_to_transmit.connect(self._add_message_to_transmit_panel)
         self.transmit_panel.frame_to_send.connect(self.send_can_frame)
         self.transmit_panel.row_selection_changed.connect(self.on_transmit_row_selected)
         self.signal_transmit_panel.data_encoded.connect(self.on_signal_data_encoded)
@@ -1299,6 +1366,10 @@ class CANBusObserver(QMainWindow):
         self.connection_label = QLabel("Disconnected")
         self.statusBar().addPermanentWidget(self.frame_count_label)
         self.statusBar().addPermanentWidget(self.connection_label)
+    
+    def _add_message_to_transmit_panel(self, message: cantools.db.Message):
+        """Slot to handle request to add a DBC message to the transmit panel."""
+        self.transmit_panel.add_message_frame(message)
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key_Space and self.transmit_panel.table.hasFocus():
@@ -1389,7 +1460,7 @@ class CANBusObserver(QMainWindow):
             asyncio.create_task(self._update_canopen_nodes())
 
         self.transmit_panel.set_dbc_databases(active_dbcs)
-        
+
         row = self.transmit_panel.table.currentRow()
         id_text = ""
         data_hex = ""
