@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QProgressBar,
     QSizePolicy,
-    QComboBox
+    QComboBox,
 )
 from PySide6.QtCore import Signal, Qt
 
@@ -279,7 +279,9 @@ class PDOEditor(QWidget):
 class CANopenNodeEditor(QWidget):
     node_changed = Signal()
 
-    def __init__(self, node: CANopenNode, pdo_manager: PDODatabaseManager, project: Project):
+    def __init__(
+        self, node: CANopenNode, pdo_manager: PDODatabaseManager, project: Project
+    ):
         super().__init__()
         self.node = node
         self.pdo_manager = pdo_manager
@@ -418,9 +420,11 @@ class ObjectDictionaryViewer(QWidget):
     def on_frame_rx_sdo(self, frame: CANFrame):
         """Handle received SDO frames by placing them in the response queue."""
         # Is this response for the current node we are interacting with?
-        if not self.current_node_id or frame.arbitration_id != (
-            0x580 + self.current_node_id
-        ) or frame.channel != self.current_node_channel:
+        if (
+            not self.current_node_id
+            or frame.arbitration_id != (0x580 + self.current_node_id)
+            or frame.channel != self.current_node_channel
+        ):
             return
 
         print(f"Received SDO frame: {frame}")

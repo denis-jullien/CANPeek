@@ -83,9 +83,7 @@ class CANopenNode:
             node_id=data["node_id"],
             enabled=data["enabled"],
             channel=data.get("channel"),
-            pdo_decoding_enabled=data.get(
-                "pdo_decoding_enabled", True
-            ),
+            pdo_decoding_enabled=data.get("pdo_decoding_enabled", True),
         )
 
 
@@ -100,13 +98,12 @@ class Connection:
         if not self.name:
             self.name = "vcan0"
         if not self.config:
-            if self.interface == 'virtual':
-                self.config['channel'] = self.name
+            if self.interface == "virtual":
+                self.config["channel"] = self.name
 
     def to_dict(self) -> Dict:
         serializable_config = {
-            k: v.name if isinstance(v, enum.Enum) else v
-            for k, v in self.config.items()
+            k: v.name if isinstance(v, enum.Enum) else v for k, v in self.config.items()
         }
         return {
             "name": self.name,
@@ -116,7 +113,9 @@ class Connection:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict, interface_manager: CANInterfaceManager) -> "Connection":
+    def from_dict(
+        cls, data: Dict, interface_manager: CANInterfaceManager
+    ) -> "Connection":
         interface = data.get("interface", "virtual")
         config_from_file = data.get("config", {})
         hydrated_config = {}
@@ -178,7 +177,8 @@ class Project:
         return {
             "connections": [c.to_dict() for c in self.connections],
             "dbcs": [
-                {"path": str(dbc.path), "enabled": dbc.enabled, "channel": dbc.channel} for dbc in self.dbcs
+                {"path": str(dbc.path), "enabled": dbc.enabled, "channel": dbc.channel}
+                for dbc in self.dbcs
             ],
             "filters": [asdict(f) for f in self.filters],
             "canopen_enabled": self.canopen_enabled,
@@ -190,17 +190,22 @@ class Project:
         project = cls()
 
         if "can_interface" in data:
-            conn = Connection.from_dict({
-                "name": data["can_interface"],
-                "interface": data["can_interface"],
-                "config": data.get("can_config", {}),
-                "enabled": True
-            }, interface_manager)
+            conn = Connection.from_dict(
+                {
+                    "name": data["can_interface"],
+                    "interface": data["can_interface"],
+                    "config": data.get("can_config", {}),
+                    "enabled": True,
+                },
+                interface_manager,
+            )
             project.connections.append(conn)
 
         for conn_data in data.get("connections", []):
             try:
-                project.connections.append(Connection.from_dict(conn_data, interface_manager))
+                project.connections.append(
+                    Connection.from_dict(conn_data, interface_manager)
+                )
             except Exception as e:
                 print(f"Warning: Could not load connection from project: {e}")
 
@@ -224,7 +229,11 @@ class Project:
                 if not path.exists():
                     raise FileNotFoundError(f"DBC file not found: {path}")
                 db = cantools.database.load_file(path)
-                project.dbcs.append(DBCFile(path, db, dbc_data.get("enabled", True), dbc_data.get("channel")))
+                project.dbcs.append(
+                    DBCFile(
+                        path, db, dbc_data.get("enabled", True), dbc_data.get("channel")
+                    )
+                )
             except Exception as e:
                 print(f"Warning: Could not load DBC from project file: {e}")
         return project
