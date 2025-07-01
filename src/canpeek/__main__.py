@@ -93,6 +93,7 @@ from .data_utils import (
     CANFrameFilter,
     DBCFile,
     CANInterfaceManager,
+    Connection,
 )
 
 from .models import CANTraceModel, CANGroupedModel
@@ -114,58 +115,42 @@ class CANAsyncReader(QObject):
     error_occurred = Signal(str)
     bus_state_changed = Signal(object)
 
-    def __init__(self, interface: str, config: Dict[str, Any]):
+    def __init__(self, connection: Connection):
         super().__init__()
-        self.interface = interface
-        self.config = config
+        self.connection = connection
         self.running = False
         self.bus = None
         self.notifier = None
         self.reader = None
         self.read_task = None
 
-    # @property
-    # def notifier(self):
-    #     """Expose the notifier for canopen-asyncio integration"""
-    #     return self._notifier
-
     async def start_reading(self):
         """Start async CAN reading"""
         try:
             self.bus = can.Bus(
-                interface=self.interface, receive_own_messages=True, **self.config
+                interface=self.connection.interface,
+                receive_own_messages=True,
+                **self.connection.config,
             )
 
-            # Create async reader and notifier
-            # self.reader = can.AsyncBufferedReader()
-
-            # Get the current event loop
             loop = asyncio.get_running_loop()
-
-            # Create notifier with the loop
             self.notifier = can.Notifier(self.bus, [self.rx_messages], loop=loop)
-
             self.running = True
-
-            # Immediately emit the initial bus state
             self.bus_state_changed.emit(self.bus.state)
-
             return True
 
         except Exception as e:
-            self.error_occurred.emit(f"Failed to start CAN reading: {e}")
+            self.error_occurred.emit(
+                f"Failed to start CAN reading on {self.connection.name}: {e}"
+            )
             return False
 
     def rx_messages(self, msg: can.Message) -> None:
         """Regular callback function. Can also be a coroutine."""
-        # print(msg)
-
         if msg.is_error_frame:
-            # An error frame can indicate a state change.
-            # We can re-check the bus state.
             if self.bus:
                 self.bus_state_changed.emit(self.bus.state)
-            return  # Don't process error frames as regular frames
+            return
 
         frame = CANFrame(
             msg.timestamp,
@@ -173,7 +158,7 @@ class CANAsyncReader(QObject):
             msg.data,
             msg.dlc,
             msg.is_extended_id,
-            msg.is_error_frame,  # TODO : is_error_frame is now handled above, always False
+            msg.is_error_frame,
             msg.is_remote_frame,
             msg.channel,
             msg.is_rx,
@@ -195,7 +180,7 @@ class CANAsyncReader(QObject):
             try:
                 self.bus.shutdown()
             except Exception as e:
-                print(f"Error shutting down CAN bus: {e}")
+                print(f"Error shutting down CAN bus on {self.connection.name}: {e}")
             finally:
                 self.bus = None
 
@@ -208,16 +193,18 @@ class CANAsyncReader(QObject):
             try:
                 self.bus.send(message)
             except Exception as e:
-                self.error_occurred.emit(f"Send error: {e}")
+                self.error_occurred.emit(f"Send error on {self.connection.name}: {e}")
 
 
 # --- UI Classes ---
 class DBCEditor(QWidget):
     message_to_transmit = Signal(object)
+    project_changed = Signal()
 
-    def __init__(self, dbc_file: DBCFile):
+    def __init__(self, dbc_file: DBCFile, project: Project):
         super().__init__()
         self.dbc_file = dbc_file
+        self.project = project
         self.sorted_messages = []  # Store sorted messages for transmission
         self.setup_ui()
 
@@ -225,8 +212,23 @@ class DBCEditor(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         group = QGroupBox(f"DBC Content: {self.dbc_file.path.name}")
+        
+        form_layout = QFormLayout()
+        
+        self.channel_combo = QComboBox()
+        self.channel_combo.addItem("All")
+        self.channel_combo.addItems([conn.name for conn in self.project.connections])
+        if self.dbc_file.channel:
+            self.channel_combo.setCurrentText(self.dbc_file.channel)
+        else:
+            self.channel_combo.setCurrentIndex(0)
+        self.channel_combo.currentTextChanged.connect(self._on_channel_changed)
+        form_layout.addRow("Channel:", self.channel_combo)
+
         layout = QVBoxLayout(group)
+        layout.addLayout(form_layout)
         main_layout.addWidget(group)
+        
         self.table = QTableWidget()
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setColumnCount(4)
@@ -238,6 +240,13 @@ class DBCEditor(QWidget):
 
         self.populate_table()
         self.table.resizeColumnsToContents()
+
+    def _on_channel_changed(self, text: str):
+        if text == "All":
+            self.dbc_file.channel = None
+        else:
+            self.dbc_file.channel = text
+        self.project_changed.emit()
 
     def populate_table(self):
         # Store the sorted list in the instance variable
@@ -279,9 +288,10 @@ class DBCEditor(QWidget):
 class FilterEditor(QWidget):
     filter_changed = Signal()
 
-    def __init__(self, can_filter: CANFrameFilter):
+    def __init__(self, can_filter: CANFrameFilter, project: Project):
         super().__init__()
         self.filter = can_filter
+        self.project = project
         self.setup_ui()
 
     def setup_ui(self):
@@ -292,6 +302,17 @@ class FilterEditor(QWidget):
         main_layout.addWidget(group)
         self.name_edit = QLineEdit(self.filter.name)
         layout.addRow("Name:", self.name_edit)
+
+        self.channel_combo = QComboBox()
+        self.channel_combo.addItem("All")
+        self.channel_combo.addItems([conn.name for conn in self.project.connections])
+        if self.filter.channel:
+            self.channel_combo.setCurrentText(self.filter.channel)
+        else:
+            self.channel_combo.setCurrentIndex(0)
+        self.channel_combo.currentTextChanged.connect(self._update_filter)
+        layout.addRow("Channel:", self.channel_combo)
+
         id_layout = QHBoxLayout()
         self.min_id_edit = QLineEdit(f"0x{self.filter.min_id:X}")
         self.max_id_edit = QLineEdit(f"0x{self.filter.max_id:X}")
@@ -330,6 +351,11 @@ class FilterEditor(QWidget):
 
     def _update_filter(self):
         self.filter.name = self.name_edit.text()
+        channel = self.channel_combo.currentText()
+        if channel == "All":
+            self.filter.channel = None
+        else:
+            self.filter.channel = channel
         try:
             self.filter.min_id = int(self.min_id_edit.text(), 16)
         except ValueError:
@@ -419,19 +445,15 @@ class DocumentationWindow(QDialog):
 class ConnectionEditor(QWidget):
     project_changed = Signal()
 
-    def __init__(self, project: Project, interface_manager: CANInterfaceManager):
+    def __init__(self, connection: Connection, interface_manager: CANInterfaceManager):
         super().__init__()
-        self.project = project
+        self.connection = connection
         self.interface_manager = interface_manager
         self.dynamic_widgets = {}
-
-        # Create a single, persistent instance of the documentation window
         self.docs_window = DocumentationWindow(self)
-
         self.setup_ui()
-        # Initial population based on the project's current state
-        self.interface_combo.setCurrentText(self.project.can_interface)
-        self._rebuild_dynamic_fields(self.project.can_interface)
+        self.interface_combo.setCurrentText(self.connection.interface)
+        self._rebuild_dynamic_fields(self.connection.interface)
 
     def setup_ui(self):
         main_layout = QVBoxLayout(self)
@@ -439,57 +461,49 @@ class ConnectionEditor(QWidget):
         group = QGroupBox("Connection Properties")
         self.form_layout = QFormLayout(group)
         main_layout.addWidget(group)
+
+        self.name_edit = QLineEdit(self.connection.name)
+        self.form_layout.addRow("Name:", self.name_edit)
+
         self.interface_combo = QComboBox()
         self.interface_combo.addItems(self.interface_manager.get_available_interfaces())
         self.form_layout.addRow("Interface:", self.interface_combo)
 
-        # --- NEW: Button to show the documentation in a separate window ---
         self.show_docs_button = QPushButton("Show python-can Documentation...")
         self.form_layout.addRow(self.show_docs_button)
 
-        # --- Dynamic Fields ---
         self.dynamic_fields_container = QWidget()
         self.dynamic_layout = QFormLayout(self.dynamic_fields_container)
         self.dynamic_layout.setContentsMargins(0, 0, 0, 0)
         self.form_layout.addRow(self.dynamic_fields_container)
 
-        # Connect the top-level combo box to its own handler
-
-        # --- Connections and Initial State ---
+        self.name_edit.editingFinished.connect(self._on_name_changed)
         self.show_docs_button.clicked.connect(self._show_documentation_window)
         self.interface_combo.currentTextChanged.connect(self._on_interface_changed)
 
-        # Method to show the documentation dialog
+    def _on_name_changed(self):
+        self.connection.name = self.name_edit.text()
+        self.project_changed.emit()
 
     def _show_documentation_window(self):
         interface_name = self.interface_combo.currentText()
         docstring = self.interface_manager.get_interface_docstring(interface_name)
         self.docs_window.set_content(interface_name, docstring)
         self.docs_window.show()
-        # Bring the window to the front
         self.docs_window.raise_()
         self.docs_window.activateWindow()
 
     def _on_interface_changed(self, interface_name: str):
-        """Called ONLY when the interface dropdown changes."""
-        self.project.can_interface = interface_name
-        # Do NOT clear the config here. We might want to preserve settings
-        # like 'bitrate' if the new interface also has them.
+        self.connection.interface = interface_name
         self._rebuild_dynamic_fields(interface_name)
-        # We must emit project_changed here to update the project tree text
         self.project_changed.emit()
 
     def _rebuild_dynamic_fields(self, interface_name: str):
-        # Fetch the parsed docstring data once
         parsed_doc = self.interface_manager.get_interface_docstring(interface_name)
         param_docs = parsed_doc.get("params", {}) if parsed_doc else {}
-
-        has_docs = bool(
-            parsed_doc and (parsed_doc.get("description") or parsed_doc.get("params"))
-        )
+        has_docs = bool(parsed_doc and (parsed_doc.get("description") or parsed_doc.get("params")))
         self.show_docs_button.setVisible(has_docs)
 
-        # Clear old widgets
         while self.dynamic_layout.count():
             item = self.dynamic_layout.takeAt(0)
             if item.widget():
@@ -498,50 +512,40 @@ class ConnectionEditor(QWidget):
 
         params = self.interface_manager.get_interface_params(interface_name)
         if not params:
-            self._update_project_config()  # Ensure config is empty if no params
+            self._update_project_config()
             return
 
         for name, info in params.items():
-            # Get value from project's config first, fallback to param default
-            current_value = self.project.can_config.get(name, info.get("default"))
+            current_value = self.connection.config.get(name, info.get("default"))
             expected_type = info["type"]
             widget = None
             is_enum = False
             try:
-                if inspect.isclass(expected_type) and issubclass(
-                    expected_type, enum.Enum
-                ):
+                if inspect.isclass(expected_type) and issubclass(expected_type, enum.Enum):
                     is_enum = True
             except TypeError:
                 pass
 
-            # --- Widget Creation ---
             if is_enum:
                 widget = QComboBox()
                 widget.setProperty("enum_class", expected_type)
                 widget.addItems([m.name for m in list(expected_type)])
                 if isinstance(current_value, enum.Enum):
                     widget.setCurrentText(current_value.name)
-                elif isinstance(current_value, str) and current_value in [
-                    m.name for m in expected_type
-                ]:
+                elif isinstance(current_value, str) and current_value in [m.name for m in expected_type]:
                     widget.setCurrentText(current_value)
                 widget.currentTextChanged.connect(self._update_project_config)
             elif expected_type is bool:
                 widget = QCheckBox()
-                widget.setChecked(
-                    bool(current_value) if current_value is not None else False
-                )
+                widget.setChecked(bool(current_value) if current_value is not None else False)
                 widget.toggled.connect(self._update_project_config)
             elif name == "bitrate" and expected_type is int:
                 widget = QSpinBox()
                 widget.setRange(1000, 4000000)
                 widget.setSuffix(" bps")
-                widget.setValue(
-                    int(current_value) if current_value is not None else 125000
-                )
+                widget.setValue(int(current_value) if current_value is not None else 125000)
                 widget.valueChanged.connect(self._update_project_config)
-            else:  # Fallback to QLineEdit
+            else:
                 widget = QLineEdit()
                 widget.setText(str(current_value) if current_value is not None else "")
                 widget.editingFinished.connect(self._update_project_config)
@@ -561,7 +565,6 @@ class ConnectionEditor(QWidget):
                 self.dynamic_layout.addRow(label_text, widget)
                 self.dynamic_widgets[name] = widget
 
-        # Perform an initial update to sync the model, just in case
         self._update_project_config()
 
     def _convert_line_edit_text(self, text: str, param_info: Dict) -> Any:
@@ -578,21 +581,13 @@ class ConnectionEditor(QWidget):
             if expected_type is bool:
                 return text.lower() in ("true", "1", "t", "yes", "y")
         except (ValueError, TypeError):
-            # On parsing error, return None or a sensible default.
-            # Here we return None, the project will use its last known good value.
             return None
 
         return text
 
     def _update_project_config(self):
-        """The single point of truth for updating the project's CAN config."""
-        # Update the project's interface name from the combo box
-        self.project.can_interface = self.interface_combo.currentText()
-
-        params = (
-            self.interface_manager.get_interface_params(self.project.can_interface)
-            or {}
-        )
+        self.connection.interface = self.interface_combo.currentText()
+        params = self.interface_manager.get_interface_params(self.connection.interface) or {}
         new_config = {}
 
         for name, widget in self.dynamic_widgets.items():
@@ -614,19 +609,13 @@ class ConnectionEditor(QWidget):
                     value = self._convert_line_edit_text(widget.text(), param_info)
             except (ValueError, TypeError, KeyError) as e:
                 print(f"Warning: Invalid input for '{name}'. Error: {e}")
-                # Keep the old value from the project's config if input is bad
-                value = self.project.can_config.get(name)
+                value = self.connection.config.get(name)
 
-            # Only add non-None values to the config to keep it clean
             if value is not None:
                 new_config[name] = value
 
-        # Update the project's config dictionary in-place.
-        # This is the key fix!
-        self.project.can_config.clear()
-        self.project.can_config.update(new_config)
-
-        # Notify the rest of the application that the project has changed.
+        self.connection.config.clear()
+        self.connection.config.update(new_config)
         self.project_changed.emit()
 
 
@@ -655,8 +644,8 @@ class PropertiesPanel(QWidget):
     def show_properties(self, item: QTreeWidgetItem):
         self.clear()
         data = item.data(0, Qt.UserRole) if item else None
-        if data == "connection_settings":
-            editor = ConnectionEditor(self.project, self.interface_manager)
+        if isinstance(data, Connection):
+            editor = ConnectionEditor(data, self.interface_manager)
             editor.project_changed.connect(self.explorer.rebuild_tree)
             self.current_widget = editor
         elif data == "canopen_root":
@@ -669,12 +658,12 @@ class PropertiesPanel(QWidget):
             editor.node_changed.connect(self.explorer.project_changed.emit)
             self.current_widget = editor
         elif isinstance(data, CANFrameFilter):
-            editor = FilterEditor(data)
+            editor = FilterEditor(data, self.project)
             editor.filter_changed.connect(lambda: item.setText(0, data.name))
             editor.filter_changed.connect(self.explorer.project_changed.emit)
             self.current_widget = editor
         elif isinstance(data, DBCFile):
-            editor = DBCEditor(data)
+            editor = DBCEditor(data, self.project)
             # Connect the editor's signal to the panel's signal
             editor.message_to_transmit.connect(self.message_to_transmit.emit)
             self.current_widget = editor
@@ -730,29 +719,24 @@ class ProjectExplorer(QWidget):
             if root_item.isExpanded():
                 expanded_items_data.add(root_item.data(0, Qt.UserRole))
         self.tree.clear()
-        self.add_item(
-            None, f"Connection ({self.project.can_interface})", "connection_settings"
-        )
+
+        self.conn_root = self.add_item(None, "Connections", "connections_root")
+        for conn in self.project.connections:
+            self.add_item(self.conn_root, conn.name, conn, conn.enabled)
+
         self.dbc_root = self.add_item(None, "Symbol Files (.dbc)", "dbc_root")
-        [
-            self.add_item(self.dbc_root, dbc.path.name, dbc, dbc.enabled)
-            for dbc in self.project.dbcs
-        ]
+        [self.add_item(self.dbc_root, dbc.path.name, dbc, dbc.enabled) for dbc in self.project.dbcs]
         self.filter_root = self.add_item(None, "Message Filters", "filter_root")
-        [
-            self.add_item(self.filter_root, f.name, f, f.enabled)
-            for f in self.project.filters
-        ]
+        [self.add_item(self.filter_root, f.name, f, f.enabled) for f in self.project.filters]
+        
         self.co_root = self.add_item(None, "CANopen", "canopen_root")
-        [
-            self.add_item(
-                self.co_root,
-                f"{node.path.name} [ID: {node.node_id}]",
-                node,
-                node.enabled,
-            )
-            for node in self.project.canopen_nodes
-        ]
+        bus_items = {}
+        for node in self.project.canopen_nodes:
+            channel = node.channel or "Unassigned"
+            if channel not in bus_items:
+                bus_items[channel] = self.add_item(self.co_root, channel, f"canopen_bus_{channel}")
+            self.add_item(bus_items[channel], f"{node.path.name} [ID: {node.node_id}]", node, node.enabled)
+
         for i in range(self.tree.topLevelItemCount()):
             root_item = self.tree.topLevelItem(i)
             if root_item.data(0, Qt.UserRole) in expanded_items_data:
@@ -762,29 +746,15 @@ class ProjectExplorer(QWidget):
 
     def add_item(self, parent, text, data=None, checked=None):
         item = QTreeWidgetItem(parent or self.tree, [text])
-
         style = self.style()
         icon = None
 
-        if data == "connection_settings":
-            icon = style.standardIcon(
-                QStyle.SP_DriveNetIcon
-            )  # QIcon(QPixmap(":/icons/network-wired.png"))
-        elif data == "dbc_root":
-            icon = style.standardIcon(QStyle.SP_DirIcon)
-        elif data == "filter_root":
+        if data == "connections_root":
+            icon = style.standardIcon(QStyle.SP_DriveNetIcon)
+        elif data == "dbc_root" or data == "filter_root":
             icon = style.standardIcon(QStyle.SP_DirIcon)
         elif data == "canopen_root":
-            # Using a custom icon from your resource file
-            icon = style.standardIcon(
-                QStyle.SP_ComputerIcon
-            )  # style.standardIcon(QStyle.SP_FileDialogListView)#QIcon(QPixmap(":/icons/canopen.png"))
-        # elif isinstance(data, DBCFile):
-        #     icon = style.standardIcon(QStyle.SP_FileIcon)#QIcon(QPixmap(":/icons/document-properties.png"))
-        # elif isinstance(data, CANFrameFilter):
-        #     icon = style.standardIcon(QStyle.SP_DialogApplyButton)#QIcon(QPixmap(":/icons/view-filter.png"))
-        # elif isinstance(data, CANopenNode):
-        #     icon = style.standardIcon(QStyle.SP_FileIcon)#QIcon(QPixmap(":/icons/network-server.png"))
+            icon = style.standardIcon(QStyle.SP_ComputerIcon)
 
         if icon:
             item.setIcon(0, icon)
@@ -798,7 +768,7 @@ class ProjectExplorer(QWidget):
 
     def on_item_changed(self, item, column):
         if data := item.data(0, Qt.UserRole):
-            if isinstance(data, (DBCFile, CANFrameFilter, CANopenNode)):
+            if isinstance(data, (DBCFile, CANFrameFilter, CANopenNode, Connection)):
                 data.enabled = item.checkState(0) == Qt.Checked
             self.project_changed.emit()
 
@@ -806,18 +776,23 @@ class ProjectExplorer(QWidget):
         menu = QMenu()
         item = self.tree.itemAt(position)
         data = item.data(0, Qt.UserRole) if item else None
+
+        if data in [None, "connections_root"]:
+            menu.addAction("Add Connection").triggered.connect(self.add_connection)
         if data in [None, "dbc_root"]:
             menu.addAction("Add Symbol File...").triggered.connect(self.add_dbc)
         if data in [None, "filter_root"]:
             menu.addAction("Add Filter").triggered.connect(self.add_filter)
         if data in [None, "canopen_root"]:
-            menu.addAction("Add Node from EDS/DCF...").triggered.connect(
-                self.add_canopen_node
-            )
+            menu.addAction("Add Node from EDS/DCF...").triggered.connect(self.add_canopen_node)
         if item and item.parent():
             menu.addAction("Remove").triggered.connect(lambda: self.remove_item(item))
         if menu.actions():
             menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    def add_connection(self):
+        self.project.connections.append(Connection(name=f"Connection {len(self.project.connections) + 1}"))
+        self.rebuild_tree()
 
     def add_dbc(self):
         fns, _ = QFileDialog.getOpenFileNames(
@@ -852,6 +827,8 @@ class ProjectExplorer(QWidget):
                 self.project.filters.remove(data)
             elif isinstance(data, CANopenNode):
                 self.project.canopen_nodes.remove(data)
+            elif isinstance(data, Connection):
+                self.project.connections.remove(data)
             self.rebuild_tree()
 
     def add_canopen_node(self):
@@ -882,7 +859,7 @@ class TransmitViewColumn(enum.IntEnum):
 
 
 class TransmitPanel(QWidget):
-    frame_to_send = Signal(object)
+    frame_to_send = Signal(object, str)  # message, connection_name
     row_selection_changed = Signal(int, str, str)  # row, id_text, data_hex
     config_changed = Signal()
 
@@ -890,11 +867,20 @@ class TransmitPanel(QWidget):
         super().__init__()
         self.timers: Dict[int, QTimer] = {}
         self.dbcs: List[object] = []
+        self.connections: Dict[str, CANAsyncReader] = {}
         self.setup_ui()
-        # self.setEnabled(True)
 
     def set_dbc_databases(self, dbs):
         self.dbcs = dbs
+
+    def set_connections(self, connections: Dict[str, CANAsyncReader]):
+        self.connections = connections
+        self.connection_combo.clear()
+        if connections:
+            self.connection_combo.addItems(sorted(connections.keys()))
+            self.connection_combo.setEnabled(True)
+        else:
+            self.connection_combo.setEnabled(False)
 
     def get_message_from_id(self, can_id):
         for db in self.dbcs:
@@ -908,20 +894,23 @@ class TransmitPanel(QWidget):
         ctrl_layout = QHBoxLayout()
         self.add_btn = QPushButton("Add")
         self.rem_btn = QPushButton("Remove")
+        self.connection_combo = QComboBox()
+        self.connection_combo.setEnabled(False)
+        self.connection_combo.setToolTip("Select the connection for sending frames")
+
         ctrl_layout.addWidget(self.add_btn)
         ctrl_layout.addWidget(self.rem_btn)
         ctrl_layout.addStretch()
+        ctrl_layout.addWidget(QLabel("Send on:"))
+        ctrl_layout.addWidget(self.connection_combo)
         layout.addLayout(ctrl_layout)
 
         self.table = QTableWidget()
         self.table.setColumnCount(9)
-
-        # Create headers from the Enum
         headers = [col.name.replace("_", " ").title() for col in TransmitViewColumn]
         headers[TransmitViewColumn.ID] = "ID(hex)"
         headers[TransmitViewColumn.DATA] = "Data(hex)"
         self.table.setHorizontalHeaderLabels(headers)
-
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -1088,6 +1077,10 @@ class TransmitPanel(QWidget):
         ]
 
     def send_from_row(self, r):
+        connection_name = self.connection_combo.currentText()
+        if not connection_name:
+            QMessageBox.warning(self, "No Connection", "Please select a connection to send from.")
+            return
         try:
             message_to_send = can.Message(
                 arbitration_id=int(
@@ -1105,7 +1098,7 @@ class TransmitPanel(QWidget):
                     self.table.item(r, TransmitViewColumn.DATA).text().replace(" ", "")
                 ),
             )
-            self.frame_to_send.emit(message_to_send)
+            self.frame_to_send.emit(message_to_send, connection_name)
 
             sent_item = self.table.item(r, TransmitViewColumn.SENT)
             current_count = int(sent_item.text())
@@ -1351,6 +1344,9 @@ class CANBusObserver(QMainWindow):
         self.project = Project()
         self.current_project_path: Optional[Path] = None
         self.project_dirty = False
+        self.can_readers: Dict[str, CANAsyncReader] = {}
+        self.bus_states: Dict[str, can.BusState] = {}
+
         file_loggers = {
             "ASCWriter": ".asc",
             "BLFWriter": ".blf",
@@ -1376,7 +1372,6 @@ class CANBusObserver(QMainWindow):
         self.grouped_proxy_model = QSortFilterProxyModel()
         self.grouped_proxy_model.setSourceModel(self.grouped_model)
         self.grouped_proxy_model.setSortRole(Qt.UserRole)
-        self.can_reader = None
         self.frame_batch = []
         self.all_received_frames = []
         self.setDockOptions(QMainWindow.AnimatedDocks | QMainWindow.AllowNestedDocks)
@@ -1399,10 +1394,7 @@ class CANBusObserver(QMainWindow):
         icon = QIcon(QPixmap(":/icons/canpeek.png"))
         self.setWindowIcon(icon)
 
-        # Connect project changes to PDO cache invalidation
-        self.project_explorer.project_changed.connect(
-            self._on_project_structure_changed
-        )
+        self.project_explorer.project_changed.connect(self._on_project_structure_changed)
 
     def setup_actions(self):
         style = self.style()
@@ -1561,9 +1553,7 @@ class CANBusObserver(QMainWindow):
         self.statusBar().showMessage("Ready")
         self.frame_count_label = QLabel("Frames: 0")
         self.connection_label = QLabel("Disconnected")
-        self.bus_state_label = QLabel("Bus State: N/A")  # Add the new label
-
-        # Add the widgets to the status bar
+        self.bus_state_label = QLabel("Bus States: N/A")
         self.statusBar().addPermanentWidget(self.bus_state_label)
         self.statusBar().addPermanentWidget(self.frame_count_label)
         self.statusBar().addPermanentWidget(self.connection_label)
@@ -1581,15 +1571,8 @@ class CANBusObserver(QMainWindow):
 
     def _process_frame(self, frame: CANFrame):
         try:
-            # if self.project.canopen_enabled:
-            #     self.canopen_network.notify(
-            #         frame.arbitration_id, frame.data, frame.timestamp
-            #     )
-            #     if frame.arbitration_id == 0x58C:
-            #         print("Received SDO frame:", frame)
             self.frame_batch.append(frame)
             if frame.arbitration_id & 0x580 == 0x580:
-                # This is an SDO frame, process it
                 self.object_dictionary_viewer.frame_rx_sdo.emit(frame)
         except Exception as e:
             print(f"Error processing frame: {e}")
@@ -1655,9 +1638,7 @@ class CANBusObserver(QMainWindow):
             active_dbcs, self.project.canopen_enabled, pdo_databases
         )
 
-        # If already connected, re-add nodes asynchronously
-        if self.canopen_network and self.can_reader and self.can_reader.bus:
-            # Schedule async node update
+        if self.can_readers:
             asyncio.create_task(self._update_canopen_nodes())
 
         self.transmit_panel.set_dbc_databases(active_dbcs)
@@ -1678,7 +1659,6 @@ class CANBusObserver(QMainWindow):
 
         self.properties_panel.project = self.project
 
-        # Update object dictionary viewer
         current_item = self.project_explorer.tree.currentItem()
         if current_item:
             self.on_project_explorer_selection_changed(current_item, None)
@@ -1693,10 +1673,9 @@ class CANBusObserver(QMainWindow):
             can_id = int(id_text, 16)
             message = self.transmit_panel.get_message_from_id(can_id)
             if message:
-                # Pass the existing data_hex to the populate method
                 self.signal_transmit_panel.populate(message, data_hex)
         except ValueError:
-            pass  # Invalid ID text, just clear the panel
+            pass
 
     def on_signal_data_encoded(self, data_bytes):
         if (row := self.transmit_panel.table.currentRow()) >= 0:
@@ -1707,10 +1686,8 @@ class CANBusObserver(QMainWindow):
         if not self.canopen_network:
             return
 
-        # Clear existing nodes
         self.canopen_network.nodes.clear()
 
-        # Re-add nodes if CANopen is enabled
         if self.project.canopen_enabled:
             for node_config in self.project.canopen_nodes:
                 if node_config.enabled and node_config.path.exists():
@@ -1730,88 +1707,98 @@ class CANBusObserver(QMainWindow):
 
         data = current.data(0, Qt.UserRole)
         if isinstance(data, CANopenNode) and data.enabled:
-            # CANopen node selected
             asyncio.create_task(self.object_dictionary_viewer.set_node(data))
         else:
-            # Non-CANopen item selected
             self.object_dictionary_viewer.clear_node()
 
     def _update_bus_state(self, state: can.BusState):
         """Updates the status bar with the current CAN bus state."""
-        state_text = f"Bus State: {state.name.title()}"
-        style_sheet = ""
-
-        if state == can.BusState.ACTIVE:
-            style_sheet = "color: #4CAF50;"  # A nice green
-        elif state == can.BusState.PASSIVE:
-            style_sheet = "color: #FFC107;"  # A nice amber/yellow
-        elif state == can.BusState.ERROR:
-            style_sheet = "color: #F44336;"  # A nice red
-
-        self.bus_state_label.setText(state_text)
-        self.bus_state_label.setStyleSheet(style_sheet)
-
-    async def connect_can(self):
-        self.can_reader = CANAsyncReader(
-            self.project.can_interface, self.project.can_config
-        )
-        self.can_reader.frame_received.connect(self._process_frame)
-        self.can_reader.error_occurred.connect(self.on_can_error)
-        self.can_reader.bus_state_changed.connect(
-            self._update_bus_state
-        )  # Add this line
-
-        if not await self.can_reader.start_reading():
-            self.can_reader = None
-            self.on_can_error("Failed to establish bus object in reader thread.")
+        sender_reader = self.sender()
+        if not isinstance(sender_reader, CANAsyncReader):
             return
 
-        self.connect_action.setEnabled(False)
-        self.disconnect_action.setEnabled(True)
-        # self.transmit_panel.setEnabled(True)
-        config_str = ", ".join(f"{k}={v}" for k, v in self.project.can_config.items())
-        self.connection_label.setText(
-            f"Connected ({self.project.can_interface}: {config_str})"
-        )
+        conn_name = sender_reader.connection.name
+        self.bus_states[conn_name] = state
+
+        state_strings = []
+        for name, s in sorted(self.bus_states.items()):
+            state_strings.append(f"<span style='color: {self._get_state_color(s)};'>{name}: {s.name.title()}</span>")
+
+        self.bus_state_label.setText("Bus States: " + ", ".join(state_strings))
+
+    def _get_state_color(self, state: can.BusState) -> str:
+        if state == can.BusState.ACTIVE:
+            return "#4CAF50"  # Green
+        elif state == can.BusState.PASSIVE:
+            return "#FFC107"  # Amber
+        elif state == can.BusState.ERROR:
+            return "#F44336"  # Red
+        return "#FFFFFF"  # White/Default
+
+    async def connect_can(self):
+        active_connections = self.project.get_active_connections()
+        if not active_connections:
+            QMessageBox.information(self, "No Connections", "No active connections to start.")
+            return
+
+        connect_tasks = [self._connect_single(conn) for conn in active_connections]
+        results = await asyncio.gather(*connect_tasks)
+
+        successful_connections = [conn for conn, res in zip(active_connections, results) if res]
+
+        if successful_connections:
+            self.connect_action.setEnabled(False)
+            self.disconnect_action.setEnabled(True)
+            self.transmit_panel.set_connections(self.can_readers)
+
+            connected_names = [conn.name for conn in successful_connections]
+            self.connection_label.setText(f"Connected to: {', '.join(connected_names)}")
+        else:
+            self.connection_label.setText("Connection Failed")
+
         if current_item := self.project_explorer.tree.currentItem():
             self.properties_panel.show_properties(current_item)
 
-    # Update the disconnect_can method (around line 2715)
+    async def _connect_single(self, connection: Connection) -> bool:
+        if connection.name in self.can_readers:
+            return True  # Already connected
+
+        reader = CANAsyncReader(connection)
+        reader.frame_received.connect(self._process_frame)
+        reader.error_occurred.connect(self.on_can_error)
+        reader.bus_state_changed.connect(self._update_bus_state)
+
+        if await reader.start_reading():
+            self.can_readers[connection.name] = reader
+            return True
+        else:
+            reader.deleteLater()
+            return False
+
     def disconnect_can(self):
-        if self.canopen_network:
-            # Disconnect nodes
-            for node in self.canopen_network.nodes.values():
-                if hasattr(node, "pdo"):
-                    node.pdo.stop()
-
-            # The network will be cleaned up when we stop the reader
-            self.canopen_network = None
-
-        if self.can_reader:
-            self.can_reader.stop_reading()
-            self.can_reader.deleteLater()
-            self.can_reader = None
+        for reader in self.can_readers.values():
+            reader.stop_reading()
+            reader.deleteLater()
+        self.can_readers.clear()
+        self.bus_states.clear()
 
         self.connect_action.setEnabled(True)
         self.disconnect_action.setEnabled(False)
-        # self.transmit_panel.setEnabled(False)
         self.transmit_panel.stop_all_timers()
+        self.transmit_panel.set_connections(self.can_readers)
         self.connection_label.setText("Disconnected")
-
-        # bus state display
-        self.bus_state_label.setText("Bus State: N/A")
-        self.bus_state_label.setStyleSheet("")  # Clear custom color
+        self.bus_state_label.setText("Bus States: N/A")
 
         if current_item := self.project_explorer.tree.currentItem():
             self.properties_panel.show_properties(current_item)
 
-    # Update the send_can_frame method (around line 2732)
-    def send_can_frame(self, message: can.Message):
-        if self.can_reader and self.can_reader.running:
-            self.can_reader.send_frame(message)
+    def send_can_frame(self, message: can.Message, connection_name: str):
+        if reader := self.can_readers.get(connection_name):
+            if reader.running:
+                reader.send_frame(message)
         else:
             QMessageBox.warning(
-                self, "Not Connected", "Connect to a CAN bus before sending frames."
+                self, "Not Connected", f"Connection '{connection_name}' is not active."
             )
 
     def on_can_error(self, error_message: str):
@@ -1977,6 +1964,8 @@ class CANBusObserver(QMainWindow):
         self.disconnect_can()
         self.clear_data()
         self.project = Project()
+        # Add a default connection when a new project is created
+        self.project.connections.append(Connection())
         self.current_project_path = None
         self.pdo_manager.invalidate_cache()  # Clear PDO cache
         self.project_explorer.set_project(self.project)
@@ -1997,7 +1986,16 @@ class CANBusObserver(QMainWindow):
                 data = json.load(f)
             self.disconnect_can()
             self.clear_data()
-            self.pdo_manager.invalidate_cache()  # Clear PDO cache
+            self.pdo_manager.invalidate_cache()
+            self.project = Project.from_dict(data, self.interface_manager)
+            self.current_project_path = Path(path)
+            self.project_explorer.set_project(self.project)
+            self.transmit_panel.set_config(data.get("transmit_config", []))
+            self._add_to_recent_projects(self.current_project_path)
+            self._set_dirty(False)
+            self.statusBar().showMessage(f"Project {self.current_project_path.name} loaded")
+        except Exception as e:
+            QMessageBox.critical(self, "Project Load Error", f"Failed to load project: {e}")
             self.project = Project.from_dict(
                 data.get("project", {}), self.interface_manager
             )
@@ -2017,35 +2015,32 @@ class CANBusObserver(QMainWindow):
             self._new_project()
 
     def _save_project(self) -> bool:
-        return (
-            self._save_project_as()
-            if not self.current_project_path
-            else self._save_project_to_path(self.current_project_path)
-        )
+        if not self.current_project_path:
+            return self._save_project_as()
+        return self._save_project_to_path(self.current_project_path)
 
     def _save_project_as(self) -> bool:
-        dialog = QFileDialog(
+        path, _ = QFileDialog.getSaveFileName(
             self, "Save Project As", "", "CANPeek Project (*.cpeek);;All Files (*)"
         )
-        dialog.setAcceptMode(QFileDialog.AcceptSave)
-        dialog.setDefaultSuffix("cpeek")
-        if dialog.exec():
-            self.current_project_path = Path(dialog.selectedFiles()[0])
-            return self._save_project_to_path(self.current_project_path)
-        return False
+        if not path:
+            return False
+        self.current_project_path = Path(path)
+        self._add_to_recent_projects(self.current_project_path)
+        return self._save_project_to_path(self.current_project_path)
 
     def _save_project_to_path(self, path: Path) -> bool:
         try:
+            data = self.project.to_dict()
+            data["transmit_config"] = self.transmit_panel.get_config()
             with open(path, "w") as f:
-                json.dump(
-                    {
-                        "project": self.project.to_dict(),
-                        "transmit_config": self.transmit_panel.get_config(),
-                    },
-                    f,
-                    indent=2,
-                )
+                json.dump(data, f, indent=4)
             self._set_dirty(False)
+            self.statusBar().showMessage(f"Project saved to {path.name}")
+            return True
+        except Exception as e:
+            QMessageBox.critical(self, "Project Save Error", f"Failed to save project: {e}")
+            return False
             self.statusBar().showMessage(f"Project saved to '{path.name}'.")
             self._add_to_recent_projects(path)
             return True

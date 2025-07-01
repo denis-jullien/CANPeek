@@ -7,7 +7,7 @@ import enum
 
 from PySide6.QtCore import QAbstractItemModel, QAbstractTableModel, QModelIndex, Qt
 
-from .data_utils import CANFrame
+from .data_utils import CANFrame, DBCFile
 from .co.canopen_utils import CANopenDecoder
 
 # --- Data Structures ---
@@ -46,7 +46,7 @@ class DecodingResult:
 
 def get_structured_decodings(
     frame: CANFrame,
-    dbc_databases: List[cantools.db.Database],
+    dbc_files: List[DBCFile],
     pdo_databases: List[cantools.db.Database],
     canopen_enabled: bool,
 ) -> List[DecodingResult]:
@@ -83,8 +83,9 @@ def get_structured_decodings(
             pass  # Frame not in this database
 
     # 1. Process regular DBCs
-    for db in dbc_databases:
-        _process_database(db, "DBC")
+    for dbc in dbc_files:
+        if dbc.channel is None or dbc.channel == frame.channel:
+            _process_database(dbc.database, "DBC")
 
     # 2. Process CANopen PDO databases
     for db in pdo_databases:
@@ -112,12 +113,13 @@ class TraceViewColumn(enum.IntEnum):
     """Defines the columns for the CANTraceModel."""
 
     TIMESTAMP = 0
-    DIRECTION = 1
-    ID = 2
-    TYPE = 3
-    DLC = 4
-    DATA = 5
-    DECODED = 6
+    CHANNEL = 1
+    DIRECTION = 2
+    ID = 3
+    TYPE = 4
+    DLC = 5
+    DATA = 6
+    DECODED = 7
 
 
 class CANTraceModel(QAbstractTableModel):
@@ -129,7 +131,7 @@ class CANTraceModel(QAbstractTableModel):
         self.headers[TraceViewColumn.DIRECTION] = "Rx/Tx"  # Custom header name
 
         self.frames: deque[CANFrame] = deque(maxlen=10000)
-        self.dbc_databases: List[cantools.db.Database] = []
+        self.dbc_files: List[DBCFile] = []
         self.pdo_databases: List[cantools.db.Database] = []
         self.canopen_enabled = True
 
@@ -141,11 +143,11 @@ class CANTraceModel(QAbstractTableModel):
 
     def set_config(
         self,
-        dbs: List[cantools.db.Database],
+        dbs: List[DBCFile],
         co_enabled: bool,
         pdo_dbs: List[cantools.db.Database] | None = None,
     ):
-        self.dbc_databases = dbs
+        self.dbc_files = dbs
         self.canopen_enabled = co_enabled
         self.pdo_databases = pdo_dbs or []
         self.layoutChanged.emit()
@@ -173,6 +175,8 @@ class CANTraceModel(QAbstractTableModel):
 
         if col == TraceViewColumn.TIMESTAMP:
             return f"{frame.timestamp:.6f}"
+        if col == TraceViewColumn.CHANNEL:
+            return frame.channel
         if col == TraceViewColumn.DIRECTION:
             return "Rx" if frame.is_rx else "Tx"
         if col == TraceViewColumn.ID:
@@ -193,7 +197,7 @@ class CANTraceModel(QAbstractTableModel):
     def _decode_frame(self, frame: CANFrame) -> str:
         """Formats structured decoding results into a string for the Trace view."""
         structured_results = get_structured_decodings(
-            frame, self.dbc_databases, self.pdo_databases, self.canopen_enabled
+            frame, self.dbc_files, self.pdo_databases, self.canopen_enabled
         )
 
         output_strings = []
@@ -208,11 +212,12 @@ class GroupedViewColumn(enum.IntEnum):
     """Defines the columns for the CANGroupedModel."""
 
     ID = 0
-    NAME = 1
-    DLC = 2
-    DATA = 3
-    CYCLE_TIME = 4
-    COUNT = 5
+    CHANNEL = 1
+    NAME = 2
+    DLC = 3
+    DATA = 4
+    CYCLE_TIME = 5
+    COUNT = 6
 
 
 class CANGroupedModel(QAbstractItemModel):
@@ -221,7 +226,7 @@ class CANGroupedModel(QAbstractItemModel):
         # Programmatically create headers from the Enum, this replaces underscores with spaces for display
         self.headers = [col.name.replace("_", " ").title() for col in GroupedViewColumn]
         self.top_level_items: List[DisplayItem] = []
-        self.dbc_databases: List[cantools.db.Database] = []
+        self.dbc_files: List[DBCFile] = []
         self.pdo_databases: List[cantools.db.Database] = []
         self.canopen_enabled = True
         self.frame_counts = {}
@@ -230,11 +235,11 @@ class CANGroupedModel(QAbstractItemModel):
 
     def set_config(
         self,
-        dbs: List[cantools.db.Database],
+        dbs: List[DBCFile],
         co_enabled: bool,
         pdo_dbs: List[cantools.db.Database] | None = None,
     ):
-        self.dbc_databases = dbs
+        self.dbc_files = dbs
         self.canopen_enabled = co_enabled
         self.pdo_databases = pdo_dbs or []
         self.layoutChanged.emit()
@@ -308,7 +313,7 @@ class CANGroupedModel(QAbstractItemModel):
     def _decode_frame_to_signals(self, frame: CANFrame) -> List[Dict]:
         """Formats structured decoding results into a list of dicts for the Grouped view."""
         structured_results = get_structured_decodings(
-            frame, self.dbc_databases, self.pdo_databases, self.canopen_enabled
+            frame, self.dbc_files, self.pdo_databases, self.canopen_enabled
         )
 
         all_signals = []
@@ -346,18 +351,21 @@ class CANGroupedModel(QAbstractItemModel):
             if not frame.is_rx:  # TODO : make this configurable ?
                 continue  # Skip Tx frames
 
-            can_id = frame.arbitration_id
-            self.frame_counts[can_id] = self.frame_counts.get(can_id, 0) + 1
-            if can_id not in self.timestamps:
-                self.timestamps[can_id] = deque(maxlen=10)
-            self.timestamps[can_id].append(frame.timestamp)
-            if can_id not in self.item_map:
+            # Use a unique key for each channel/ID pair
+            item_key = (frame.channel, frame.arbitration_id)
+
+            self.frame_counts[item_key] = self.frame_counts.get(item_key, 0) + 1
+            if item_key not in self.timestamps:
+                self.timestamps[item_key] = deque(maxlen=10)
+            self.timestamps[item_key].append(frame.timestamp)
+
+            if item_key not in self.item_map:
                 item = DisplayItem(parent=None, data_source=frame)
                 item.row_in_parent = len(self.top_level_items)
                 self.top_level_items.append(item)
-                self.item_map[can_id] = item
+                self.item_map[item_key] = item
             else:
-                item = self.item_map[can_id]
+                item = self.item_map[item_key]
                 item.data_source = frame
                 if item.children_populated:
                     # Mark for refetching on next expansion
@@ -365,14 +373,15 @@ class CANGroupedModel(QAbstractItemModel):
                     item.children_populated = False
         self.endResetModel()
 
-    def _get_message_name(self, can_id: int) -> str:
+    def _get_message_name(self, can_id: int, channel: str) -> str:
         """Helper to get a message name from any available database."""
         # Prioritize regular DBCs
-        for db in self.dbc_databases:
-            try:
-                return db.get_message_by_frame_id(can_id).name
-            except KeyError:
-                pass
+        for db in self.dbc_files:
+            if db.channel is None or db.channel == channel:
+                try:
+                    return db.database.get_message_by_frame_id(can_id).name
+                except KeyError:
+                    pass
         # Then PDO DBCs
         for db in self.pdo_databases:
             try:
@@ -397,13 +406,13 @@ class CANGroupedModel(QAbstractItemModel):
             if item.is_signal:
                 return None
 
-            can_id = item.data_source.arbitration_id
+            item_key = (item.data_source.channel, item.data_source.arbitration_id)
             if col == GroupedViewColumn.ID:
-                return can_id
+                return item.data_source.arbitration_id
             if col == GroupedViewColumn.COUNT:
-                return self.frame_counts.get(can_id, 0)
+                return self.frame_counts.get(item_key, 0)
 
-            return None  # No special sort data for other columns
+            return None
 
         # --- Handle DisplayRole for UI Text ---
         if role != Qt.DisplayRole:
@@ -420,19 +429,22 @@ class CANGroupedModel(QAbstractItemModel):
         else:
             frame: CANFrame = item.data_source
             can_id = frame.arbitration_id
+            item_key = (frame.channel, frame.arbitration_id)
 
             if col == GroupedViewColumn.ID:
                 return f"0x{can_id:X}"
+            if col == GroupedViewColumn.CHANNEL:
+                return frame.channel
             if col == GroupedViewColumn.NAME:
-                return self._get_message_name(can_id)
+                return self._get_message_name(can_id, frame.channel)
             if col == GroupedViewColumn.DLC:
                 return str(frame.dlc)
             if col == GroupedViewColumn.DATA:
                 return frame.data.hex(" ")
             if col == GroupedViewColumn.COUNT:
-                return str(self.frame_counts.get(can_id, 0))
+                return str(self.frame_counts.get(item_key, 0))
             if col == GroupedViewColumn.CYCLE_TIME:
-                ts_list = self.timestamps.get(can_id, [])
+                ts_list = self.timestamps.get(item_key, [])
                 if len(ts_list) > 1:
                     cycle_times = [
                         ts_list[i] - ts_list[i - 1] for i in range(1, len(ts_list))
