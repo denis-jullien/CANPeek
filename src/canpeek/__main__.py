@@ -653,7 +653,7 @@ class PropertiesPanel(QWidget):
             editor.settings_changed.connect(self.explorer.rebuild_tree)
             self.current_widget = editor
         elif isinstance(data, CANopenNode):
-            editor = CANopenNodeEditor(data, self.main_window.pdo_manager)
+            editor = CANopenNodeEditor(data, self.main_window.pdo_manager, self.project)
             editor.node_changed.connect(self.explorer.rebuild_tree)
             editor.node_changed.connect(self.explorer.project_changed.emit)
             self.current_widget = editor
@@ -737,10 +737,7 @@ class ProjectExplorer(QWidget):
                 bus_items[channel] = self.add_item(self.co_root, channel, f"canopen_bus_{channel}")
             self.add_item(bus_items[channel], f"{node.path.name} [ID: {node.node_id}]", node, node.enabled)
 
-        for i in range(self.tree.topLevelItemCount()):
-            root_item = self.tree.topLevelItem(i)
-            if root_item.data(0, Qt.UserRole) in expanded_items_data:
-                root_item.setExpanded(True)
+        self.tree.expandAll()
         self.tree.blockSignals(False)
         self.project_changed.emit()
 
@@ -839,8 +836,12 @@ class ProjectExplorer(QWidget):
             "CANopen Object Dictionary (*.eds *.dcf);;All Files (*)",
         )
         if fns:
+            default_channel = None
+            if self.project.connections:
+                default_channel = self.project.connections[0].name
+
             for fn in fns:
-                self.project.canopen_nodes.append(CANopenNode(path=Path(fn), node_id=1))
+                self.project.canopen_nodes.append(CANopenNode(path=Path(fn), node_id=1, channel=default_channel))
             self.rebuild_tree()
 
 
@@ -883,9 +884,9 @@ class TransmitPanel(QWidget):
             self.connection_combo.setEnabled(False)
 
     def get_message_from_id(self, can_id):
-        for db in self.dbcs:
+        for db_file in self.dbcs:
             try:
-                return db.get_message_by_frame_id(can_id)
+                return db_file.database.get_message_by_frame_id(can_id)
             except KeyError:
                 continue
 
