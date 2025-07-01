@@ -112,6 +112,7 @@ TRACE_BUFFER_LIMIT = 5000
 class CANAsyncReader(QObject):
     frame_received = Signal(object)
     error_occurred = Signal(str)
+    bus_state_changed = Signal(object)
 
     def __init__(self, interface: str, config: Dict[str, Any]):
         super().__init__()
@@ -146,6 +147,9 @@ class CANAsyncReader(QObject):
 
             self.running = True
 
+            # Immediately emit the initial bus state
+            self.bus_state_changed.emit(self.bus.state)
+
             return True
 
         except Exception as e:
@@ -155,14 +159,24 @@ class CANAsyncReader(QObject):
     def rx_messages(self, msg: can.Message) -> None:
         """Regular callback function. Can also be a coroutine."""
         # print(msg)
+
+        if msg.is_error_frame:
+            # An error frame can indicate a state change.
+            # We can re-check the bus state.
+            if self.bus:
+                self.bus_state_changed.emit(self.bus.state)
+            return  # Don't process error frames as regular frames
+
         frame = CANFrame(
             msg.timestamp,
             msg.arbitration_id,
             msg.data,
             msg.dlc,
             msg.is_extended_id,
-            msg.is_error_frame,
+            msg.is_error_frame, # TODO : is_error_frame is now handled above, always False
             msg.is_remote_frame,
+            msg.channel,
+            msg.is_rx
         )
         self.frame_received.emit(frame)
 
@@ -1459,6 +1473,10 @@ class CANBusObserver(QMainWindow):
         self.statusBar().showMessage("Ready")
         self.frame_count_label = QLabel("Frames: 0")
         self.connection_label = QLabel("Disconnected")
+        self.bus_state_label = QLabel("Bus State: N/A")  # Add the new label
+
+        # Add the widgets to the status bar
+        self.statusBar().addPermanentWidget(self.bus_state_label)
         self.statusBar().addPermanentWidget(self.frame_count_label)
         self.statusBar().addPermanentWidget(self.connection_label)
 
@@ -1630,12 +1648,28 @@ class CANBusObserver(QMainWindow):
             # Non-CANopen item selected
             self.object_dictionary_viewer.clear_node()
 
+    def _update_bus_state(self, state: can.BusState):
+        """Updates the status bar with the current CAN bus state."""
+        state_text = f"Bus State: {state.name.title()}"
+        style_sheet = ""
+
+        if state == can.BusState.ACTIVE:
+            style_sheet = "color: #4CAF50;"  # A nice green
+        elif state == can.BusState.PASSIVE:
+            style_sheet = "color: #FFC107;"  # A nice amber/yellow
+        elif state == can.BusState.ERROR:
+            style_sheet = "color: #F44336;"  # A nice red
+
+        self.bus_state_label.setText(state_text)
+        self.bus_state_label.setStyleSheet(style_sheet)
+
     async def connect_can(self):
         self.can_reader = CANAsyncReader(
             self.project.can_interface, self.project.can_config
         )
         self.can_reader.frame_received.connect(self._process_frame)
         self.can_reader.error_occurred.connect(self.on_can_error)
+        self.can_reader.bus_state_changed.connect(self._update_bus_state)  # Add this line
 
         if not await self.can_reader.start_reading():
             self.can_reader = None
@@ -1673,6 +1707,11 @@ class CANBusObserver(QMainWindow):
         # self.transmit_panel.setEnabled(False)
         self.transmit_panel.stop_all_timers()
         self.connection_label.setText("Disconnected")
+
+        # bus state display
+        self.bus_state_label.setText("Bus State: N/A")
+        self.bus_state_label.setStyleSheet("")  # Clear custom color
+
         if current_item := self.project_explorer.tree.currentItem():
             self.properties_panel.show_properties(current_item)
 

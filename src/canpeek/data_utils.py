@@ -18,6 +18,7 @@ class CANFrame:
     is_error: bool = False
     is_remote: bool = False
     channel: str = "CAN1"
+    is_rx: bool = True
 
 
 @dataclass
