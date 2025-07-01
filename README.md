@@ -1,19 +1,6 @@
 # CANpeek
 
-**CANpeek** is a graphical CAN bus observer and analyzer for Linux and Windows based on Python and Qt.
-
-## 🤖 About the Code (aka “AI Slop” Warning)
-
-This project includes code — and this very README — that were generated almost entirely with large language models (LLMs). Yes, the term “AI slop” was insisted upon.
-
-While the app works and provides a full-featured CAN bus GUI, you may find:
-
-* Some awkward structure and bloated chunks of logic
-* Repetitive patterns that could use refactoring
-* Giant all-in-one files (yes, `main.py`, we’re looking at you)
-* Documentation (including this README) was AI-generated too — so if it sounds polished but slightly overconfident, that’s why.
-
-The goal was rapid prototyping, not pristine architecture. Use it, improve it, rewrite parts of it — all contributions are welcome.
+**CANpeek** is a graphical CAN bus observer and analyzer for Linux and Windows based on Python and Qt with can databases (DBC) support and some CANopen functionality.
 
 ## Features
 
@@ -22,6 +9,7 @@ The goal was rapid prototyping, not pristine architecture. Use it, improve it, r
 - 📊 **Dual View**: Real-time **Trace View** and hierarchical **Grouped View** with signal expansion
 - 📁 **Multi-DBC support** with signal decoding from [cantools](https://github.com/cantools/cantools)
 - 🧠 **CANopen basic decoder** with support for NMT, PDO, SDO, Heartbeat, and more
+- 🧠 **CANopen Object Dictionary** with an SDO client
 - 📦 **CAN frame transmitter**, supporting both raw and signal-based (DBC) messages 
 - 📜 **Log support**: Save/load CAN logs in all [python-can IO formats](https://python-can.readthedocs.io/en/stable/file_io.html)
 
@@ -47,6 +35,19 @@ canpeek
 1. Install [uv](https://github.com/astral-sh/uv)
 2. Run `uv run canpeek --extra interfaces`
 
+## 🤖 About the Code (aka “AI Slop” Warning)
+
+This project includes code — and this very README — that were generated almost entirely with large language models (LLMs). Yes, the term “AI slop” was insisted upon.
+
+While the app works and provides a full-featured CAN bus GUI, you may find:
+
+* Some awkward structure and bloated chunks of logic
+* Repetitive patterns that could use refactoring
+* Giant all-in-one files (yes, `main.py`, we’re looking at you)
+* Documentation (including this README) was AI-generated too — so if it sounds polished but slightly overconfident, that’s why.
+
+The goal was rapid prototyping, not pristine architecture. Use it, improve it, rewrite parts of it — all contributions are welcome.
+
 ## Usage
 
 1. **Connect to a CAN interface**:
@@ -70,8 +71,8 @@ canpeek
 
 CANPeek is designed to be quick & simple, you might find those intersesting:
 
- * [cangaroo](https://github.com/normaldotcom/cangaroo) : rather similar
- * [SavvyCAN](https://github.com/collin80/SavvyCAN) : a much more complete canbus tool
+ * [cangaroo](https://github.com/normaldotcom/cangaroo) : A rather similar project in c++
+ * [SavvyCAN](https://github.com/collin80/SavvyCAN) : A much more complete canbus tool
 
 ## License
 
