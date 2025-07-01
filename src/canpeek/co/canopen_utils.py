@@ -315,7 +315,7 @@ class CANopenNodeEditor(QWidget):
         for conn in self.project.connections:
             self.channel_combo.addItem(conn.name, conn.id)
 
-        self.channel_combo.setCurrentIndex(-1)# Reset to no selection
+        self.channel_combo.setCurrentIndex(-1)  # Reset to no selection
 
         if self.node.connection_id:
             # Find the name corresponding to the stored connection_id
@@ -323,7 +323,6 @@ class CANopenNodeEditor(QWidget):
                 if conn_id == self.node.connection_id:
                     self.channel_combo.setCurrentText(name)
                     break
-
 
         self.channel_combo.currentTextChanged.connect(self._update_node)
         layout.addRow("Channel:", self.channel_combo)
@@ -854,7 +853,7 @@ class ObjectDictionaryViewer(QWidget):
                     arbitration_id=0x600 + self.current_node_id,
                     is_extended_id=False,
                     dlc=8,
-                    data=request
+                    data=request,
                 ),
                 self.current_node_connection_id,
             )

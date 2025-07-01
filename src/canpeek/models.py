@@ -8,7 +8,7 @@ import uuid
 
 from PySide6.QtCore import QAbstractItemModel, QAbstractTableModel, QModelIndex, Qt
 
-from .data_utils import CANFrame, DBCFile, Project
+from .data_utils import CANFrame, DBCFile
 from .co.canopen_utils import CANopenDecoder
 
 # --- Data Structures ---

@@ -18,7 +18,7 @@ class CANFrame:
     is_extended: bool = False
     is_error: bool = False
     is_remote: bool = False
-    bus: str | None = None  
+    bus: str | None = None
     connection_id: Optional[uuid.UUID] = None
     is_rx: bool = True
 
@@ -86,7 +86,9 @@ class CANopenNode:
             path=path,
             node_id=data["node_id"],
             enabled=data["enabled"],
-            connection_id=uuid.UUID(data["connection_id"]) if data.get("connection_id") else None,
+            connection_id=uuid.UUID(data["connection_id"])
+            if data.get("connection_id")
+            else None,
             pdo_decoding_enabled=data.get("pdo_decoding_enabled", True),
         )
 
@@ -190,7 +192,13 @@ class Project:
         return {
             "connections": [c.to_dict() for c in self.connections],
             "dbcs": [
-                {"path": str(dbc.path), "enabled": dbc.enabled, "connection_id": str(dbc.connection_id) if dbc.connection_id else None}
+                {
+                    "path": str(dbc.path),
+                    "enabled": dbc.enabled,
+                    "connection_id": str(dbc.connection_id)
+                    if dbc.connection_id
+                    else None,
+                }
                 for dbc in self.dbcs
             ],
             "filters": [asdict(f) for f in self.filters],
@@ -212,7 +220,7 @@ class Project:
                     "interface": data["can_interface"],
                     "config": data.get("can_config", {}),
                     "enabled": True,
-                    "id": str(uuid.uuid4()) # Assign a new UUID for legacy connections
+                    "id": str(uuid.uuid4()),  # Assign a new UUID for legacy connections
                 },
                 interface_manager,
             )
@@ -251,7 +259,9 @@ class Project:
                         path,
                         db,
                         dbc_data.get("enabled", True),
-                        uuid.UUID(dbc_data["connection_id"]) if dbc_data.get("connection_id") else None
+                        uuid.UUID(dbc_data["connection_id"])
+                        if dbc_data.get("connection_id")
+                        else None,
                     )
                 )
             except Exception as e:

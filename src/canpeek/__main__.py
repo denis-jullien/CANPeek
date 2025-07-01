@@ -232,7 +232,7 @@ class DBCEditor(QWidget):
                         self.channel_combo.setCurrentText(name)
                         break
         else:
-            self.channel_combo.setCurrentIndex(0) # Select "All"
+            self.channel_combo.setCurrentIndex(0)  # Select "All"
 
         self.channel_combo.currentTextChanged.connect(self._on_channel_changed)
         form_layout.addRow("Channel:", self.channel_combo)
@@ -329,7 +329,7 @@ class FilterEditor(QWidget):
                         self.channel_combo.setCurrentText(name)
                         break
         else:
-            self.channel_combo.setCurrentIndex(0) # Select "All"
+            self.channel_combo.setCurrentIndex(0)  # Select "All"
 
         self.channel_combo.currentTextChanged.connect(self._update_filter)
         layout.addRow("Channel:", self.channel_combo)
@@ -507,7 +507,7 @@ class ConnectionEditor(QWidget):
 
         # Disable all dynamic interface settings when connected
         for widget in self.dynamic_widgets.values():
-            if hasattr(widget, 'setEnabled'):
+            if hasattr(widget, "setEnabled"):
                 widget.setEnabled(not connected)
 
     def _on_name_changed(self):
@@ -772,33 +772,49 @@ class ProjectExplorer(QWidget):
 
         self.dbc_root = self.add_item(None, "Symbol Files (.dbc)", "dbc_root")
         for dbc in self.project.dbcs:
-            conn_name = self.project.get_connection_name(dbc.connection_id) if dbc.connection_id else "Unassigned"
+            conn_name = (
+                self.project.get_connection_name(dbc.connection_id)
+                if dbc.connection_id
+                else "Unassigned"
+            )
             self.add_item(
                 self.dbc_root,
                 dbc.path.name,
                 dbc,
                 dbc.enabled,
                 invalid=(dbc.connection_id == -1),
-                tooltip=f"Assigned to: {conn_name}" if dbc.connection_id else "Unassigned",
+                tooltip=f"Assigned to: {conn_name}"
+                if dbc.connection_id
+                else "Unassigned",
             )
 
         self.filter_root = self.add_item(None, "Message Filters", "filter_root")
         for f in self.project.filters:
-            conn_name = self.project.get_connection_name(f.connection_id) if f.connection_id else "Unassigned"
+            conn_name = (
+                self.project.get_connection_name(f.connection_id)
+                if f.connection_id
+                else "Unassigned"
+            )
             self.add_item(
                 self.filter_root,
                 f.name,
                 f,
                 f.enabled,
                 invalid=(f.connection_id == -1),
-                tooltip=f"Assigned to: {conn_name}" if f.connection_id else "Unassigned",
+                tooltip=f"Assigned to: {conn_name}"
+                if f.connection_id
+                else "Unassigned",
             )
 
         self.co_root = self.add_item(None, "CANopen", "canopen_root")
         bus_items = {}
         for node in self.project.canopen_nodes:
-            conn_name = self.project.get_connection_name(node.connection_id) if node.connection_id else None
-            
+            conn_name = (
+                self.project.get_connection_name(node.connection_id)
+                if node.connection_id
+                else None
+            )
+
             if node.connection_id not in bus_items:
                 bus_items[node.connection_id] = self.add_item(
                     self.co_root,
@@ -817,7 +833,9 @@ class ProjectExplorer(QWidget):
         self.tree.blockSignals(False)
         self.project_changed.emit()
 
-    def add_item(self, parent, text, data=None, checked=None, invalid=False, tooltip=None):
+    def add_item(
+        self, parent, text, data=None, checked=None, invalid=False, tooltip=None
+    ):
         item = QTreeWidgetItem(parent or self.tree, [text])
         style = self.style()
         icon = None
@@ -872,7 +890,10 @@ class ProjectExplorer(QWidget):
 
     def add_connection(self):
         self.project.connections.append(
-            Connection(name=f"Connection {len(self.project.connections) + 1}", config={"channel": f"vcan{len(self.project.connections)}"})
+            Connection(
+                name=f"Connection {len(self.project.connections) + 1}",
+                config={"channel": f"vcan{len(self.project.connections)}"},
+            )
         )
         self.rebuild_tree()
 
@@ -948,7 +969,9 @@ class ProjectExplorer(QWidget):
 
             for fn in fns:
                 self.project.canopen_nodes.append(
-                    CANopenNode(path=Path(fn), node_id=1, connection_id=default_connection_id)
+                    CANopenNode(
+                        path=Path(fn), node_id=1, connection_id=default_connection_id
+                    )
                 )
             self.rebuild_tree()
 
@@ -987,9 +1010,13 @@ class TransmitPanel(QWidget):
         self.connection_combo.clear()
         if connections:
             # Sort connections by name for display
-            sorted_connections = sorted(connections.values(), key=lambda reader: reader.connection.name)
+            sorted_connections = sorted(
+                connections.values(), key=lambda reader: reader.connection.name
+            )
             for reader in sorted_connections:
-                self.connection_combo.addItem(reader.connection.name, reader.connection.id)
+                self.connection_combo.addItem(
+                    reader.connection.name, reader.connection.id
+                )
             self.connection_combo.setEnabled(True)
         else:
             self.connection_combo.setEnabled(False)
@@ -1837,7 +1864,10 @@ class CANBusObserver(QMainWindow):
         self.bus_states[conn_id] = state
 
         state_strings = []
-        for conn_id, s in sorted(self.bus_states.items(), key=lambda item: self.project.get_connection_name(item[0])):
+        for conn_id, s in sorted(
+            self.bus_states.items(),
+            key=lambda item: self.project.get_connection_name(item[0]),
+        ):
             conn_name = self.project.get_connection_name(conn_id)
             state_strings.append(
                 f"<span style='color: {self._get_state_color(s)};'>{conn_name}: {s.name.title()}</span>"

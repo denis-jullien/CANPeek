@@ -3,11 +3,9 @@
 import sys
 
 # import json
-import json
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-import asyncio
+from unittest.mock import patch
 
 # Make the app's code importable
 # We'll import it as 'canpeek_app' to avoid confusion with the __main__ block
@@ -26,7 +24,7 @@ from PySide6.QtCore import Qt  # , QTimer
 @pytest.fixture
 def virtual_can_bus():
     """Provides a virtual CAN bus for tests."""
-    bus = can.interface.Bus(interface='virtual', channel='test_channel')
+    bus = can.interface.Bus(interface="virtual", channel="test_channel")
     yield bus
     bus.shutdown()
 
@@ -34,14 +32,20 @@ def virtual_can_bus():
 @pytest.fixture
 def sample_connection():
     """Provides a sample Connection object with a UUID."""
-    return canpeek_app.Connection(name="TestConnection", interface="virtual", config={"channel": "test_channel"})
+    return canpeek_app.Connection(
+        name="TestConnection", interface="virtual", config={"channel": "test_channel"}
+    )
 
 
 @pytest.fixture
 def sample_can_frame(sample_connection):
     """Provides a standard CANFrame for tests."""
     return canpeek_app.CANFrame(
-        timestamp=12345.678, arbitration_id=0x123, data=b"\x11\x22\x33\x44", dlc=4, connection_id=sample_connection.id
+        timestamp=12345.678,
+        arbitration_id=0x123,
+        data=b"\x11\x22\x33\x44",
+        dlc=4,
+        connection_id=sample_connection.id,
     )
 
 
@@ -66,17 +70,23 @@ def sample_project(tmp_path, sample_dbc_content, sample_connection):
     project.connections.append(sample_connection)
     project.dbcs.append(
         canpeek_app.DBCFile(
-            path=dbc_path, database=canpeek_app.cantools.database.load_file(dbc_path), connection_id=sample_connection.id
+            path=dbc_path,
+            database=canpeek_app.cantools.database.load_file(dbc_path),
+            connection_id=sample_connection.id,
         )
     )
-    project.filters.append(canpeek_app.CANFrameFilter(name="Test Filter", connection_id=sample_connection.id))
+    project.filters.append(
+        canpeek_app.CANFrameFilter(
+            name="Test Filter", connection_id=sample_connection.id
+        )
+    )
     return project
 
 
 @pytest.fixture
 def main_window(qtbot):
     """Creates an instance of the main application window."""
-    with patch('src.canpeek.__main__.CANBusObserver.restore_layout'):
+    with patch("src.canpeek.__main__.CANBusObserver.restore_layout"):
         window = canpeek_app.CANBusObserver()
         qtbot.addWidget(window)
         # Prevent the window from showing during tests, which can be slow
@@ -126,16 +136,29 @@ class TestDataStructures:
 
     def test_filter_matches(self, sample_connection):
         """Test the CANFrameFilter logic."""
-        f = canpeek_app.CANFrameFilter(min_id=0x100, max_id=0x1FF, mask=0x7FF, connection_id=sample_connection.id)
-        frame_match = canpeek_app.CANFrame(0, 0x150, b"", 0, connection_id=sample_connection.id)
-        frame_no_match = canpeek_app.CANFrame(0, 0x250, b"", 0, connection_id=sample_connection.id)
-        frame_ext = canpeek_app.CANFrame(0, 0x12345, b"", 0, is_extended=True, connection_id=sample_connection.id)
+        f = canpeek_app.CANFrameFilter(
+            min_id=0x100, max_id=0x1FF, mask=0x7FF, connection_id=sample_connection.id
+        )
+        frame_match = canpeek_app.CANFrame(
+            0, 0x150, b"", 0, connection_id=sample_connection.id
+        )
+        frame_no_match = canpeek_app.CANFrame(
+            0, 0x250, b"", 0, connection_id=sample_connection.id
+        )
+        frame_ext = canpeek_app.CANFrame(
+            0, 0x12345, b"", 0, is_extended=True, connection_id=sample_connection.id
+        )
 
         assert f.matches(frame_match)
         assert not f.matches(frame_no_match)
 
         # Test channel mismatch
-        f_other_conn = canpeek_app.CANFrameFilter(min_id=0x100, max_id=0x1FF, mask=0x7FF, connection_id=canpeek_app.uuid.uuid4())
+        f_other_conn = canpeek_app.CANFrameFilter(
+            min_id=0x100,
+            max_id=0x1FF,
+            mask=0x7FF,
+            connection_id=canpeek_app.uuid.uuid4(),
+        )
         assert not f_other_conn.matches(frame_match)
 
         f.accept_standard = False
@@ -209,7 +232,7 @@ class TestUIModels:
         # )
 
     def test_grouped_model_update(self, sample_can_frame):
-        """Test that the Grouped Model correctly aggregates frames.""" 
+        """Test that the Grouped Model correctly aggregates frames."""
         model = canpeek_app.CANGroupedModel()
         model.update_frames([sample_can_frame, sample_can_frame])
 
@@ -268,11 +291,17 @@ class TestUIWidgets:
         editor.channel_combo.setCurrentText(sample_connection.name)
         assert dbc_file.connection_id == sample_connection.id
 
-    def test_canopen_node_editor_updates_data(self, qtbot, sample_project, sample_connection):
+    def test_canopen_node_editor_updates_data(
+        self, qtbot, sample_project, sample_connection
+    ):
         """Test that editing a field in CANopenNodeEditor updates the underlying CANopenNode object."""
-        node = canpeek_app.CANopenNode(path=Path("test.eds"), node_id=1, connection_id=sample_connection.id)
+        node = canpeek_app.CANopenNode(
+            path=Path("test.eds"), node_id=1, connection_id=sample_connection.id
+        )
         sample_project.canopen_nodes.append(node)
-        editor = canpeek_co_utils.CANopenNodeEditor(node, canpeek_co_utils.PDODatabaseManager(), sample_project)
+        editor = canpeek_co_utils.CANopenNodeEditor(
+            node, canpeek_co_utils.PDODatabaseManager(), sample_project
+        )
         qtbot.addWidget(editor)
 
         # Change node ID
