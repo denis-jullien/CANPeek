@@ -488,6 +488,17 @@ class ConnectionEditor(QWidget):
         self.show_docs_button.clicked.connect(self._show_documentation_window)
         self.interface_combo.currentTextChanged.connect(self._on_interface_changed)
 
+    def set_connected_state(self, connected):
+        """Enable/disable interface field and settings based on connection state"""
+        # Disable interface selection and name editing when connected
+        self.interface_combo.setEnabled(not connected)
+        # self.name_edit.setEnabled(not connected)
+
+        # Disable all dynamic interface settings when connected
+        for widget in self.dynamic_widgets.values():
+            if hasattr(widget, 'setEnabled'):
+                widget.setEnabled(not connected)
+
     def _on_name_changed(self):
         self.connection.name = self.name_edit.text()
         self.project_changed.emit()
@@ -666,6 +677,9 @@ class PropertiesPanel(QWidget):
         if isinstance(data, Connection):
             editor = ConnectionEditor(data, self.interface_manager)
             editor.project_changed.connect(self.explorer.rebuild_tree)
+            # Set the initial connected state when the editor is shown
+            is_connected = data.name in self.main_window.can_readers
+            editor.set_connected_state(is_connected)
             self.current_widget = editor
         elif data == "canopen_root":
             editor = CANopenRootEditor(self.project, self.main_window.canopen_network)
@@ -1850,6 +1864,8 @@ class CANBusObserver(QMainWindow):
 
         if current_item := self.project_explorer.tree.currentItem():
             self.properties_panel.show_properties(current_item)
+            if isinstance(self.properties_panel.current_widget, ConnectionEditor):
+                self.properties_panel.current_widget.set_connected_state(True)
 
     async def _connect_single(self, connection: Connection) -> bool:
         if connection.name in self.can_readers:
@@ -1883,6 +1899,8 @@ class CANBusObserver(QMainWindow):
 
         if current_item := self.project_explorer.tree.currentItem():
             self.properties_panel.show_properties(current_item)
+            if isinstance(self.properties_panel.current_widget, ConnectionEditor):
+                self.properties_panel.current_widget.set_connected_state(False)
 
     def send_can_frame(self, message: can.Message, connection_name: str):
         if reader := self.can_readers.get(connection_name):
@@ -2119,6 +2137,7 @@ class CANBusObserver(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Project As", "", "CANPeek Project (*.cpeek);;All Files (*)"
         )
+        # TODO : add dialog.setDefaultSuffix("cpeek")
         if not path:
             return False
         self.current_project_path = Path(path)
