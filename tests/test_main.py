@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.canpeek import __main__ as canpeek_app
 from src.canpeek.co import canopen_utils as canpeek_co_utils
+import src.canpeek.models as canpeek_models
 
 from PySide6.QtCore import Qt  # , QTimer
 # from PySide6.QtWidgets import QCheckBox, QLineEdit, QPushButton
@@ -140,12 +141,27 @@ class TestUIModels:
         model.set_data([sample_can_frame])
 
         assert model.rowCount() == 1
-        assert model.columnCount() == 6
+        assert model.columnCount() == 7
 
         # Check data formatting
-        assert model.data(model.index(0, 0), Qt.DisplayRole) == "12345.678000"
-        assert model.data(model.index(0, 1), Qt.DisplayRole) == "0x123"
-        assert model.data(model.index(0, 4), Qt.DisplayRole) == "11 22 33 44"
+        assert (
+            model.data(
+                model.index(0, canpeek_models.TraceViewColumn.TIMESTAMP), Qt.DisplayRole
+            )
+            == "12345.678000"
+        )
+        assert (
+            model.data(
+                model.index(0, canpeek_models.TraceViewColumn.ID), Qt.DisplayRole
+            )
+            == "0x123"
+        )
+        assert (
+            model.data(
+                model.index(0, canpeek_models.TraceViewColumn.DATA), Qt.DisplayRole
+            )
+            == "11 22 33 44"
+        )
 
     def test_grouped_model_update(self, sample_can_frame):
         """Test that the Grouped Model correctly aggregates frames."""
@@ -153,11 +169,11 @@ class TestUIModels:
         model.update_frames([sample_can_frame, sample_can_frame])
 
         assert model.rowCount() == 1  # Only one unique ID
-        top_level_index = model.index(0, 0)
+        top_level_index = model.index(0, canpeek_models.GroupedViewColumn.ID)
         assert model.data(top_level_index, Qt.DisplayRole) == "0x123"
 
         # Check the count column
-        count_index = model.index(0, 2)
+        count_index = model.index(0, canpeek_models.GroupedViewColumn.COUNT)
         assert model.data(count_index, Qt.DisplayRole) == "2"
 
 

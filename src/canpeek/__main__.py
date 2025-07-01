@@ -112,6 +112,7 @@ TRACE_BUFFER_LIMIT = 5000
 class CANAsyncReader(QObject):
     frame_received = Signal(object)
     error_occurred = Signal(str)
+    bus_state_changed = Signal(object)
 
     def __init__(self, interface: str, config: Dict[str, Any]):
         super().__init__()
@@ -146,6 +147,9 @@ class CANAsyncReader(QObject):
 
             self.running = True
 
+            # Immediately emit the initial bus state
+            self.bus_state_changed.emit(self.bus.state)
+
             return True
 
         except Exception as e:
@@ -155,14 +159,24 @@ class CANAsyncReader(QObject):
     def rx_messages(self, msg: can.Message) -> None:
         """Regular callback function. Can also be a coroutine."""
         # print(msg)
+
+        if msg.is_error_frame:
+            # An error frame can indicate a state change.
+            # We can re-check the bus state.
+            if self.bus:
+                self.bus_state_changed.emit(self.bus.state)
+            return  # Don't process error frames as regular frames
+
         frame = CANFrame(
             msg.timestamp,
             msg.arbitration_id,
             msg.data,
             msg.dlc,
             msg.is_extended_id,
-            msg.is_error_frame,
+            msg.is_error_frame,  # TODO : is_error_frame is now handled above, always False
             msg.is_remote_frame,
+            msg.channel,
+            msg.is_rx,
         )
         self.frame_received.emit(frame)
 
@@ -681,11 +695,11 @@ class PropertiesPanel(QWidget):
         self.placeholder.hide()
 
 
-class ProjectExplorer(QGroupBox):
+class ProjectExplorer(QWidget):
     project_changed = Signal()
 
     def __init__(self, project: Project, main_window: "CANBusObserver"):
-        super().__init__("Project Explorer")
+        super().__init__()
         self.project = project
         self.main_window = main_window
         self.setup_ui()
@@ -748,6 +762,33 @@ class ProjectExplorer(QGroupBox):
 
     def add_item(self, parent, text, data=None, checked=None):
         item = QTreeWidgetItem(parent or self.tree, [text])
+
+        style = self.style()
+        icon = None
+
+        if data == "connection_settings":
+            icon = style.standardIcon(
+                QStyle.SP_DriveNetIcon
+            )  # QIcon(QPixmap(":/icons/network-wired.png"))
+        elif data == "dbc_root":
+            icon = style.standardIcon(QStyle.SP_DirIcon)
+        elif data == "filter_root":
+            icon = style.standardIcon(QStyle.SP_DirIcon)
+        elif data == "canopen_root":
+            # Using a custom icon from your resource file
+            icon = style.standardIcon(
+                QStyle.SP_ComputerIcon
+            )  # style.standardIcon(QStyle.SP_FileDialogListView)#QIcon(QPixmap(":/icons/canopen.png"))
+        # elif isinstance(data, DBCFile):
+        #     icon = style.standardIcon(QStyle.SP_FileIcon)#QIcon(QPixmap(":/icons/document-properties.png"))
+        # elif isinstance(data, CANFrameFilter):
+        #     icon = style.standardIcon(QStyle.SP_DialogApplyButton)#QIcon(QPixmap(":/icons/view-filter.png"))
+        # elif isinstance(data, CANopenNode):
+        #     icon = style.standardIcon(QStyle.SP_FileIcon)#QIcon(QPixmap(":/icons/network-server.png"))
+
+        if icon:
+            item.setIcon(0, icon)
+
         if data:
             item.setData(0, Qt.UserRole, data)
         if checked is not None:
@@ -826,13 +867,27 @@ class ProjectExplorer(QGroupBox):
             self.rebuild_tree()
 
 
-class TransmitPanel(QGroupBox):
+class TransmitViewColumn(enum.IntEnum):
+    """Defines the columns for the TransmitPanel."""
+
+    ON = 0
+    ID = 1
+    TYPE = 2
+    RTR = 3
+    DLC = 4
+    DATA = 5
+    CYCLE = 6
+    SEND = 7
+    SENT = 8
+
+
+class TransmitPanel(QWidget):
     frame_to_send = Signal(object)
     row_selection_changed = Signal(int, str, str)  # row, id_text, data_hex
     config_changed = Signal()
 
     def __init__(self):
-        super().__init__("Transmit")
+        super().__init__()
         self.timers: Dict[int, QTimer] = {}
         self.dbcs: List[object] = []
         self.setup_ui()
@@ -857,11 +912,16 @@ class TransmitPanel(QGroupBox):
         ctrl_layout.addWidget(self.rem_btn)
         ctrl_layout.addStretch()
         layout.addLayout(ctrl_layout)
+
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
-        self.table.setHorizontalHeaderLabels(
-            ["On", "ID(hex)", "Type", "RTR", "DLC", "Data(hex)", "Cycle", "Send"]
-        )
+        self.table.setColumnCount(9)
+
+        # Create headers from the Enum
+        headers = [col.name.replace("_", " ").title() for col in TransmitViewColumn]
+        headers[TransmitViewColumn.ID] = "ID(hex)"
+        headers[TransmitViewColumn.DATA] = "Data(hex)"
+        self.table.setHorizontalHeaderLabels(headers)
+
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -920,23 +980,43 @@ class TransmitPanel(QGroupBox):
             self.config_changed.emit()
 
     def _setup_row_widgets(self, r):
-        self.table.setItem(r, 1, QTableWidgetItem("100"))
+        # ID
+        self.table.setItem(r, TransmitViewColumn.ID, QTableWidgetItem("100"))
+
+        # TYPE
         combo = QComboBox()
         combo.addItems(["Std", "Ext"])
-        self.table.setCellWidget(r, 2, combo)
-        self.table.setItem(r, 4, QTableWidgetItem("0"))
-        self.table.setItem(r, 5, QTableWidgetItem(""))
-        self.table.setItem(r, 6, QTableWidgetItem("100"))
+        self.table.setCellWidget(r, TransmitViewColumn.TYPE, combo)
+        combo.currentIndexChanged.connect(self.config_changed.emit)
+
+        # RTR
+        cb_rtr = QCheckBox()
+        self.table.setCellWidget(r, TransmitViewColumn.RTR, self._center(cb_rtr))
+        cb_rtr.toggled.connect(self.config_changed.emit)
+
+        # DLC
+        self.table.setItem(r, TransmitViewColumn.DLC, QTableWidgetItem("0"))
+
+        # DATA
+        self.table.setItem(r, TransmitViewColumn.DATA, QTableWidgetItem(""))
+
+        # CYCLE
+        self.table.setItem(r, TransmitViewColumn.CYCLE, QTableWidgetItem("100"))
+
+        # SEND
         btn = QPushButton("Send")
         btn.clicked.connect(partial(self.send_from_row, r))
-        self.table.setCellWidget(r, 7, btn)
+        self.table.setCellWidget(r, TransmitViewColumn.SEND, btn)
+
+        # SENT
+        sent_item = QTableWidgetItem("0")
+        sent_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        self.table.setItem(r, TransmitViewColumn.SENT, sent_item)
+
+        # ON
         cb_on = QCheckBox()
         cb_on.toggled.connect(partial(self._toggle_periodic, r))
-        self.table.setCellWidget(r, 0, self._center(cb_on))
-        cb_rtr = QCheckBox()
-        self.table.setCellWidget(r, 3, self._center(cb_rtr))
-        combo.currentIndexChanged.connect(self.config_changed.emit)
-        cb_rtr.toggled.connect(self.config_changed.emit)
+        self.table.setCellWidget(r, TransmitViewColumn.ON, self._center(cb_on))
 
     def _center(self, w):
         c = QWidget()
@@ -949,54 +1029,53 @@ class TransmitPanel(QGroupBox):
     def _on_item_changed(self, curr, prev):
         if curr and (not prev or curr.row() != prev.row()):
             row = curr.row()
-            # Also get the data from the data column (5)
-            id_text = self.table.item(row, 1).text()
-            data_item = self.table.item(row, 5)
+            id_text = self.table.item(row, TransmitViewColumn.ID).text()
+            data_item = self.table.item(row, TransmitViewColumn.DATA)
             data_hex = data_item.text() if data_item else ""
-
             self.row_selection_changed.emit(row, id_text, data_hex)
 
     def _on_cell_changed(self, r, c):
         self.config_changed.emit()
-        # Also update on data change
-        if c == 1 or c == 5:
-            id_text = self.table.item(r, 1).text()
-            data_item = self.table.item(r, 5)
+        if c == TransmitViewColumn.ID or c == TransmitViewColumn.DATA:
+            id_text = self.table.item(r, TransmitViewColumn.ID).text()
+            data_item = self.table.item(r, TransmitViewColumn.DATA)
             data_hex = data_item.text() if data_item else ""
             self.row_selection_changed.emit(r, id_text, data_hex)
+        elif c == TransmitViewColumn.DATA:
+            self._update_dlc(r)
 
     def _update_dlc(self, r):
         try:
-            self.table.item(r, 4).setText(
-                str(len(bytes.fromhex(self.table.item(r, 5).text().replace(" ", ""))))
+            data_len = len(
+                bytes.fromhex(
+                    self.table.item(r, TransmitViewColumn.DATA).text().replace(" ", "")
+                )
             )
+            self.table.item(r, TransmitViewColumn.DLC).setText(str(data_len))
         except (ValueError, TypeError):
             pass
 
     def update_row_data(self, r, data):
-        # Block signals on the table to prevent re-triggering the change cascade
         self.table.blockSignals(True)
-
-        self.table.item(r, 5).setText(data.hex(" "))
-        self.table.item(r, 4).setText(str(len(data)))
-
+        self.table.item(r, TransmitViewColumn.DATA).setText(data.hex(" "))
+        self.table.item(r, TransmitViewColumn.DLC).setText(str(len(data)))
         self.table.blockSignals(False)
-
-        # We still want to mark the project as dirty after the change
         self.config_changed.emit()
 
     def _toggle_periodic(self, r, state):
         self.config_changed.emit()
         if state:
             try:
-                cycle = int(self.table.item(r, 6).text())
+                cycle = int(self.table.item(r, TransmitViewColumn.CYCLE).text())
                 t = QTimer(self)
                 t.timeout.connect(partial(self.send_from_row, r))
                 t.start(cycle)
                 self.timers[r] = t
             except (ValueError, TypeError):
                 QMessageBox.warning(self, "Bad Cycle", f"Row {r + 1}: bad cycle time.")
-                self.table.cellWidget(r, 0).findChild(QCheckBox).setChecked(False)
+                self.table.cellWidget(r, TransmitViewColumn.ON).findChild(
+                    QCheckBox
+                ).setChecked(False)
         elif r in self.timers:
             self.timers.pop(r).stop()
 
@@ -1010,17 +1089,28 @@ class TransmitPanel(QGroupBox):
 
     def send_from_row(self, r):
         try:
-            self.frame_to_send.emit(
-                can.Message(
-                    arbitration_id=int(self.table.item(r, 1).text(), 16),
-                    is_extended_id=self.table.cellWidget(r, 2).currentIndex() == 1,
-                    is_remote_frame=self.table.cellWidget(r, 3)
-                    .findChild(QCheckBox)
-                    .isChecked(),
-                    dlc=int(self.table.item(r, 4).text()),
-                    data=bytes.fromhex(self.table.item(r, 5).text().replace(" ", "")),
-                )
+            message_to_send = can.Message(
+                arbitration_id=int(
+                    self.table.item(r, TransmitViewColumn.ID).text(), 16
+                ),
+                is_extended_id=self.table.cellWidget(
+                    r, TransmitViewColumn.TYPE
+                ).currentIndex()
+                == 1,
+                is_remote_frame=self.table.cellWidget(r, TransmitViewColumn.RTR)
+                .findChild(QCheckBox)
+                .isChecked(),
+                dlc=int(self.table.item(r, TransmitViewColumn.DLC).text()),
+                data=bytes.fromhex(
+                    self.table.item(r, TransmitViewColumn.DATA).text().replace(" ", "")
+                ),
             )
+            self.frame_to_send.emit(message_to_send)
+
+            sent_item = self.table.item(r, TransmitViewColumn.SENT)
+            current_count = int(sent_item.text())
+            sent_item.setText(str(current_count + 1))
+
         except (ValueError, TypeError) as e:
             QMessageBox.warning(self, "Bad Tx Data", f"Row {r + 1}: {e}")
             self._toggle_periodic(r, False)
@@ -1036,13 +1126,19 @@ class TransmitPanel(QGroupBox):
     def get_config(self) -> List[Dict]:
         return [
             {
-                "on": self.table.cellWidget(r, 0).findChild(QCheckBox).isChecked(),
-                "id": self.table.item(r, 1).text(),
-                "type_idx": self.table.cellWidget(r, 2).currentIndex(),
-                "rtr": self.table.cellWidget(r, 3).findChild(QCheckBox).isChecked(),
-                "dlc": self.table.item(r, 4).text(),
-                "data": self.table.item(r, 5).text(),
-                "cycle": self.table.item(r, 6).text(),
+                "on": self.table.cellWidget(r, TransmitViewColumn.ON)
+                .findChild(QCheckBox)
+                .isChecked(),
+                "id": self.table.item(r, TransmitViewColumn.ID).text(),
+                "type_idx": self.table.cellWidget(
+                    r, TransmitViewColumn.TYPE
+                ).currentIndex(),
+                "rtr": self.table.cellWidget(r, TransmitViewColumn.RTR)
+                .findChild(QCheckBox)
+                .isChecked(),
+                "dlc": self.table.item(r, TransmitViewColumn.DLC).text(),
+                "data": self.table.item(r, TransmitViewColumn.DATA).text(),
+                "cycle": self.table.item(r, TransmitViewColumn.CYCLE).text(),
             }
             for r in range(self.table.rowCount())
         ]
@@ -1055,17 +1151,23 @@ class TransmitPanel(QGroupBox):
         self.table.blockSignals(True)
         for r, row_data in enumerate(config):
             self._setup_row_widgets(r)
-            self.table.cellWidget(r, 0).findChild(QCheckBox).setChecked(
-                row_data.get("on", False)
+            self.table.cellWidget(r, TransmitViewColumn.ON).findChild(
+                QCheckBox
+            ).setChecked(row_data.get("on", False))
+            self.table.item(r, TransmitViewColumn.ID).setText(row_data.get("id", "0"))
+            self.table.cellWidget(r, TransmitViewColumn.TYPE).setCurrentIndex(
+                row_data.get("type_idx", 0)
             )
-            self.table.item(r, 1).setText(row_data.get("id", "0"))
-            self.table.cellWidget(r, 2).setCurrentIndex(row_data.get("type_idx", 0))
-            self.table.cellWidget(r, 3).findChild(QCheckBox).setChecked(
-                row_data.get("rtr", False)
+            self.table.cellWidget(r, TransmitViewColumn.RTR).findChild(
+                QCheckBox
+            ).setChecked(row_data.get("rtr", False))
+            self.table.item(r, TransmitViewColumn.DLC).setText(row_data.get("dlc", "0"))
+            self.table.item(r, TransmitViewColumn.DATA).setText(
+                row_data.get("data", "")
             )
-            self.table.item(r, 4).setText(row_data.get("dlc", "0"))
-            self.table.item(r, 5).setText(row_data.get("data", ""))
-            self.table.item(r, 6).setText(row_data.get("cycle", "100"))
+            self.table.item(r, TransmitViewColumn.CYCLE).setText(
+                row_data.get("cycle", "100")
+            )
         self.table.blockSignals(False)
         self.config_changed.emit()
 
@@ -1388,7 +1490,7 @@ class CANBusObserver(QMainWindow):
 
     def setup_docks(self):
         self.project_explorer = ProjectExplorer(self.project, self)
-        explorer_dock = QDockWidget("Project", self)
+        explorer_dock = QDockWidget("Project Explorer", self)
         explorer_dock.setObjectName("ProjectExplorerDock")
         explorer_dock.setWidget(self.project_explorer)
         self.addDockWidget(Qt.RightDockWidgetArea, explorer_dock)
@@ -1459,6 +1561,10 @@ class CANBusObserver(QMainWindow):
         self.statusBar().showMessage("Ready")
         self.frame_count_label = QLabel("Frames: 0")
         self.connection_label = QLabel("Disconnected")
+        self.bus_state_label = QLabel("Bus State: N/A")  # Add the new label
+
+        # Add the widgets to the status bar
+        self.statusBar().addPermanentWidget(self.bus_state_label)
         self.statusBar().addPermanentWidget(self.frame_count_label)
         self.statusBar().addPermanentWidget(self.connection_label)
 
@@ -1630,12 +1736,30 @@ class CANBusObserver(QMainWindow):
             # Non-CANopen item selected
             self.object_dictionary_viewer.clear_node()
 
+    def _update_bus_state(self, state: can.BusState):
+        """Updates the status bar with the current CAN bus state."""
+        state_text = f"Bus State: {state.name.title()}"
+        style_sheet = ""
+
+        if state == can.BusState.ACTIVE:
+            style_sheet = "color: #4CAF50;"  # A nice green
+        elif state == can.BusState.PASSIVE:
+            style_sheet = "color: #FFC107;"  # A nice amber/yellow
+        elif state == can.BusState.ERROR:
+            style_sheet = "color: #F44336;"  # A nice red
+
+        self.bus_state_label.setText(state_text)
+        self.bus_state_label.setStyleSheet(style_sheet)
+
     async def connect_can(self):
         self.can_reader = CANAsyncReader(
             self.project.can_interface, self.project.can_config
         )
         self.can_reader.frame_received.connect(self._process_frame)
         self.can_reader.error_occurred.connect(self.on_can_error)
+        self.can_reader.bus_state_changed.connect(
+            self._update_bus_state
+        )  # Add this line
 
         if not await self.can_reader.start_reading():
             self.can_reader = None
@@ -1673,6 +1797,11 @@ class CANBusObserver(QMainWindow):
         # self.transmit_panel.setEnabled(False)
         self.transmit_panel.stop_all_timers()
         self.connection_label.setText("Disconnected")
+
+        # bus state display
+        self.bus_state_label.setText("Bus State: N/A")
+        self.bus_state_label.setStyleSheet("")  # Clear custom color
+
         if current_item := self.project_explorer.tree.currentItem():
             self.properties_panel.show_properties(current_item)
 

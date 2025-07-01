@@ -3,6 +3,7 @@ import cantools
 from collections import deque
 from dataclasses import dataclass, field
 from typing import List, Optional, Any, Dict
+import enum
 
 from PySide6.QtCore import QAbstractItemModel, QAbstractTableModel, QModelIndex, Qt
 
@@ -107,10 +108,26 @@ def get_structured_decodings(
 
 
 # --- Models ---
+class TraceViewColumn(enum.IntEnum):
+    """Defines the columns for the CANTraceModel."""
+
+    TIMESTAMP = 0
+    DIRECTION = 1
+    ID = 2
+    TYPE = 3
+    DLC = 4
+    DATA = 5
+    DECODED = 6
+
+
 class CANTraceModel(QAbstractTableModel):
     def __init__(self):
         super().__init__()
-        self.headers = ["Timestamp", "ID", "Type", "DLC", "Data", "Decoded"]
+
+        # Programmatically create headers from the Enum
+        self.headers = [col.name.replace("_", " ").title() for col in TraceViewColumn]
+        self.headers[TraceViewColumn.DIRECTION] = "Rx/Tx"  # Custom header name
+
         self.frames: deque[CANFrame] = deque(maxlen=10000)
         self.dbc_databases: List[cantools.db.Database] = []
         self.pdo_databases: List[cantools.db.Database] = []
@@ -137,7 +154,7 @@ class CANTraceModel(QAbstractTableModel):
         return len(self.frames)
 
     def columnCount(self, p=QModelIndex()):
-        return len(self.headers)
+        return len(TraceViewColumn)
 
     def headerData(self, s, o, r):
         if o == Qt.Horizontal and r == Qt.DisplayRole:
@@ -146,22 +163,31 @@ class CANTraceModel(QAbstractTableModel):
     def data(self, index, role):
         if not index.isValid() or role != Qt.DisplayRole:
             return None
+
         frame = self.frames[index.row()]
-        col = index.column()
-        if col == 0:
+        try:
+            # Convert column index to our symbolic Enum
+            col = TraceViewColumn(index.column())
+        except ValueError:
+            return None
+
+        if col == TraceViewColumn.TIMESTAMP:
             return f"{frame.timestamp:.6f}"
-        if col == 1:
+        if col == TraceViewColumn.DIRECTION:
+            return "Rx" if frame.is_rx else "Tx"
+        if col == TraceViewColumn.ID:
             return f"0x{frame.arbitration_id:X}"
-        if col == 2:
+        if col == TraceViewColumn.TYPE:
             return ("Ext" if frame.is_extended else "Std") + (
                 " RTR" if frame.is_remote else ""
             )
-        if col == 3:
+        if col == TraceViewColumn.DLC:
             return str(frame.dlc)
-        if col == 4:
+        if col == TraceViewColumn.DATA:
             return frame.data.hex(" ")
-        if col == 5:
+        if col == TraceViewColumn.DECODED:
             return self._decode_frame(frame)
+
         return None
 
     def _decode_frame(self, frame: CANFrame) -> str:
@@ -178,10 +204,22 @@ class CANTraceModel(QAbstractTableModel):
         return " || ".join(output_strings)
 
 
+class GroupedViewColumn(enum.IntEnum):
+    """Defines the columns for the CANGroupedModel."""
+
+    ID = 0
+    NAME = 1
+    DLC = 2
+    DATA = 3
+    CYCLE_TIME = 4
+    COUNT = 5
+
+
 class CANGroupedModel(QAbstractItemModel):
     def __init__(self):
         super().__init__()
-        self.headers = ["ID", "Name", "Count", "Cycle Time", "DLC", "Data"]
+        # Programmatically create headers from the Enum, this replaces underscores with spaces for display
+        self.headers = [col.name.replace("_", " ").title() for col in GroupedViewColumn]
         self.top_level_items: List[DisplayItem] = []
         self.dbc_databases: List[cantools.db.Database] = []
         self.pdo_databases: List[cantools.db.Database] = []
@@ -202,7 +240,7 @@ class CANGroupedModel(QAbstractItemModel):
         self.layoutChanged.emit()
 
     def columnCount(self, p=QModelIndex()):
-        return len(self.headers)
+        return len(GroupedViewColumn)
 
     def headerData(self, s, o, r):
         if o == Qt.Horizontal and r == Qt.DisplayRole:
@@ -305,6 +343,9 @@ class CANGroupedModel(QAbstractItemModel):
             return
         self.beginResetModel()
         for frame in frames:
+            if not frame.is_rx:  # TODO : make this configurable ?
+                continue  # Skip Tx frames
+
             can_id = frame.arbitration_id
             self.frame_counts[can_id] = self.frame_counts.get(can_id, 0) + 1
             if can_id not in self.timestamps:
@@ -343,39 +384,54 @@ class CANGroupedModel(QAbstractItemModel):
     def data(self, index, role):
         if not index.isValid():
             return None
-        item: DisplayItem = index.internalPointer()
-        col = index.column()
 
+        item: DisplayItem = index.internalPointer()
+        try:
+            # Convert column index to our symbolic Enum
+            col = GroupedViewColumn(index.column())
+        except ValueError:
+            return None  # Should not happen with a valid index
+
+        # --- Handle UserRole for Sorting ---
         if role == Qt.UserRole:
             if item.is_signal:
                 return None
-            return (
-                item.data_source.arbitration_id
-                if col == 0
-                else self.frame_counts.get(item.data_source.arbitration_id, 0)
-            )
 
+            can_id = item.data_source.arbitration_id
+            if col == GroupedViewColumn.ID:
+                return can_id
+            if col == GroupedViewColumn.COUNT:
+                return self.frame_counts.get(can_id, 0)
+
+            return None  # No special sort data for other columns
+
+        # --- Handle DisplayRole for UI Text ---
         if role != Qt.DisplayRole:
             return None
 
         if item.is_signal:
             sig = item.data_source
-            if col == 0:
+            if col == GroupedViewColumn.ID:
                 return f"  └ {sig['name']}"
-            if col == 1:
-                return sig.get("unit", "")  # Show unit in name column
-            if col == 5:
+            if col == GroupedViewColumn.NAME:
+                return sig.get("unit", "")
+            if col == GroupedViewColumn.DATA:
                 return f"{sig['value']}"
         else:
             frame: CANFrame = item.data_source
             can_id = frame.arbitration_id
-            if col == 0:
+
+            if col == GroupedViewColumn.ID:
                 return f"0x{can_id:X}"
-            if col == 1:
+            if col == GroupedViewColumn.NAME:
                 return self._get_message_name(can_id)
-            if col == 2:
+            if col == GroupedViewColumn.DLC:
+                return str(frame.dlc)
+            if col == GroupedViewColumn.DATA:
+                return frame.data.hex(" ")
+            if col == GroupedViewColumn.COUNT:
                 return str(self.frame_counts.get(can_id, 0))
-            if col == 3:
+            if col == GroupedViewColumn.CYCLE_TIME:
                 ts_list = self.timestamps.get(can_id, [])
                 if len(ts_list) > 1:
                     cycle_times = [
@@ -384,8 +440,5 @@ class CANGroupedModel(QAbstractItemModel):
                     avg_cycle_ms = sum(cycle_times) / len(cycle_times) * 1000
                     return f"{avg_cycle_ms:.1f} ms"
                 return "-"
-            if col == 4:
-                return str(frame.dlc)
-            if col == 5:
-                return frame.data.hex(" ")
+
         return None
