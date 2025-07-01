@@ -160,7 +160,7 @@ class CANAsyncReader(QObject):
             msg.is_extended_id,
             msg.is_error_frame,
             msg.is_remote_frame,
-            msg.channel,
+            self.connection.name,
             msg.is_rx,
         )
         self.frame_received.emit(frame)
