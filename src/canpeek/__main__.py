@@ -105,6 +105,7 @@ if TYPE_CHECKING:
 # --- Data Structures ---
 TRACE_BUFFER_LIMIT = 5000
 
+
 # --- UI Classes ---
 class DBCEditor(QWidget):
     message_to_transmit = Signal(object)
@@ -899,7 +900,7 @@ class TransmitViewColumn(enum.IntEnum):
 
 
 class TransmitPanel(QWidget):
-    frame_to_send = Signal(object, str)  # message, connection_name
+    frame_to_send = Signal(object, object)  # message, connection_id (uuid.UUID)
     row_selection_changed = Signal(int, str, str)  # row, id_text, data_hex
     config_changed = Signal()
 
@@ -914,17 +915,26 @@ class TransmitPanel(QWidget):
         self.dbcs = dbs
 
     def set_connections(self, connections: Dict[uuid.UUID, CANAsyncReader]):
+        """Updates the connection list in the combo box, preserving selection."""
         self.connections = connections
+        current_id = self.connection_combo.currentData()
         self.connection_combo.clear()
+
         if connections:
-            # Sort connections by name for display
             sorted_connections = sorted(
-                connections.values(), key=lambda reader: reader.connection.name
+                connections.values(), key=lambda r: r.connection.name
             )
             for reader in sorted_connections:
                 self.connection_combo.addItem(
                     reader.connection.name, reader.connection.id
                 )
+
+            # Restore selection if possible
+            if current_id and current_id in connections:
+                index = self.connection_combo.findData(current_id)
+                if index != -1:
+                    self.connection_combo.setCurrentIndex(index)
+
             self.connection_combo.setEnabled(True)
         else:
             self.connection_combo.setEnabled(False)
@@ -1692,6 +1702,7 @@ class CANBusObserver(QMainWindow):
         if self.can_readers:
             asyncio.create_task(self._update_canopen_nodes())
 
+        self.transmit_panel.set_connections(self.can_readers)
         self.transmit_panel.set_dbc_databases(active_dbcs)
 
         row = self.transmit_panel.table.currentRow()

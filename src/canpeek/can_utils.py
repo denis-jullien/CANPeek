@@ -1,4 +1,3 @@
-
 from PySide6.QtCore import (
     Signal,
     QObject,
@@ -6,6 +5,7 @@ from PySide6.QtCore import (
 import can
 from .data_utils import Connection, CANFrame
 import asyncio
+
 
 # A "safe" notifier that won't crash on network errors
 class SafeNotifier(can.Notifier):
@@ -50,7 +50,9 @@ class CANAsyncReader(QObject, can.Listener, metaclass=QObjectListenerMeta):
                 **self.connection.config,
             )
 
-            print(f"Opened Bus '{self.connection.name}', State : {self.bus.state}, Info : {self.bus.channel_info}")
+            print(
+                f"Opened Bus '{self.connection.name}', State : {self.bus.state}, Info : {self.bus.channel_info}"
+            )
 
             loop = asyncio.get_running_loop()
             self.notifier = SafeNotifier(self.bus, [self], loop=loop)
