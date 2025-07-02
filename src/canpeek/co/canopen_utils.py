@@ -10,6 +10,34 @@ from typing import Dict, List, Optional
 import canopen
 from .dcf2db import dcf_2_db
 
+DATA_TYPE_MAP = {
+    0x0001: "BOOLEAN",
+    0x0002: "INTEGER8",
+    0x0003: "INTEGER16",
+    0x0010: "INTEGER24",
+    0x0004: "INTEGER32",
+    0x0012: "INTEGER40",
+    0x0013: "INTEGER48",
+    0x0014: "INTEGER56",
+    0x0015: "INTEGER64",
+    0x0005: "UNSIGNED8",
+    0x0006: "UNSIGNED16",
+    0x0016: "UNSIGNED24",
+    0x0007: "UNSIGNED32",
+    0x0018: "UNSIGNED40",
+    0x0019: "UNSIGNED48",
+    0x001A: "UNSIGNED56",
+    0x001B: "UNSIGNED64",
+    0x0008: "REAL32",
+    0x0011: "REAL64",
+    0x0009: "VISIBLE_STRING",
+    0x000A: "OCTET_STRING",
+    0x0B: "UNICODE_STRING",
+    0x0C: "TIME_OF_DAY",
+    0x0D: "TIME_DIFFERENCE",
+    0x000F: "DOMAIN",
+}
+
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -600,7 +628,7 @@ class ObjectDictionaryViewer(QWidget):
                                 f"0x{index:04X}",
                                 f"0x{subindex:02X}",
                                 getattr(subobj, "name", f"Sub_{subindex:02X}"),
-                                str(getattr(subobj, "data_type", "Unknown")),
+                                DATA_TYPE_MAP.get(getattr(subobj, "data_type", None), "Unknown"),
                                 self.get_access_string(
                                     getattr(subobj, "access_type", None)
                                 ),
@@ -621,7 +649,7 @@ class ObjectDictionaryViewer(QWidget):
                         f"0x{index:04X}",
                         "0x00",
                         getattr(obj, "name", f"Object_{index:04X}"),
-                        str(getattr(obj, "data_type", "Unknown")),
+                        DATA_TYPE_MAP.get(getattr(obj, "data_type", None), "Unknown"),
                         self.get_access_string(getattr(obj, "access_type", None)),
                         "-",
                         "-",
@@ -698,7 +726,11 @@ class ObjectDictionaryViewer(QWidget):
             f"0x{subindex:02X}" if subindex is not None else "-"
         )
         self.name_label.setText(getattr(obj, "name", "Unknown"))
-        self.type_label.setText(str(getattr(obj, "data_type", "Unknown")))
+        type = getattr(obj, "data_type", None)
+        if type is not None:
+            self.type_label.setText(DATA_TYPE_MAP.get(type, "Unknown") + f" (0x{type:02X})")
+        else:
+            self.type_label.setText("-")
         self.access_label.setText(
             self.get_access_string(getattr(obj, "access_type", None))
         )
