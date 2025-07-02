@@ -6,9 +6,7 @@ import asyncio
 import struct
 from pathlib import Path
 from typing import Dict, List, Optional
-import uuid
 
-import can
 import canopen
 from .dcf2db import dcf_2_db
 
@@ -511,8 +509,12 @@ class ObjectDictionaryViewer(QWidget):
 
     async def set_node(self, node_config: CANopenNode):
         """Set the current CANopen node to display"""
-        self.sdo_client = SdoClient(node_config.node_id, node_config.connection_id, self.frame_to_send.emit)
-        self.node_info_label.setText(f"CANopen Node {node_config.node_id} - {node_config.path.name}")
+        self.sdo_client = SdoClient(
+            node_config.node_id, node_config.connection_id, self.frame_to_send.emit
+        )
+        self.node_info_label.setText(
+            f"CANopen Node {node_config.node_id} - {node_config.path.name}"
+        )
         try:
             self.load_eds_file(node_config.path)
         except Exception as e:
@@ -740,7 +742,9 @@ class ObjectDictionaryViewer(QWidget):
         self.status_label.setStyleSheet("color: blue;")
 
         try:
-            received_data = await self.sdo_client.read(self.selected_index, self.selected_subindex)
+            received_data = await self.sdo_client.read(
+                self.selected_index, self.selected_subindex
+            )
             try:
                 display_value = received_data.decode("utf-8").rstrip("\x00")
             except UnicodeDecodeError:
@@ -851,7 +855,9 @@ class ObjectDictionaryViewer(QWidget):
             obj_data = selected_item.data(0, Qt.UserRole)
             data_to_send = self._pack_value(value_text, obj_data["obj"])
 
-            await self.sdo_client.write(self.selected_index, self.selected_subindex, data_to_send)
+            await self.sdo_client.write(
+                self.selected_index, self.selected_subindex, data_to_send
+            )
 
             self.status_label.setText("Write successful")
             self.status_label.setStyleSheet("color: green;")

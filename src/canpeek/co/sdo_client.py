@@ -4,17 +4,19 @@ A standalone SDO client for handling SDO communication.
 
 import asyncio
 import struct
-from typing import Optional
 import uuid
 
 import can
 import canopen
 
+
 class SdoAbortedError(Exception):
     """Raised when an SDO transfer is aborted by the server."""
+
     def __init__(self, code):
         self.code = code
         super().__init__(f"SDO Abort Code: 0x{code:08X}")
+
 
 class SdoClient:
     """A client for handling SDO communication."""
@@ -133,7 +135,9 @@ class SdoClient:
             struct.pack_into("<B H B 4s", init_request, 0, cs, index, subindex, payload)
         else:
             cs = 0x21
-            struct.pack_into("<B H B L", init_request, 0, cs, index, subindex, total_size)
+            struct.pack_into(
+                "<B H B L", init_request, 0, cs, index, subindex, total_size
+            )
 
         self.frame_to_send_callback(
             can.Message(

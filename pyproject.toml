@@ -40,6 +40,7 @@ dev-dependencies = [
     "pytest-qt",
     "pytest-mock",
     "ruff>=0.7.1",
+    "pytest-asyncio>=1.0.0",
 ]
 
 [tool.pytest.ini_options]
