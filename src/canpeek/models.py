@@ -212,8 +212,8 @@ class CANTraceModel(QAbstractTableModel):
 class GroupedViewColumn(enum.IntEnum):
     """Defines the columns for the CANGroupedModel."""
 
-    ID = 0
-    BUS = 1
+    BUS = 0
+    ID = 1
     NAME = 2
     DLC = 3
     DATA = 4
@@ -421,9 +421,9 @@ class CANGroupedModel(QAbstractItemModel):
 
         if item.is_signal:
             sig = item.data_source
-            if col == GroupedViewColumn.ID:
-                return f"  └ {sig['name']}"
             if col == GroupedViewColumn.NAME:
+                return f"  └ {sig['name']}"
+            if col == GroupedViewColumn.DLC:
                 return sig.get("unit", "")
             if col == GroupedViewColumn.DATA:
                 return f"{sig['value']}"

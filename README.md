@@ -20,7 +20,7 @@
 
 ## Installation
 
-The interfaces avaibility depends on modules and drivers available on your system.
+The interfaces avaibility depends on modules and drivers available on your system. Watch console output at startup.
 
 ### With pip
 
