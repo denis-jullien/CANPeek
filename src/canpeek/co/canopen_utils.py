@@ -413,7 +413,7 @@ class SdoAbortedError(Exception):
 class ObjectDictionaryViewer(QWidget):
     """CANopen Object Dictionary Viewer with SDO read/write capabilities"""
 
-    frame_to_send = Signal(object, str)
+    frame_to_send = Signal(object, object)  # message, connection_id (uuid.UUID)
     frame_rx_sdo = Signal(object)
 
     def __init__(self):
@@ -904,7 +904,6 @@ class ObjectDictionaryViewer(QWidget):
                             is_extended_id=False,
                             dlc=8,
                             data=bytes([segment_req_cs, 0, 0, 0, 0, 0, 0, 0]),
-                            connection_id=self.current_node_connection_id,
                         ),
                         self.current_node_connection_id,
                     )
@@ -1105,7 +1104,6 @@ class ObjectDictionaryViewer(QWidget):
                     is_extended_id=False,
                     dlc=8,
                     data=init_request,
-                    connection_id=self.current_node_connection_id,
                 ),
                 self.current_node_connection_id,
             )
@@ -1159,7 +1157,6 @@ class ObjectDictionaryViewer(QWidget):
                             arbitration_id=0x600 + self.current_node_id,
                             dlc=8,
                             data=seg_request,
-                            connection_id=self.current_node_connection_id,
                         ),
                         self.current_node_connection_id,
                     )
