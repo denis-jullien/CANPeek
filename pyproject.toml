@@ -1,6 +1,6 @@
 [project]
 name = "canpeek"
-version = "0.5.1"
+version = "0.6.0"
 description = "A simple CAN bus monitoring tool, with dbc support."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,6 +40,7 @@ dev-dependencies = [
     "pytest-qt",
     "pytest-mock",
     "ruff>=0.7.1",
+    "pytest-asyncio>=1.0.0",
 ]
 
 [tool.pytest.ini_options]

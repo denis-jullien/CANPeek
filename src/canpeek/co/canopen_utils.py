@@ -7,7 +7,6 @@ import struct
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import can
 import canopen
 from .dcf2db import dcf_2_db
 
@@ -29,11 +28,13 @@ from PySide6.QtWidgets import (
     QSplitter,
     QProgressBar,
     QSizePolicy,
+    QComboBox,
 )
 from PySide6.QtCore import Signal, Qt
 
 # Use TYPE_CHECKING to avoid circular import errors at runtime
 from ..data_utils import CANFrame, Project, CANopenNode
+from .sdo_client import SdoClient, SdoAbortedError
 
 
 class PDODatabaseManager:
@@ -278,10 +279,13 @@ class PDOEditor(QWidget):
 class CANopenNodeEditor(QWidget):
     node_changed = Signal()
 
-    def __init__(self, node: CANopenNode, pdo_manager: PDODatabaseManager):
+    def __init__(
+        self, node: CANopenNode, pdo_manager: PDODatabaseManager, project: Project
+    ):
         super().__init__()
         self.node = node
         self.pdo_manager = pdo_manager
+        self.project = project
         self.pdo_editor = None
         self.setup_ui()
 
@@ -303,6 +307,24 @@ class CANopenNodeEditor(QWidget):
         self.node_id_spinbox.setValue(self.node.node_id)
         layout.addRow("Node ID:", self.node_id_spinbox)
         self.node_id_spinbox.valueChanged.connect(self._update_node)
+
+        self.channel_combo = QComboBox()
+        # self.channel_combo.addItem("", None)  # "All" option with None as data
+        self.connection_map = {conn.name: conn.id for conn in self.project.connections}
+        for conn in self.project.connections:
+            self.channel_combo.addItem(conn.name, conn.id)
+
+        self.channel_combo.setCurrentIndex(-1)  # Reset to no selection
+
+        if self.node.connection_id:
+            # Find the name corresponding to the stored connection_id
+            for name, conn_id in self.connection_map.items():
+                if conn_id == self.node.connection_id:
+                    self.channel_combo.setCurrentText(name)
+                    break
+
+        self.channel_combo.currentTextChanged.connect(self._update_node)
+        layout.addRow("Channel:", self.channel_combo)
 
         # Add PDO decoding checkbox
         self.pdo_decoding_cb = QCheckBox("Enable PDO Decoding")
@@ -335,6 +357,7 @@ class CANopenNodeEditor(QWidget):
         old_pdo_enabled = self.node.pdo_decoding_enabled
 
         self.node.node_id = self.node_id_spinbox.value()
+        self.node.connection_id = self.channel_combo.currentData()
         self.node.pdo_decoding_enabled = self.pdo_decoding_cb.isChecked()
 
         # Invalidate cache if node ID changed
@@ -377,96 +400,22 @@ class CANopenRootEditor(QWidget):
         self.settings_changed.emit()
 
 
-class SdoAbortedError(Exception):
-    """Raised when an SDO transfer is aborted by the server."""
-
-    def __init__(self, code):
-        self.code = code
-        # You can expand this to map codes to descriptive strings
-        super().__init__(f"SDO Abort Code: 0x{code:08X}")
-
-
 class ObjectDictionaryViewer(QWidget):
     """CANopen Object Dictionary Viewer with SDO read/write capabilities"""
 
-    frame_to_send = Signal(object)
+    frame_to_send = Signal(object, object)  # message, connection_id (uuid.UUID)
     frame_rx_sdo = Signal(object)
 
     def __init__(self):
         super().__init__()
-        self.current_node_id = None
-        # Use a queue to handle multi-frame responses (for segmented transfers)
-        self.sdo_response_queue = asyncio.Queue(maxsize=127)
-        # Use an event to signal cancellation of an ongoing transfer
-        self.sdo_transfer_abort_event = asyncio.Event()
+        self.sdo_client: Optional[SdoClient] = None
         self.setup_ui()
-
         self.frame_rx_sdo.connect(self.on_frame_rx_sdo)
 
-    def on_frame_rx_sdo(self, frame: can.Message):
+    def on_frame_rx_sdo(self, frame: CANFrame):
         """Handle received SDO frames by placing them in the response queue."""
-        # Is this response for the current node we are interacting with?
-        if not self.current_node_id or frame.arbitration_id != (
-            0x580 + self.current_node_id
-        ):
-            return
-
-        print(f"Received SDO frame: {frame}")
-        # Put the frame into the queue for the read_sdo task to process.
-        # Use put_nowait as this handler is not an async function.
-        try:
-            self.sdo_response_queue.put_nowait(frame)
-        except asyncio.QueueFull:
-            # This might happen if frames arrive faster than they are processed.
-            # It's a reasonable safeguard.
-            print("SDO response queue is full, dropping frame.")
-
-        # res_command, res_index, res_subindex = canopen.sdo.constants.SDO_STRUCT.unpack_from(frame.data)
-
-        # res_data = frame.data[4:8]
-
-        # # Check if the index/subindex match the request we sent
-        # if res_index != self.selected_index or res_subindex != self.selected_subindex:
-        #     return  # Response for a different object, ignore
-
-        # # Handle Abort Transfer response
-        # if res_command == 0x80:
-        #     abort_code = struct.unpack_from("<L", res_data)[0]
-        #     exception = SdoAbortedError(abort_code)
-        #     self.sdo_response_future.set_exception(exception)
-        #     return
-
-        # # if res_command & 0xE0 != canopen.sdo.constants.RESPONSE_UPLOAD:
-        # #     print(f"Unexpected response 0x{res_command:02X}")
-
-        # # # Check that the message is for us
-        # # if res_index != index or res_subindex != subindex:
-        # #     raise SdoCommunicationError(
-        # #         f"Node returned a value for {pretty_index(res_index, res_subindex)} instead, "
-        # #         "maybe there is another SDO client communicating "
-        # #         "on the same SDO channel?")
-
-        # exp_data = None
-        # if res_command & canopen.sdo.constants.EXPEDITED:
-        #     # Expedited upload
-        #     if res_command & canopen.sdo.constants.SIZE_SPECIFIED:
-        #         size = 4 - ((res_command >> 2) & 0x3)
-        #         exp_data = res_data[:size]
-        #     else:
-        #         exp_data = res_data
-        #     # self.pos += len(self.exp_data)
-        #     self.sdo_response_future.set_result(exp_data)
-        # else:
-        #     if res_command & canopen.sdo.constants.SIZE_SPECIFIED:
-        #         size, = struct.unpack("<L", res_data)
-        #         print("Using segmented transfer of %d bytes", self.size)
-        #     else:
-        #         print("Using segmented transfer")
-
-        #     err = NotImplementedError("Segmented SDO transfers are not supported.")
-        #     self.sdo_response_future.set_exception(err)
-
-        # print(f"Received SDO response: Index={res_index}, Subindex={res_subindex}, Data={exp_data.hex()}, Size={size}")
+        if self.sdo_client:
+            asyncio.create_task(self.sdo_client.on_frame_rx(frame))
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -560,21 +509,17 @@ class ObjectDictionaryViewer(QWidget):
 
     async def set_node(self, node_config: CANopenNode):
         """Set the current CANopen node to display"""
-        self.current_node_config = node_config
-        self.current_node_id = node_config.node_id
-
-        # Update node info
+        self.sdo_client = SdoClient(
+            node_config.node_id, node_config.connection_id, self.frame_to_send.emit
+        )
         self.node_info_label.setText(
             f"CANopen Node {node_config.node_id} - {node_config.path.name}"
         )
-
-        # Load EDS file for offline viewing
         try:
             self.load_eds_file(node_config.path)
         except Exception as e:
             self.status_label.setText(f"Error loading EDS file: {e}")
             self.status_label.setStyleSheet("color: red;")
-        return
 
     def load_eds_file(self, eds_path: Path):
         """Load EDS/DCF file and populate the object dictionary tree"""
@@ -787,18 +732,8 @@ class ObjectDictionaryViewer(QWidget):
         self.write_btn.setEnabled(False)
 
     async def read_sdo(self):
-        """Read value via SDO, handling both expedited and segmented transfers."""
-        if not self.current_node_id or not hasattr(self, "selected_index"):
+        if not self.sdo_client or not hasattr(self, "selected_index"):
             return
-
-        # Abort any previous transfer that might be running
-        self.sdo_transfer_abort_event.set()
-        await asyncio.sleep(0)  # Allow the other task to process the cancellation
-        self.sdo_transfer_abort_event.clear()
-
-        # Clear the queue of any stale responses from previous operations
-        while not self.sdo_response_queue.empty():
-            self.sdo_response_queue.get_nowait()
 
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 100)
@@ -806,113 +741,10 @@ class ObjectDictionaryViewer(QWidget):
         self.status_label.setText("Reading...")
         self.status_label.setStyleSheet("color: blue;")
 
-        received_data = bytearray()
-
         try:
-            # 1. --- Initiate SDO Upload (Read) ---
-            request = bytearray(8)
-            command_specifier = canopen.sdo.constants.REQUEST_UPLOAD  # CS = 0x40
-            struct.pack_into(
-                "<B H B",
-                request,
-                0,
-                command_specifier,
-                self.selected_index,
-                self.selected_subindex,
+            received_data = await self.sdo_client.read(
+                self.selected_index, self.selected_subindex
             )
-            self.frame_to_send.emit(
-                can.Message(
-                    arbitration_id=0x600 + self.current_node_id,
-                    is_extended_id=False,
-                    dlc=8,
-                    data=request,
-                )
-            )
-
-            # 2. --- Wait for and process the first response ---
-            response_frame = await asyncio.wait_for(
-                self.sdo_response_queue.get(), timeout=2.0
-            )
-
-            # Unpack the initial response
-            cs, index, subindex, payload = struct.unpack_from(
-                "<B H B 4s", response_frame.data
-            )
-
-            # Check for Abort
-            if cs == 0x80:
-                abort_code = struct.unpack_from("<L", payload)[0]
-                raise SdoAbortedError(abort_code)
-
-            # Check for non-matching response
-            if index != self.selected_index or subindex != self.selected_subindex:
-                raise ValueError("Received SDO response for a different object.")
-
-            # Check for Expedited Transfer (successful single-frame read)
-            if cs & 0x02:
-                size_indicated = (cs >> 2) & 0x03
-                num_bytes = 4 - size_indicated
-                received_data = payload[:num_bytes]
-                self.progress_bar.setValue(100)
-
-            # Check for Segmented Transfer Initiation
-            elif cs & 0x01:
-                total_size = struct.unpack_from("<L", payload)[0]
-                self.progress_bar.setValue(5)  # Small progress for initiation
-                toggle_bit = 0
-
-                # 3. --- Loop for subsequent segments ---
-                while len(received_data) < total_size:
-                    if self.sdo_transfer_abort_event.is_set():
-                        raise asyncio.CancelledError("Transfer aborted by user")
-
-                    # Build and send the next segment request
-                    # CS for upload segment request is 0x60, plus the toggle bit
-                    segment_req_cs = 0x60 | (toggle_bit << 4)
-                    self.frame_to_send.emit(
-                        can.Message(
-                            arbitration_id=0x600 + self.current_node_id,
-                            is_extended_id=False,
-                            dlc=8,
-                            data=bytes([segment_req_cs, 0, 0, 0, 0, 0, 0, 0]),
-                        )
-                    )
-
-                    # Wait for the segment response
-                    segment_frame = await asyncio.wait_for(
-                        self.sdo_response_queue.get(), timeout=2.0
-                    )
-                    seg_cs = segment_frame.data[0]
-                    seg_payload = segment_frame.data[1:]
-
-                    # Check for Abort during transfer
-                    if seg_cs == 0x80:
-                        abort_code = struct.unpack_from("<L", segment_frame.data[4:])[0]
-                        raise SdoAbortedError(abort_code)
-
-                    # Protocol check: verify toggle bit
-                    if (seg_cs >> 4) & 1 != toggle_bit:
-                        raise ValueError("SDO protocol error: toggle bit mismatch.")
-
-                    # Extract data from segment
-                    bytes_in_segment = 7 - ((seg_cs >> 1) & 0x7)
-                    received_data.extend(seg_payload[:bytes_in_segment])
-
-                    self.progress_bar.setValue(
-                        int(len(received_data) / total_size * 100)
-                    )
-
-                    # Check for 'last segment' bit
-                    if seg_cs & 0x01:
-                        break
-
-                    # Flip the toggle bit for the next request
-                    toggle_bit ^= 1
-            else:
-                raise ValueError(f"Invalid SDO initiation response (CS=0x{cs:02X})")
-
-            # --- Success ---
-            # Try to decode as string, otherwise show hex
             try:
                 display_value = received_data.decode("utf-8").rstrip("\x00")
             except UnicodeDecodeError:
@@ -935,12 +767,8 @@ class ObjectDictionaryViewer(QWidget):
         except Exception as e:
             self.status_label.setText(f"Read failed: {e}")
             self.status_label.setStyleSheet("color: red;")
-            import traceback
-
-            traceback.print_exc()
         finally:
             self.progress_bar.setVisible(False)
-            self.sdo_transfer_abort_event.clear()
 
     def _pack_value(self, value_str: str, obj: any) -> bytes:
         """Packs a string value into bytes according to the object's data type."""
@@ -1004,8 +832,7 @@ class ObjectDictionaryViewer(QWidget):
         raise TypeError(f"Could not pack value '{value_str}' for data type {data_type}")
 
     async def write_sdo(self):
-        """Write value via SDO, handling both expedited and segmented transfers."""
-        if not self.current_node_id or not hasattr(self, "selected_index"):
+        if not self.sdo_client or not hasattr(self, "selected_index"):
             return
 
         value_text = self.write_value_edit.text().strip()
@@ -1014,13 +841,6 @@ class ObjectDictionaryViewer(QWidget):
             self.status_label.setStyleSheet("color: orange;")
             return
 
-        # Abort any previous transfer and clear the queue
-        self.sdo_transfer_abort_event.set()
-        await asyncio.sleep(0)
-        self.sdo_transfer_abort_event.clear()
-        while not self.sdo_response_queue.empty():
-            self.sdo_response_queue.get_nowait()
-
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -1028,132 +848,21 @@ class ObjectDictionaryViewer(QWidget):
         self.status_label.setStyleSheet("color: blue;")
 
         try:
-            # 1. --- Prepare data and decide on transfer type ---
             selected_item = self.tree.currentItem()
             if not selected_item:
                 raise ValueError("No item selected.")
 
             obj_data = selected_item.data(0, Qt.UserRole)
             data_to_send = self._pack_value(value_text, obj_data["obj"])
-            total_size = len(data_to_send)
 
-            # 2. --- Initiate SDO Download (Write) ---
-            init_request = bytearray(8)
-
-            if total_size <= 4:
-                # --- Expedited Transfer ---
-                # CS = 0x23, 0x27, 0x2B, 0x2F
-                cs = 0x23 | ((4 - total_size) << 2)
-                payload = bytearray(data_to_send)
-                payload.extend(b"\x00" * (4 - total_size))  # Pad to 4 bytes
-                struct.pack_into(
-                    "<B H B 4s",
-                    init_request,
-                    0,
-                    cs,
-                    self.selected_index,
-                    self.selected_subindex,
-                    payload,
-                )
-            else:
-                # --- Segmented Transfer ---
-                cs = 0x21  # size is indicated
-                struct.pack_into(
-                    "<B H B L",
-                    init_request,
-                    0,
-                    cs,
-                    self.selected_index,
-                    self.selected_subindex,
-                    total_size,
-                )
-
-            self.frame_to_send.emit(
-                can.Message(
-                    arbitration_id=0x600 + self.current_node_id,
-                    is_extended_id=False,
-                    dlc=8,
-                    data=init_request,
-                )
+            await self.sdo_client.write(
+                self.selected_index, self.selected_subindex, data_to_send
             )
 
-            # 3. --- Wait for initiation response ---
-            response_frame = await asyncio.wait_for(
-                self.sdo_response_queue.get(), timeout=2.0
-            )
-            cs, index, subindex, _ = struct.unpack_from(
-                "<B H B 4s", response_frame.data
-            )
-
-            if cs == 0x80:
-                abort_code = struct.unpack_from("<L", response_frame.data[4:])[0]
-                raise SdoAbortedError(abort_code)
-
-            # Expect CS=0x60 (Download Response)
-            if cs != 0x60:
-                raise ValueError(f"Invalid SDO initiation response (CS=0x{cs:02X})")
-
-            self.progress_bar.setValue(5)
-
-            # 4. --- Loop for subsequent segments (if needed) ---
-            if total_size > 4:
-                toggle_bit = 0
-                bytes_sent = 0
-                while bytes_sent < total_size:
-                    if self.sdo_transfer_abort_event.is_set():
-                        raise asyncio.CancelledError("Transfer aborted by user")
-
-                    chunk = data_to_send[bytes_sent : bytes_sent + 7]
-                    bytes_in_segment = len(chunk)
-                    bytes_sent += bytes_in_segment
-
-                    # Set 'c' bit if this is the last segment
-                    is_last_segment = 1 if bytes_sent >= total_size else 0
-                    num_unused_bytes = 7 - bytes_in_segment
-
-                    # CS for download segment: 0x00 | toggle | unused_bytes | last_segment
-                    seg_cs = (
-                        (toggle_bit << 4) | (num_unused_bytes << 1) | is_last_segment
-                    )
-
-                    seg_payload = bytearray(chunk)
-                    seg_payload.extend(b"\x00" * num_unused_bytes)  # Pad to 7 bytes
-
-                    seg_request = bytearray([seg_cs]) + seg_payload
-
-                    self.frame_to_send.emit(
-                        can.Message(
-                            arbitration_id=0x600 + self.current_node_id,
-                            dlc=8,
-                            data=seg_request,
-                        )
-                    )
-
-                    # Wait for segment acknowledgment
-                    seg_resp_frame = await asyncio.wait_for(
-                        self.sdo_response_queue.get(), timeout=2.0
-                    )
-                    ack_cs = seg_resp_frame.data[0]
-
-                    if ack_cs == 0x80:
-                        abort_code = struct.unpack_from("<L", seg_resp_frame.data[4:])[
-                            0
-                        ]
-                        raise SdoAbortedError(abort_code)
-
-                    # Check toggle bit in response
-                    if (ack_cs & 0x10) != (toggle_bit << 4):
-                        raise ValueError("SDO protocol error: toggle bit mismatch.")
-
-                    self.progress_bar.setValue(int(bytes_sent / total_size * 100))
-                    toggle_bit ^= 1
-
-            # --- Success ---
             self.status_label.setText("Write successful")
             self.status_label.setStyleSheet("color: green;")
             self.write_value_edit.clear()
 
-            # Automatically read back the value to verify
             await asyncio.sleep(0.1)
             await self.read_sdo()
 
@@ -1169,17 +878,12 @@ class ObjectDictionaryViewer(QWidget):
         except Exception as e:
             self.status_label.setText(f"Write failed: {e}")
             self.status_label.setStyleSheet("color: red;")
-            import traceback
-
-            traceback.print_exc()
         finally:
             self.progress_bar.setVisible(False)
-            self.sdo_transfer_abort_event.clear()
 
     def clear_node(self):
         """Clear the current node"""
-        self.current_node = None
-        self.current_node_id = None
+        self.sdo_client = None
         self.node_info_label.setText("No CANopen node selected")
         self.tree.clear()
         self.clear_details()
