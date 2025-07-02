@@ -51,6 +51,43 @@ def dcf_2_messages(filename, nodeid: int, slave_name: str):
         )
         messages.append(msg)
 
+    for n, rpdo in dev.rpdo.items():
+        # print(hex(tpdo.cob_id))
+
+        current_len = 0
+        sigs = []
+        for mapn, subObject in rpdo.mapping.items():
+            # print("\t", hex(subObject.index), subObject.sub_index, subObject.name)
+            # debug(subObject.data_type.name(), subObject.data_type.bits())
+
+            if "INTEGER" in subObject.data_type.name():
+                is_signed = True
+            else:
+                is_signed = False
+
+            sigs.append(
+                cantools.db.Signal(
+                    subObject.name.replace(" ", "_"),
+                    current_len,
+                    subObject.data_type.bits(),
+                    is_signed=is_signed,
+                )
+            )
+
+            current_len += subObject.data_type.bits()
+
+        if current_len == 0:
+            continue
+
+        msg = cantools.db.Message(
+            frame_id=rpdo.cob_id,
+            name=f"{slave_name} RPDO {n}".replace(" ", "_"),
+            length=int(current_len / 8),
+            signals=sigs,
+            senders=[slave_name],
+        )
+        messages.append(msg)
+
     return messages
 
 
