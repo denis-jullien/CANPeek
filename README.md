@@ -5,13 +5,14 @@
 ## Features
 
 - 🧩 **Project-based configuration** with filters, DBC files, and persistent decoding options
-- 🌐 **Multi-interface support**: socketcan, pcan, kvaser, vector, and virtual based on [python-can](https://python-can.readthedocs.io/en/stable/configuration.html#interface-names)
+- 🌐 **Multi-interface support**: socketcan, pcan, kvaser, vector and other interfaces based on [python-can](https://python-can.readthedocs.io/en/stable/configuration.html#interface-names)
 - 📊 **Dual View**: Real-time **Trace View** and hierarchical **Grouped View** with signal expansion
 - 📁 **Multi-DBC support** with signal decoding from [cantools](https://github.com/cantools/cantools)
-- 🧠 **CANopen basic decoder** with support for NMT, PDO, SDO, Heartbeat, and more
-- 🧠 **CANopen Object Dictionary** with an SDO client
+- 🧠 **Generic CANopen decoder** with support for NMT, PDO, SDO, Heartbeat, and more
+- 🗃️ **CANopen Object Dictionary** with an SDO client for read/write operations
 - 📦 **CAN frame transmitter**, supporting both raw and signal-based (DBC) messages 
 - 📜 **Log support**: Save/load CAN logs in all [python-can IO formats](https://python-can.readthedocs.io/en/stable/file_io.html)
+- 🔌 **Connections Management**: Handling of multiple simultaneous CAN connections
 
 ## Screenshots
 
