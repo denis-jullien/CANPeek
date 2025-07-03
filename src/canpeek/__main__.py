@@ -1448,7 +1448,6 @@ class CANBusObserver(QMainWindow):
         self.grouped_proxy_model.setSortRole(Qt.UserRole)
         self.frame_batch = []
         self.all_received_frames = []
-        self.setDockOptions(QMainWindow.AnimatedDocks | QMainWindow.AllowNestedDocks)
 
         QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.OpaqueSplitterResize, True)
         QtAds.CDockManager.setConfigFlag(
@@ -1624,17 +1623,45 @@ class CANBusObserver(QMainWindow):
         self.nmt_sender.status_update.connect(self.statusBar().showMessage)
 
     def setup_docks(self):
+
+        # Set central widget
+        label = QLabel()
+        label.setText("This is a DockArea which is always visible, even if it does not contain any DockWidgets.")
+        label.setAlignment(Qt.AlignCenter)
+        central_dock_widget = QtAds.CDockWidget("CentralWidget")
+        central_dock_widget.setWidget(label)
+        central_dock_widget.setFeature(QtAds.CDockWidget.NoTab, True)
+        central_dock_area = self.dock_manager.setCentralWidget(central_dock_widget)
+
         self.project_explorer = ProjectExplorer(self.project, self)
         explorer_dock = QtAds.CDockWidget("Project Explorer")
         explorer_dock.setWidget(self.project_explorer)
-        self.dock_manager.addDockWidget(QtAds.RightDockWidgetArea, explorer_dock)
+        project_aera = self.dock_manager.addDockWidget(QtAds.DockWidgetArea.LeftDockWidgetArea, explorer_dock)
 
         self.properties_panel = PropertiesPanel(
             self.project, self.project_explorer, self.interface_manager, self
         )
         properties_dock = QtAds.CDockWidget("Properties")
         properties_dock.setWidget(self.properties_panel)
-        self.dock_manager.addDockWidget(QtAds.RightDockWidgetArea, properties_dock)
+        self.dock_manager.addDockWidget(QtAds.DockWidgetArea.BottomDockWidgetArea, properties_dock, project_aera)
+
+
+        # New docks for previously tabbed views
+        grouped_dock = QtAds.CDockWidget("Grouped View")
+        grouped_dock.setWidget(self.grouped_view)
+        self.dock_manager.addDockWidgetTabToArea(grouped_dock, central_dock_area)
+
+        trace_dock = QtAds.CDockWidget("Trace View")
+        trace_dock.setWidget(self.trace_view_widget)
+        self.dock_manager.addDockWidgetTabToArea(trace_dock, central_dock_area)
+
+        object_dictionary_dock = QtAds.CDockWidget("Object Dictionary")
+        object_dictionary_dock.setWidget(self.object_dictionary_viewer)
+        self.dock_manager.addDockWidgetTabToArea(
+            object_dictionary_dock, central_dock_area
+        )
+        # Set the Grouped View active
+        central_dock_area.setCurrentDockWidget(grouped_dock)
 
         transmit_container = QWidget()
         transmit_layout = QVBoxLayout(transmit_container)
@@ -1646,26 +1673,15 @@ class CANBusObserver(QMainWindow):
         self.signal_transmit_panel.setVisible(False)
         transmit_dock = QtAds.CDockWidget("Transmit")
         transmit_dock.setWidget(transmit_container)
-        self.dock_manager.addDockWidget(QtAds.BottomDockWidgetArea, transmit_dock)
-
-        # New docks for previously tabbed views
-        grouped_dock = QtAds.CDockWidget("Grouped View")
-        grouped_dock.setWidget(self.grouped_view)
-        self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, grouped_dock)
-
-        trace_dock = QtAds.CDockWidget("Trace View")
-        trace_dock.setWidget(self.trace_view_widget)
-        self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, trace_dock)
-
-        object_dictionary_dock = QtAds.CDockWidget("Object Dictionary")
-        object_dictionary_dock.setWidget(self.object_dictionary_viewer)
-        self.dock_manager.addDockWidget(
-            QtAds.CenterDockWidgetArea, object_dictionary_dock
-        )
+        transmit_aera = self.dock_manager.addDockWidget(QtAds.BottomDockWidgetArea, transmit_dock, central_dock_area)
 
         nmt_sender_dock = QtAds.CDockWidget("NMT Sender")
         nmt_sender_dock.setWidget(self.nmt_sender)
-        self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, nmt_sender_dock)
+        self.dock_manager.addDockWidgetTabToArea(nmt_sender_dock, transmit_aera)
+
+        transmit_aera.setCurrentDockWidget(transmit_dock)
+
+        transmit_aera
 
         self.docks = {
             "explorer": explorer_dock,
