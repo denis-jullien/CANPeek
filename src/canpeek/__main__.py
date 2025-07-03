@@ -11,18 +11,16 @@ Features:
 - Real-time monitoring
 """
 
+import os
+import qt_themes
 import sys
 import json
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
 from pathlib import Path
 from functools import partial
-import qdarktheme
 import inspect
-
-
 import enum
 from . import rc_icons
-
 import asyncio
 from qasync import QEventLoop, QApplication
 import uuid
@@ -40,7 +38,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QPushButton,
     QLabel,
     QLineEdit,
@@ -58,10 +55,12 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem,
     QTableView,
     QToolBar,
-    QDockWidget,
     QStyle,
     QDialog,
     QTextEdit,
+    QSizePolicy,
+    QWidgetAction,
+    QInputDialog,
 )
 
 from PySide6.QtCore import (
@@ -71,10 +70,21 @@ from PySide6.QtCore import (
     QSortFilterProxyModel,
     QSettings,
 )
-from PySide6.QtGui import QAction, QKeyEvent, QIcon, QPixmap, QColor
+from PySide6.QtGui import (
+    QAction,
+    QKeyEvent,
+    QIcon,
+    QPixmap,
+    QColor,
+    QActionGroup,
+    QFont,
+    QFontDatabase,
+)
 
 import can
 import cantools
+
+import PySide6QtAds as QtAds
 
 from .co.canopen_utils import (
     CANopenNode,
@@ -97,11 +107,15 @@ from .data_utils import (
 
 from .can_utils import CANAsyncReader
 
-from .models import CANTraceModel, CANGroupedModel
+from .models import CANTraceModel, CANGroupedModel, GroupedViewColumn
 
 if TYPE_CHECKING:
     from __main__ import ProjectExplorer, CANBusObserver
 
+# Workaround for qt-ads on wayland https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System/issues/714
+if os.environ.get("XDG_SESSION_TYPE") == "wayland":
+    print("Workaround for qt-ads on Wayland")
+    os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 # --- Data Structures ---
 TRACE_BUFFER_LIMIT = 5000
@@ -433,8 +447,8 @@ class ConnectionEditor(QWidget):
         self.docs_window.activateWindow()
 
     def _on_interface_changed(self, interface_name: str):
-        self.connection.interface = interface_name
         self._rebuild_dynamic_fields(interface_name)
+        self.connection.interface = interface_name
         self.project_changed.emit()
 
     def _rebuild_dynamic_fields(self, interface_name: str):
@@ -457,7 +471,12 @@ class ConnectionEditor(QWidget):
             return
 
         for name, info in params.items():
-            current_value = self.connection.config.get(name, info.get("default"))
+            # Use the default prameter value from python-can if the interface type changed
+            if self.connection.interface != interface_name:
+                current_value = info.get("default", self.connection.config.get(name))
+            else:
+                current_value = self.connection.config.get(name, info.get("default"))
+
             expected_type = info["type"]
             widget = None
             is_enum = False
@@ -1434,7 +1453,45 @@ class CANBusObserver(QMainWindow):
         self.grouped_proxy_model.setSortRole(Qt.UserRole)
         self.frame_batch = []
         self.all_received_frames = []
-        self.setDockOptions(QMainWindow.AnimatedDocks | QMainWindow.AllowNestedDocks)
+
+        QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.OpaqueSplitterResize, True)
+        QtAds.CDockManager.setConfigFlag(
+            QtAds.CDockManager.XmlCompressionEnabled, False
+        )
+        QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.FocusHighlighting, True)
+        self.dock_manager = QtAds.CDockManager(self)
+
+        # Set monospaced font for grouped and trace views
+        monospace_font = QFont("monospace")
+        monospace_font.setStyleHint(QFont.Monospace)
+
+        self.grouped_view = QTreeView()
+        self.grouped_view.setModel(self.grouped_proxy_model)
+        self.grouped_view.setAlternatingRowColors(True)
+        self.grouped_view.setSortingEnabled(True)
+        self.grouped_view.setFont(monospace_font)
+
+        self.trace_view_widget = QWidget()
+        trace_layout = QVBoxLayout(self.trace_view_widget)
+        trace_layout.setContentsMargins(5, 5, 5, 5)
+        self.trace_view = QTableView()
+        self.trace_view.setModel(self.trace_model)
+        self.trace_view.setAlternatingRowColors(True)
+        self.trace_view.horizontalHeader().setStretchLastSection(True)
+        self.trace_view.setFont(monospace_font)
+        self.autoscroll_cb = QCheckBox("Autoscroll", checked=True)
+        trace_layout.addWidget(self.trace_view)
+        trace_layout.addWidget(self.autoscroll_cb)
+
+        self.object_dictionary_viewer = ObjectDictionaryViewer()
+        self.object_dictionary_viewer.frame_to_send.connect(self.send_can_frame)
+
+        self.nmt_sender = NMTSender(self.project)
+        self.nmt_sender.frame_to_send.connect(self.send_can_frame)
+        self.nmt_sender.status_update.connect(self.statusBar().showMessage)
+
+        # self.setCentralWidget(self.dock_manager)
+
         self.setup_actions()
         self.setup_ui()
         self.setup_docks()
@@ -1446,6 +1503,7 @@ class CANBusObserver(QMainWindow):
         self.project_explorer.project_changed.connect(lambda: self._set_dirty(True))
         self.transmit_panel.config_changed.connect(lambda: self._set_dirty(True))
         self.restore_layout()
+        self.update_perspectives_menu()
         self.gui_update_timer = QTimer(self)
         self.gui_update_timer.timeout.connect(self.update_views)
         self.gui_update_timer.start(50)
@@ -1457,6 +1515,28 @@ class CANBusObserver(QMainWindow):
         self.project_explorer.project_changed.connect(
             self._on_project_structure_changed
         )
+
+        # Apply default theme and style
+        settings = QSettings()
+        saved_theme = settings.value("selectedTheme", "default")
+        self._set_theme(saved_theme)
+
+        # Check the corresponding action in the menu
+        for action in self.theme_group.actions():
+            if action.text() == saved_theme:
+                action.setChecked(True)
+                break
+
+    def _set_theme(self, theme_name: str):
+        if theme_name == "default":
+            theme_name = None
+
+        # TODO : theme is partialy applied if run once ....
+        qt_themes.set_theme(theme_name)
+        qt_themes.set_theme(theme_name)
+        qt_themes.set_theme(theme_name)
+        settings = QSettings()
+        settings.setValue("selectedTheme", theme_name)
 
     def setup_actions(self):
         style = self.style()
@@ -1518,49 +1598,80 @@ class CANBusObserver(QMainWindow):
         toolbar.addAction(self.load_log_action)
 
     def setup_ui(self):
-        self.tab_widget = QTabWidget()
-        self.setCentralWidget(self.tab_widget)
+        # Set monospaced font for grouped and trace views
+        monospace_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+
         self.grouped_view = QTreeView()
         self.grouped_view.setModel(self.grouped_proxy_model)
         self.grouped_view.setAlternatingRowColors(True)
         self.grouped_view.setSortingEnabled(True)
-        self.tab_widget.addTab(self.grouped_view, "Grouped")
-        trace_view_widget = QWidget()
-        trace_layout = QVBoxLayout(trace_view_widget)
+        self.grouped_view.setFont(monospace_font)
+        self.grouped_view.sortByColumn(GroupedViewColumn.ID, Qt.AscendingOrder)
+
+        self.trace_view_widget = QWidget()
+        trace_layout = QVBoxLayout(self.trace_view_widget)
         trace_layout.setContentsMargins(5, 5, 5, 5)
         self.trace_view = QTableView()
         self.trace_view.setModel(self.trace_model)
         self.trace_view.setAlternatingRowColors(True)
         self.trace_view.horizontalHeader().setStretchLastSection(True)
+        self.trace_view.setFont(monospace_font)
         self.autoscroll_cb = QCheckBox("Autoscroll", checked=True)
         trace_layout.addWidget(self.trace_view)
         trace_layout.addWidget(self.autoscroll_cb)
-        self.tab_widget.addTab(trace_view_widget, "Trace")
 
-        # Add Object Dictionary tab
         self.object_dictionary_viewer = ObjectDictionaryViewer()
         self.object_dictionary_viewer.frame_to_send.connect(self.send_can_frame)
-        self.tab_widget.addTab(self.object_dictionary_viewer, "Object Dictionary")
 
-        # Add NMT Sender tab
         self.nmt_sender = NMTSender(self.project)
         self.nmt_sender.frame_to_send.connect(self.send_can_frame)
         self.nmt_sender.status_update.connect(self.statusBar().showMessage)
-        self.tab_widget.addTab(self.nmt_sender, "NMT Sender")
 
     def setup_docks(self):
+        # Set central widget
+        label = QLabel()
+        label.setText(
+            "This is a DockArea which is always visible, even if it does not contain any DockWidgets."
+        )
+        label.setAlignment(Qt.AlignCenter)
+        central_dock_widget = QtAds.CDockWidget("CentralWidget")
+        central_dock_widget.setWidget(label)
+        central_dock_widget.setFeature(QtAds.CDockWidget.NoTab, True)
+        central_dock_area = self.dock_manager.setCentralWidget(central_dock_widget)
+
         self.project_explorer = ProjectExplorer(self.project, self)
-        explorer_dock = QDockWidget("Project Explorer", self)
-        explorer_dock.setObjectName("ProjectExplorerDock")
+        explorer_dock = QtAds.CDockWidget("Project Explorer")
         explorer_dock.setWidget(self.project_explorer)
-        self.addDockWidget(Qt.RightDockWidgetArea, explorer_dock)
+        project_aera = self.dock_manager.addDockWidget(
+            QtAds.DockWidgetArea.LeftDockWidgetArea, explorer_dock
+        )
+
         self.properties_panel = PropertiesPanel(
             self.project, self.project_explorer, self.interface_manager, self
         )
-        properties_dock = QDockWidget("Properties", self)
-        properties_dock.setObjectName("PropertiesDock")
+        properties_dock = QtAds.CDockWidget("Properties")
         properties_dock.setWidget(self.properties_panel)
-        self.addDockWidget(Qt.RightDockWidgetArea, properties_dock)
+        self.dock_manager.addDockWidget(
+            QtAds.DockWidgetArea.BottomDockWidgetArea, properties_dock, project_aera
+        )
+
+        # New docks for previously tabbed views
+        grouped_dock = QtAds.CDockWidget("Grouped View")
+        grouped_dock.setWidget(self.grouped_view)
+        self.dock_manager.addDockWidgetTabToArea(grouped_dock, central_dock_area)
+
+        trace_dock = QtAds.CDockWidget("Trace View")
+        trace_dock.setWidget(self.trace_view_widget)
+        self.dock_manager.addDockWidgetTabToArea(trace_dock, central_dock_area)
+
+        object_dictionary_dock = QtAds.CDockWidget("Object Dictionary")
+        object_dictionary_dock.setWidget(self.object_dictionary_viewer)
+        self.dock_manager.addDockWidgetTabToArea(
+            object_dictionary_dock, central_dock_area
+        )
+        # Set the Grouped View active
+        central_dock_area.setCurrentDockWidget(grouped_dock)
+
         transmit_container = QWidget()
         transmit_layout = QVBoxLayout(transmit_container)
         transmit_layout.setContentsMargins(0, 0, 0, 0)
@@ -1569,16 +1680,30 @@ class CANBusObserver(QMainWindow):
         transmit_layout.addWidget(self.transmit_panel)
         transmit_layout.addWidget(self.signal_transmit_panel)
         self.signal_transmit_panel.setVisible(False)
-        # self.transmit_panel.setEnabled(False)
-        transmit_dock = QDockWidget("Transmit", self)
-        transmit_dock.setObjectName("TransmitDock")
+        transmit_dock = QtAds.CDockWidget("Transmit")
         transmit_dock.setWidget(transmit_container)
-        self.addDockWidget(Qt.BottomDockWidgetArea, transmit_dock)
+        transmit_aera = self.dock_manager.addDockWidget(
+            QtAds.BottomDockWidgetArea, transmit_dock, central_dock_area
+        )
+
+        nmt_sender_dock = QtAds.CDockWidget("NMT Sender")
+        nmt_sender_dock.setWidget(self.nmt_sender)
+        self.dock_manager.addDockWidgetTabToArea(nmt_sender_dock, transmit_aera)
+
+        transmit_aera.setCurrentDockWidget(transmit_dock)
+
+        transmit_aera
+
         self.docks = {
             "explorer": explorer_dock,
             "properties": properties_dock,
             "transmit": transmit_dock,
+            "grouped": grouped_dock,
+            "trace": trace_dock,
+            "object_dictionary": object_dictionary_dock,
+            "nmt_sender": nmt_sender_dock,
         }
+
         self.properties_panel.message_to_transmit.connect(
             self._add_message_to_transmit_panel
         )
@@ -1586,13 +1711,31 @@ class CANBusObserver(QMainWindow):
         self.transmit_panel.row_selection_changed.connect(self.on_transmit_row_selected)
         self.signal_transmit_panel.data_encoded.connect(self.on_signal_data_encoded)
         self.project_explorer.project_changed.connect(self.on_project_changed)
-        self.project_explorer.project_changed.connect(self.nmt_sender.update_project_nodes)
+        self.project_explorer.project_changed.connect(
+            self.nmt_sender.update_project_nodes
+        )
         self.project_explorer.tree.currentItemChanged.connect(
             self.properties_panel.show_properties
         )
         self.project_explorer.tree.currentItemChanged.connect(
             self.on_project_explorer_selection_changed
         )
+
+    def save_perspective(self):
+        perspective_name, ok = QInputDialog.getText(
+            self, "Save Perspective", "Enter a name for the perspective:"
+        )
+        if ok and perspective_name:
+            self.dock_manager.addPerspective(perspective_name)
+            self.update_perspectives_menu()
+
+    def load_perspective(self, index):
+        perspective_name = self.perspectives_combobox.itemText(index)
+        self.dock_manager.openPerspective(perspective_name)
+
+    def update_perspectives_menu(self):
+        self.perspectives_combobox.clear()
+        self.perspectives_combobox.addItems(self.dock_manager.perspectiveNames())
 
     def setup_menubar(self):
         menubar = self.menuBar()
@@ -1614,9 +1757,40 @@ class CANBusObserver(QMainWindow):
         connect_menu.addAction(self.connect_action)
         connect_menu.addAction(self.disconnect_action)
         view_menu = menubar.addMenu("&View")
-        view_menu.addAction(self.docks["explorer"].toggleViewAction())
-        view_menu.addAction(self.docks["properties"].toggleViewAction())
-        view_menu.addAction(self.docks["transmit"].toggleViewAction())
+        for dock in self.docks.values():
+            view_menu.addAction(dock.toggleViewAction())
+
+        perspectives_menu = menubar.addMenu("&Perspectives")
+        save_perspective_action = QAction("Save Perspective...", self)
+        save_perspective_action.triggered.connect(self.save_perspective)
+        perspectives_menu.addAction(save_perspective_action)
+
+        remove_perspective_action = QAction("Remove Perspective...", self)
+        remove_perspective_action.triggered.connect(self._remove_perspective)
+        perspectives_menu.addAction(remove_perspective_action)
+
+        self.perspectives_combobox = QComboBox(self)
+        self.perspectives_combobox.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.perspectives_combobox.setSizePolicy(
+            QSizePolicy.Preferred, QSizePolicy.Preferred
+        )
+        self.perspectives_combobox.activated.connect(self.load_perspective)
+
+        # Theme and Style menus
+        theme_menu = menubar.addMenu("&Themes")
+        self.theme_group = QActionGroup(self)
+        self.theme_group.setExclusive(True)
+        names = ["default"]
+        names.extend(sorted(qt_themes.get_themes().keys()))
+        for theme_name in names:
+            action = QAction(theme_name, self, checkable=True)
+            action.triggered.connect(partial(self._set_theme, theme_name))
+            self.theme_group.addAction(action)
+            theme_menu.addAction(action)
+
+        perspective_list_action = QWidgetAction(self)
+        perspective_list_action.setDefaultWidget(self.perspectives_combobox)
+        perspectives_menu.addAction(perspective_list_action)
 
     def setup_statusbar(self):
         self.statusBar().showMessage("Ready")
@@ -1626,6 +1800,26 @@ class CANBusObserver(QMainWindow):
         self.statusBar().addPermanentWidget(self.bus_state_label)
         self.statusBar().addPermanentWidget(self.frame_count_label)
         self.statusBar().addPermanentWidget(self.connection_label)
+
+    def _remove_perspective(self):
+        perspective_names = self.dock_manager.perspectiveNames()
+        if not perspective_names:
+            QMessageBox.information(
+                self, "Remove Perspective", "No perspectives to remove."
+            )
+            return
+
+        perspective_name, ok = QInputDialog.getItem(
+            self,
+            "Remove Perspective",
+            "Select a perspective to remove:",
+            perspective_names,
+            0,
+            False,
+        )
+        if ok and perspective_name:
+            self.dock_manager.removePerspective(perspective_name)
+            self.update_perspectives_menu()
 
     def _add_message_to_transmit_panel(self, message: cantools.db.Message):
         """Slot to handle request to add a DBC message to the transmit panel."""
@@ -1854,7 +2048,9 @@ class CANBusObserver(QMainWindow):
                 self.properties_panel.current_widget.set_connected_state(True)
 
         # Update NMT sender context after connection state changes
-        self.on_project_explorer_selection_changed(self.project_explorer.tree.currentItem(), None)
+        self.on_project_explorer_selection_changed(
+            self.project_explorer.tree.currentItem(), None
+        )
 
     async def _connect_single(self, connection: Connection) -> bool:
         if connection.id in self.can_readers:
@@ -1892,7 +2088,9 @@ class CANBusObserver(QMainWindow):
                 self.properties_panel.current_widget.set_connected_state(False)
 
         # Update NMT sender context after connection state changes
-        self.on_project_explorer_selection_changed(self.project_explorer.tree.currentItem(), None)
+        self.on_project_explorer_selection_changed(
+            self.project_explorer.tree.currentItem(), None
+        )
 
     def send_can_frame(self, message: can.Message, connection_id: uuid.UUID):
         print(f"Sending frame: {message} on connection {connection_id}")
@@ -2063,19 +2261,19 @@ class CANBusObserver(QMainWindow):
         return reply != QMessageBox.Cancel
 
     def _new_project(self):
-        if not self._prompt_save_if_dirty():
-            return
-        self.disconnect_can()
-        self.clear_data()
-        self.project = Project()
-        # Add a default connection when a new project is created
-        self.project.connections.append(Connection())
-        self.current_project_path = None
-        self.pdo_manager.invalidate_cache()  # Clear PDO cache
-        self.project_explorer.set_project(self.project)
-        self.transmit_panel.set_config([])
-        self.nmt_sender.set_project(self.project)
-        self._set_dirty(False)
+        if self._prompt_save_if_dirty():
+            self.disconnect_can()  # Stop any active CAN connections and timers
+            self.clear_data()
+            self.project = Project()
+            # Add a default connection when a new project is created
+            self.project.connections.append(Connection())
+            self.current_project_path = None
+            self.pdo_manager.invalidate_cache()  # Clear PDO cache
+            self.project_explorer.set_project(self.project)
+            self.transmit_panel.set_config([])
+            self.nmt_sender.set_project(self.project)
+            self._set_dirty(False)
+            self._update_window_title()
 
     def _open_project(self, path: Optional[str] = None):
         if not self._prompt_save_if_dirty():
@@ -2167,6 +2365,8 @@ class CANBusObserver(QMainWindow):
         settings = QSettings()
         settings.setValue("geometry", self.saveGeometry())
         settings.setValue("windowState", self.saveState())
+        settings.setValue("dockState", self.dock_manager.saveState())
+        self.dock_manager.savePerspectives(settings)
         if self.current_project_path:
             settings.setValue("lastProjectPath", str(self.current_project_path))
 
@@ -2174,13 +2374,17 @@ class CANBusObserver(QMainWindow):
         settings = QSettings()
         geometry = settings.value("geometry")
         state = settings.value("windowState")
+        dock_state = settings.value("dockState")
         last_project = settings.value("lastProjectPath")
         if geometry:
             self.restoreGeometry(geometry)
         if state:
             self.restoreState(state)
+        if dock_state:
+            self.dock_manager.restoreState(dock_state)
         if last_project and Path(last_project).exists():
             self._open_project(last_project)
+        self.dock_manager.loadPerspectives(settings)
 
     def _on_project_structure_changed(self):
         """Handle project structure changes that might affect PDO databases"""
@@ -2201,6 +2405,8 @@ class CANBusObserver(QMainWindow):
 def main():
     app = QApplication(sys.argv)
 
+    # qt_themes.set_theme("catppuccin_mocha")
+
     event_loop = QEventLoop(app)
     asyncio.set_event_loop(event_loop)
 
@@ -2210,7 +2416,7 @@ def main():
     app.setOrganizationName("CANPeek")
     app.setApplicationName("CANPeek")
     window = CANBusObserver()
-    qdarktheme.setup_theme("auto")
+
     window.show()
 
     with event_loop:

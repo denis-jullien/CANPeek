@@ -10,6 +10,32 @@ from typing import Dict, List, Optional
 import canopen
 from .dcf2db import dcf_2_db
 
+from PySide6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QTableWidget,
+    QTableWidgetItem,
+    QGroupBox,
+    QFormLayout,
+    QLabel,
+    QLineEdit,
+    QCheckBox,
+    QSpinBox,
+    QPushButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QSplitter,
+    QProgressBar,
+    QSizePolicy,
+    QComboBox,
+)
+from PySide6.QtCore import Signal, Qt
+
+# Use TYPE_CHECKING to avoid circular import errors at runtime
+from ..data_utils import CANFrame, Project, CANopenNode
+from .sdo_client import SdoClient, SdoAbortedError
+
 DATA_TYPE_MAP = {
     0x0001: "BOOLEAN",
     0x0002: "INTEGER8",
@@ -37,32 +63,6 @@ DATA_TYPE_MAP = {
     0x0D: "TIME_DIFFERENCE",
     0x000F: "DOMAIN",
 }
-
-from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QTableWidget,
-    QTableWidgetItem,
-    QGroupBox,
-    QFormLayout,
-    QLabel,
-    QLineEdit,
-    QCheckBox,
-    QSpinBox,
-    QPushButton,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QSplitter,
-    QProgressBar,
-    QSizePolicy,
-    QComboBox,
-)
-from PySide6.QtCore import Signal, Qt
-
-# Use TYPE_CHECKING to avoid circular import errors at runtime
-from ..data_utils import CANFrame, Project, CANopenNode
-from .sdo_client import SdoClient, SdoAbortedError
 
 
 class PDODatabaseManager:
@@ -628,7 +628,9 @@ class ObjectDictionaryViewer(QWidget):
                                 f"0x{index:04X}",
                                 f"0x{subindex:02X}",
                                 getattr(subobj, "name", f"Sub_{subindex:02X}"),
-                                DATA_TYPE_MAP.get(getattr(subobj, "data_type", None), "Unknown"),
+                                DATA_TYPE_MAP.get(
+                                    getattr(subobj, "data_type", None), "Unknown"
+                                ),
                                 self.get_access_string(
                                     getattr(subobj, "access_type", None)
                                 ),
@@ -728,7 +730,9 @@ class ObjectDictionaryViewer(QWidget):
         self.name_label.setText(getattr(obj, "name", "Unknown"))
         type = getattr(obj, "data_type", None)
         if type is not None:
-            self.type_label.setText(DATA_TYPE_MAP.get(type, "Unknown") + f" (0x{type:02X})")
+            self.type_label.setText(
+                DATA_TYPE_MAP.get(type, "Unknown") + f" (0x{type:02X})"
+            )
         else:
             self.type_label.setText("-")
         self.access_label.setText(

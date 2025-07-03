@@ -1,24 +1,21 @@
 import asyncio
-from typing import Dict, List, Optional
+from typing import List, Optional
 import uuid
 
 import can
-import canopen
 
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
-    QHBoxLayout,
     QGroupBox,
     QFormLayout,
     QLabel,
     QComboBox,
     QPushButton,
-    QSpinBox,
     QListWidget,
     QListWidgetItem,
     QRadioButton,
-    QLineEdit
+    QLineEdit,
 )
 from PySide6.QtCore import Signal, Qt
 
@@ -32,9 +29,10 @@ NMT_COMMAND_MAP = {
     "Reset communication": 0x82,
 }
 
+
 class NMTSender(QWidget):
-    frame_to_send = Signal(object, object) # message, connection_id (uuid.UUID)
-    status_update = Signal(str, str) # message, color
+    frame_to_send = Signal(object, object)  # message, connection_id (uuid.UUID)
+    status_update = Signal(str, str)  # message, color
 
     def __init__(self, project: Project):
         super().__init__()
@@ -51,7 +49,7 @@ class NMTSender(QWidget):
         main_layout.addWidget(self.connection_label)
 
         # NMT Command Group
-        self.command_group = QGroupBox("NMT Command")
+        self.command_group = QGroupBox("CANopen NMT Command")
         command_layout = QFormLayout(self.command_group)
 
         self.command_combo = QComboBox()
@@ -91,14 +89,18 @@ class NMTSender(QWidget):
 
         # Send Button
         self.send_button = QPushButton("Send NMT Command")
-        self.send_button.clicked.connect(lambda: asyncio.create_task(self._send_nmt_command()))
+        self.send_button.clicked.connect(
+            lambda: asyncio.create_task(self._send_nmt_command())
+        )
         self.send_button.setEnabled(False)
         main_layout.addWidget(self.send_button)
 
         self.populate_node_list()
-        self._toggle_node_list() # Set initial state of node list
+        self._toggle_node_list()  # Set initial state of node list
 
-    def set_connection_context(self, connection_id: Optional[uuid.UUID], is_globally_connected: bool):
+    def set_connection_context(
+        self, connection_id: Optional[uuid.UUID], is_globally_connected: bool
+    ):
         """Sets the current connection context and updates the UI display and send button state."""
         self.current_connection_id = connection_id
         self.send_button.setEnabled(is_globally_connected and connection_id is not None)
@@ -109,7 +111,9 @@ class NMTSender(QWidget):
             conn_name = self.project.get_connection_name(connection_id)
             self.connection_label.setText(f"Active Connection: {conn_name}")
         else:
-            self.connection_label.setText("Active Connection: (None - Select in Project Explorer)")
+            self.connection_label.setText(
+                "Active Connection: (None - Select in Project Explorer)"
+            )
 
         self.update_project_nodes()
 
@@ -121,12 +125,14 @@ class NMTSender(QWidget):
     def populate_node_list(self):
         self.node_list_widget.clear()
         nodes_to_display = [
-            node for node in self.project.canopen_nodes
-            if not self.current_connection_id or node.connection_id == self.current_connection_id
+            node
+            for node in self.project.canopen_nodes
+            if not self.current_connection_id
+            or node.connection_id == self.current_connection_id
         ]
         for node in nodes_to_display:
             item = QListWidgetItem(f"{node.path.name} (ID: {node.node_id})")
-            item.setData(Qt.UserRole, node) # Store the actual CANopenNode object
+            item.setData(Qt.UserRole, node)  # Store the actual CANopenNode object
             self.node_list_widget.addItem(item)
 
     def _toggle_node_list(self):
@@ -138,25 +144,29 @@ class NMTSender(QWidget):
         nodes = set()
         if not text:
             return []
-        parts = text.split(',')
+        parts = text.split(",")
         for part in parts:
             part = part.strip()
             if not part:
                 continue
-            if '-' in part:
+            if "-" in part:
                 try:
-                    start, end = map(int, part.split('-'))
+                    start, end = map(int, part.split("-"))
                     if start <= end:
                         nodes.update(range(start, end + 1))
                 except ValueError:
-                    self.status_update.emit(f"Invalid range in arbitrary nodes: '{part}'", "red")
-                    return [] # Return empty list on error
+                    self.status_update.emit(
+                        f"Invalid range in arbitrary nodes: '{part}'", "red"
+                    )
+                    return []  # Return empty list on error
             else:
                 try:
                     nodes.add(int(part))
                 except ValueError:
-                    self.status_update.emit(f"Invalid node ID in arbitrary nodes: '{part}'", "red")
-                    return [] # Return empty list on error
+                    self.status_update.emit(
+                        f"Invalid node ID in arbitrary nodes: '{part}'", "red"
+                    )
+                    return []  # Return empty list on error
         return sorted(list(nodes))
 
     async def _send_nmt_command(self):
@@ -219,6 +229,5 @@ class NMTSender(QWidget):
         self.status_update.emit("NMT command(s) sent successfully.", "green")
 
     def update_project_nodes(self):
-        print("update_project_nodes called.")
         self.populate_node_list()
-        self._toggle_node_list() # Update enabled state based on radio button
+        self._toggle_node_list()  # Update enabled state based on radio button

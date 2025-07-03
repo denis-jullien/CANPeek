@@ -441,7 +441,7 @@ class CANGroupedModel(QAbstractItemModel):
             if col == GroupedViewColumn.DLC:
                 return str(frame.dlc)
             if col == GroupedViewColumn.DATA:
-                return frame.data.hex(" ")
+                return frame.data.hex(" ").upper()
             if col == GroupedViewColumn.COUNT:
                 return str(self.frame_counts.get(item_key, 0))
             if col == GroupedViewColumn.CYCLE_TIME:
@@ -451,7 +451,7 @@ class CANGroupedModel(QAbstractItemModel):
                         ts_list[i] - ts_list[i - 1] for i in range(1, len(ts_list))
                     ]
                     avg_cycle_ms = sum(cycle_times) / len(cycle_times) * 1000
-                    return f"{avg_cycle_ms:.1f} ms"
+                    return f"{avg_cycle_ms:.1f}"
                 return "-"
 
         return None
