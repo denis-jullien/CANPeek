@@ -64,6 +64,7 @@ DATA_TYPE_MAP = {
     0x000F: "DOMAIN",
 }
 
+
 class PDODatabaseManager:
     """Manages PDO databases with caching to avoid duplicate creation"""
 

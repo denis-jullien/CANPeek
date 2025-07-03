@@ -12,26 +12,15 @@ Features:
 """
 
 import os
-
 import qt_themes
-
-# Workaround for qt-ads on wayland https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System/issues/714
-if os.environ.get("XDG_SESSION_TYPE") == "wayland":
-    print("Workaround for qt-ads on Wayland")
-    os.environ["QT_QPA_PLATFORM"] = "xcb"
-
 import sys
 import json
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
 from pathlib import Path
 from functools import partial
-import qdarktheme
 import inspect
-
-
 import enum
 from . import rc_icons
-
 import asyncio
 from qasync import QEventLoop, QApplication
 import uuid
@@ -115,6 +104,10 @@ from .models import CANTraceModel, CANGroupedModel
 if TYPE_CHECKING:
     from __main__ import ProjectExplorer, CANBusObserver
 
+# Workaround for qt-ads on wayland https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System/issues/714
+if os.environ.get("XDG_SESSION_TYPE") == "wayland":
+    print("Workaround for qt-ads on Wayland")
+    os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 # --- Data Structures ---
 TRACE_BUFFER_LIMIT = 5000
@@ -2263,7 +2256,7 @@ class CANBusObserver(QMainWindow):
 def main():
     app = QApplication(sys.argv)
 
-    qt_themes.set_theme('dracula')
+    qt_themes.set_theme("catppuccin_mocha")
 
     event_loop = QEventLoop(app)
     asyncio.set_event_loop(event_loop)
