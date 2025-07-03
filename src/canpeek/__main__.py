@@ -447,8 +447,8 @@ class ConnectionEditor(QWidget):
         self.docs_window.activateWindow()
 
     def _on_interface_changed(self, interface_name: str):
-        self.connection.interface = interface_name
         self._rebuild_dynamic_fields(interface_name)
+        self.connection.interface = interface_name
         self.project_changed.emit()
 
     def _rebuild_dynamic_fields(self, interface_name: str):
@@ -471,7 +471,12 @@ class ConnectionEditor(QWidget):
             return
 
         for name, info in params.items():
-            current_value = self.connection.config.get(name, info.get("default"))
+            # Use the default prameter value from python-can if the interface type changed
+            if self.connection.interface != interface_name:
+                current_value = info.get("default",self.connection.config.get(name))
+            else:
+                current_value = self.connection.config.get(name, info.get("default"))
+
             expected_type = info["type"]
             widget = None
             is_enum = False

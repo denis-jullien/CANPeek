@@ -49,7 +49,7 @@ class NMTSender(QWidget):
         main_layout.addWidget(self.connection_label)
 
         # NMT Command Group
-        self.command_group = QGroupBox("NMT Command")
+        self.command_group = QGroupBox("CANopen NMT Command")
         command_layout = QFormLayout(self.command_group)
 
         self.command_combo = QComboBox()
@@ -229,6 +229,5 @@ class NMTSender(QWidget):
         self.status_update.emit("NMT command(s) sent successfully.", "green")
 
     def update_project_nodes(self):
-        print("update_project_nodes called.")
         self.populate_node_list()
         self._toggle_node_list()  # Update enabled state based on radio button
