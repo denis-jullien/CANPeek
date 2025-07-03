@@ -11,6 +11,15 @@ Features:
 - Real-time monitoring
 """
 
+import os
+
+import qt_themes
+
+# Workaround for qt-ads on wayland https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System/issues/714
+if os.environ.get("XDG_SESSION_TYPE") == "wayland":
+    print("Workaround for qt-ads on Wayland")
+    os.environ["QT_QPA_PLATFORM"] = "xcb"
+
 import sys
 import json
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
@@ -58,10 +67,12 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem,
     QTableView,
     QToolBar,
-    QDockWidget,
     QStyle,
     QDialog,
     QTextEdit,
+    QSizePolicy,
+    QWidgetAction,
+    QInputDialog,
 )
 
 from PySide6.QtCore import (
@@ -75,6 +86,8 @@ from PySide6.QtGui import QAction, QKeyEvent, QIcon, QPixmap, QColor
 
 import can
 import cantools
+
+import PySide6QtAds as QtAds
 
 from .co.canopen_utils import (
     CANopenNode,
@@ -1435,6 +1448,15 @@ class CANBusObserver(QMainWindow):
         self.frame_batch = []
         self.all_received_frames = []
         self.setDockOptions(QMainWindow.AnimatedDocks | QMainWindow.AllowNestedDocks)
+
+        QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.OpaqueSplitterResize, True)
+        QtAds.CDockManager.setConfigFlag(
+            QtAds.CDockManager.XmlCompressionEnabled, False
+        )
+        QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.FocusHighlighting, True)
+        self.dock_manager = QtAds.CDockManager(self)
+        # self.setCentralWidget(self.dock_manager)
+
         self.setup_actions()
         self.setup_ui()
         self.setup_docks()
@@ -1443,6 +1465,7 @@ class CANBusObserver(QMainWindow):
         self.setup_statusbar()
         self._load_recent_projects()
         self._update_recent_projects_menu()
+        self.update_perspectives_menu()
         self.project_explorer.project_changed.connect(lambda: self._set_dirty(True))
         self.transmit_panel.config_changed.connect(lambda: self._set_dirty(True))
         self.restore_layout()
@@ -1519,7 +1542,6 @@ class CANBusObserver(QMainWindow):
 
     def setup_ui(self):
         self.tab_widget = QTabWidget()
-        self.setCentralWidget(self.tab_widget)
         self.grouped_view = QTreeView()
         self.grouped_view.setModel(self.grouped_proxy_model)
         self.grouped_view.setAlternatingRowColors(True)
@@ -1548,19 +1570,23 @@ class CANBusObserver(QMainWindow):
         self.nmt_sender.status_update.connect(self.statusBar().showMessage)
         self.tab_widget.addTab(self.nmt_sender, "NMT Sender")
 
+        central_dock_widget = QtAds.CDockWidget("CentralWidget")
+        central_dock_widget.setWidget(self.tab_widget)
+        self.dock_manager.setCentralWidget(central_dock_widget)
+
     def setup_docks(self):
         self.project_explorer = ProjectExplorer(self.project, self)
-        explorer_dock = QDockWidget("Project Explorer", self)
-        explorer_dock.setObjectName("ProjectExplorerDock")
+        explorer_dock = QtAds.CDockWidget("Project Explorer")
         explorer_dock.setWidget(self.project_explorer)
-        self.addDockWidget(Qt.RightDockWidgetArea, explorer_dock)
+        self.dock_manager.addDockWidget(QtAds.RightDockWidgetArea, explorer_dock)
+
         self.properties_panel = PropertiesPanel(
             self.project, self.project_explorer, self.interface_manager, self
         )
-        properties_dock = QDockWidget("Properties", self)
-        properties_dock.setObjectName("PropertiesDock")
+        properties_dock = QtAds.CDockWidget("Properties")
         properties_dock.setWidget(self.properties_panel)
-        self.addDockWidget(Qt.RightDockWidgetArea, properties_dock)
+        self.dock_manager.addDockWidget(QtAds.RightDockWidgetArea, properties_dock)
+
         transmit_container = QWidget()
         transmit_layout = QVBoxLayout(transmit_container)
         transmit_layout.setContentsMargins(0, 0, 0, 0)
@@ -1569,16 +1595,16 @@ class CANBusObserver(QMainWindow):
         transmit_layout.addWidget(self.transmit_panel)
         transmit_layout.addWidget(self.signal_transmit_panel)
         self.signal_transmit_panel.setVisible(False)
-        # self.transmit_panel.setEnabled(False)
-        transmit_dock = QDockWidget("Transmit", self)
-        transmit_dock.setObjectName("TransmitDock")
+        transmit_dock = QtAds.CDockWidget("Transmit")
         transmit_dock.setWidget(transmit_container)
-        self.addDockWidget(Qt.BottomDockWidgetArea, transmit_dock)
+        self.dock_manager.addDockWidget(QtAds.BottomDockWidgetArea, transmit_dock)
+
         self.docks = {
             "explorer": explorer_dock,
             "properties": properties_dock,
             "transmit": transmit_dock,
         }
+
         self.properties_panel.message_to_transmit.connect(
             self._add_message_to_transmit_panel
         )
@@ -1586,13 +1612,31 @@ class CANBusObserver(QMainWindow):
         self.transmit_panel.row_selection_changed.connect(self.on_transmit_row_selected)
         self.signal_transmit_panel.data_encoded.connect(self.on_signal_data_encoded)
         self.project_explorer.project_changed.connect(self.on_project_changed)
-        self.project_explorer.project_changed.connect(self.nmt_sender.update_project_nodes)
+        self.project_explorer.project_changed.connect(
+            self.nmt_sender.update_project_nodes
+        )
         self.project_explorer.tree.currentItemChanged.connect(
             self.properties_panel.show_properties
         )
         self.project_explorer.tree.currentItemChanged.connect(
             self.on_project_explorer_selection_changed
         )
+
+    def save_perspective(self):
+        perspective_name, ok = QInputDialog.getText(
+            self, "Save Perspective", "Enter a name for the perspective:"
+        )
+        if ok and perspective_name:
+            self.dock_manager.addPerspective(perspective_name)
+            self.update_perspectives_menu()
+
+    def load_perspective(self, index):
+        perspective_name = self.perspectives_combobox.itemText(index)
+        self.dock_manager.openPerspective(perspective_name)
+
+    def update_perspectives_menu(self):
+        self.perspectives_combobox.clear()
+        self.perspectives_combobox.addItems(self.dock_manager.perspectiveNames())
 
     def setup_menubar(self):
         menubar = self.menuBar()
@@ -1614,9 +1658,23 @@ class CANBusObserver(QMainWindow):
         connect_menu.addAction(self.connect_action)
         connect_menu.addAction(self.disconnect_action)
         view_menu = menubar.addMenu("&View")
-        view_menu.addAction(self.docks["explorer"].toggleViewAction())
-        view_menu.addAction(self.docks["properties"].toggleViewAction())
-        view_menu.addAction(self.docks["transmit"].toggleViewAction())
+        for dock in self.docks.values():
+            view_menu.addAction(dock.toggleViewAction())
+
+        perspectives_menu = menubar.addMenu("&Perspectives")
+        save_perspective_action = QAction("Save Perspective...", self)
+        save_perspective_action.triggered.connect(self.save_perspective)
+        perspectives_menu.addAction(save_perspective_action)
+
+        self.perspectives_combobox = QComboBox(self)
+        self.perspectives_combobox.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.perspectives_combobox.setSizePolicy(
+            QSizePolicy.Preferred, QSizePolicy.Preferred
+        )
+        self.perspectives_combobox.activated.connect(self.load_perspective)
+        perspective_list_action = QWidgetAction(self)
+        perspective_list_action.setDefaultWidget(self.perspectives_combobox)
+        perspectives_menu.addAction(perspective_list_action)
 
     def setup_statusbar(self):
         self.statusBar().showMessage("Ready")
@@ -1854,7 +1912,9 @@ class CANBusObserver(QMainWindow):
                 self.properties_panel.current_widget.set_connected_state(True)
 
         # Update NMT sender context after connection state changes
-        self.on_project_explorer_selection_changed(self.project_explorer.tree.currentItem(), None)
+        self.on_project_explorer_selection_changed(
+            self.project_explorer.tree.currentItem(), None
+        )
 
     async def _connect_single(self, connection: Connection) -> bool:
         if connection.id in self.can_readers:
@@ -1892,7 +1952,9 @@ class CANBusObserver(QMainWindow):
                 self.properties_panel.current_widget.set_connected_state(False)
 
         # Update NMT sender context after connection state changes
-        self.on_project_explorer_selection_changed(self.project_explorer.tree.currentItem(), None)
+        self.on_project_explorer_selection_changed(
+            self.project_explorer.tree.currentItem(), None
+        )
 
     def send_can_frame(self, message: can.Message, connection_id: uuid.UUID):
         print(f"Sending frame: {message} on connection {connection_id}")
@@ -2063,19 +2125,19 @@ class CANBusObserver(QMainWindow):
         return reply != QMessageBox.Cancel
 
     def _new_project(self):
-        if not self._prompt_save_if_dirty():
-            return
-        self.disconnect_can()
-        self.clear_data()
-        self.project = Project()
-        # Add a default connection when a new project is created
-        self.project.connections.append(Connection())
-        self.current_project_path = None
-        self.pdo_manager.invalidate_cache()  # Clear PDO cache
-        self.project_explorer.set_project(self.project)
-        self.transmit_panel.set_config([])
-        self.nmt_sender.set_project(self.project)
-        self._set_dirty(False)
+        if self._prompt_save_if_dirty():
+            self.disconnect_can()  # Stop any active CAN connections and timers
+            self.clear_data()
+            self.project = Project()
+            # Add a default connection when a new project is created
+            self.project.connections.append(Connection())
+            self.current_project_path = None
+            self.pdo_manager.invalidate_cache()  # Clear PDO cache
+            self.project_explorer.set_project(self.project)
+            self.transmit_panel.set_config([])
+            self.nmt_sender.set_project(self.project)
+            self._set_dirty(False)
+            self._update_window_title()
 
     def _open_project(self, path: Optional[str] = None):
         if not self._prompt_save_if_dirty():
@@ -2201,6 +2263,8 @@ class CANBusObserver(QMainWindow):
 def main():
     app = QApplication(sys.argv)
 
+    qt_themes.set_theme('dracula')
+
     event_loop = QEventLoop(app)
     asyncio.set_event_loop(event_loop)
 
@@ -2210,7 +2274,7 @@ def main():
     app.setOrganizationName("CANPeek")
     app.setApplicationName("CANPeek")
     window = CANBusObserver()
-    qdarktheme.setup_theme("auto")
+
     window.show()
 
     with event_loop:

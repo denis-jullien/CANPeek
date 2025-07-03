@@ -115,7 +115,7 @@ wheels = [
 
 [[package]]
 name = "canpeek"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "." }
 dependencies = [
     { name = "canopen" },
@@ -124,8 +124,10 @@ dependencies = [
     { name = "docstring-parser" },
     { name = "pyqtdarktheme-fork" },
     { name = "pyside6" },
+    { name = "pyside6-qtads" },
     { name = "python-can" },
     { name = "qasync" },
+    { name = "qt-themes" },
 ]
 
 [package.optional-dependencies]
@@ -163,8 +165,10 @@ requires-dist = [
     { name = "pyqtdarktheme-fork", specifier = ">=2.1.0" },
     { name = "pyserial", marker = "extra == 'interfaces'", specifier = ">=3.5" },
     { name = "pyside6", specifier = ">=6.9.1" },
+    { name = "pyside6-qtads", specifier = ">=4.4.0.1" },
     { name = "python-can", specifier = ">=4.5.0" },
     { name = "qasync", specifier = ">=0.27.1" },
+    { name = "qt-themes", specifier = ">=0.3.0" },
     { name = "uptime", marker = "extra == 'interfaces'", specifier = ">=3.0.1" },
     { name = "usb", marker = "extra == 'interfaces'", specifier = ">=0.0.83.dev0" },
 ]
@@ -467,6 +471,23 @@ wheels = [
 ]
 
 [[package]]
+name = "pyside6-qtads"
+version = "4.4.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyside6-essentials" },
+    { name = "shiboken6" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9c/76/51a09fa29626c2d8a6abf70acf02ec27558fb62a15b829a4466d4f5e8856/pyside6_qtads-4.4.0.1.tar.gz", hash = "sha256:a0d2b94d0399e90a2379d96a8a8e6fb4c102e24f83d15b2e653819295c0129cd", size = 21831378, upload-time = "2025-06-14T00:29:20.518Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5f/ca/395fe0dd92e1f9ded3c0605bb131c70bd547db0309677d8946f423f706d7/pyside6_qtads-4.4.0.1-cp39-abi3-macosx_12_0_arm64.whl", hash = "sha256:0409053c06b6ffd16e8905bf3da15bf4c3e40f3adbf7ffe80257fc1300e224e2", size = 513964, upload-time = "2025-06-14T00:29:13.896Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/20/46fe047175d530db1417fce4ef992107695216d7609a833a7414af10d197/pyside6_qtads-4.4.0.1-cp39-abi3-macosx_12_0_x86_64.whl", hash = "sha256:79eb18edf640c153a076ef1787085a9bdbc7a5059d2a85655920fa23ee0695d1", size = 533037, upload-time = "2025-06-14T00:29:15.251Z" },
+    { url = "https://files.pythonhosted.org/packages/24/ad/19e250ed6afcaeff8f24129a89c039d2a8099bf1706ab80323feab2f50f4/pyside6_qtads-4.4.0.1-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:986d701bd0d909006f8c55c9cb1fa9506dc6d47f56ab157dd6bf6157b66092d5", size = 730524, upload-time = "2025-06-14T00:29:16.668Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/ce/f466c3a87f1d5e14da41b8116b25722a1c117c6679410850de88aa05483b/pyside6_qtads-4.4.0.1-cp39-abi3-manylinux_2_39_aarch64.whl", hash = "sha256:4252d30f9808df11641ad804a94ae0c960628b544cf267096067d691db76738f", size = 742955, upload-time = "2025-06-14T00:29:17.839Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/31/049e1314cb2eff64b08ce90454e14e5c2b21ea5c28d888049bf237df7816/pyside6_qtads-4.4.0.1-cp39-abi3-win_amd64.whl", hash = "sha256:aef5ef74db945c6dedd3f02cec0192c858ec37c563b5d6c56a7393c5b0c0e611", size = 389793, upload-time = "2025-06-14T00:29:18.878Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "8.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -608,6 +629,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1c/e0/7c7c973f52e1765d6ddfc41e9272294f65d5d52b8f5f5eae92adf411ad46/qasync-0.27.1.tar.gz", hash = "sha256:8dc768fd1ee5de1044c7c305eccf2d39d24d87803ea71189d4024fb475f4985f", size = 14287, upload-time = "2023-11-19T14:19:55.535Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/51/06/bc628aa2981bcfd452a08ee435b812fd3eee4ada8acb8a76c4a09d1a5a77/qasync-0.27.1-py3-none-any.whl", hash = "sha256:5d57335723bc7d9b328dadd8cb2ed7978640e4bf2da184889ce50ee3ad2602c7", size = 14866, upload-time = "2023-11-19T14:19:54.345Z" },
+]
+
+[[package]]
+name = "qt-themes"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/68/fda9ba495ca278846c139c7983c0e82159d327c7854ebcf00b4db6551716/qt_themes-0.3.0.tar.gz", hash = "sha256:06eaa3c9a5feb5738f382f0093e09ad4c2d6865edf8c3421d7240f1472966223", size = 8358, upload-time = "2025-03-06T18:08:33.548Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ea/f1/cad6cc5ddb6824dc77a8bd1c10c30a716734d78cef7fcb4160898ff1b4a1/qt_themes-0.3.0-py3-none-any.whl", hash = "sha256:fc8567ee00cd369b9bd81abdc18c15a724938a7e0c46456865de92b72c96180d", size = 11164, upload-time = "2025-03-06T18:08:32.15Z" },
 ]
 
 [[package]]
