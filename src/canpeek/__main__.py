@@ -71,7 +71,7 @@ from PySide6.QtCore import (
     QSortFilterProxyModel,
     QSettings,
 )
-from PySide6.QtGui import QAction, QKeyEvent, QIcon, QPixmap, QColor
+from PySide6.QtGui import QAction, QKeyEvent, QIcon, QPixmap, QColor, QActionGroup, QFont, QFontDatabase
 
 import can
 import cantools
@@ -1474,6 +1474,18 @@ class CANBusObserver(QMainWindow):
             self._on_project_structure_changed
         )
 
+        # Apply default theme and style
+        # self._set_theme(list(qt_themes.get_themes().keys())[0])
+
+    def _set_theme(self, theme_name: str):
+        if theme_name == "default":
+            theme_name = None
+
+        # TODO : theme is partialy applied if run once ....
+        qt_themes.set_theme(theme_name)
+        qt_themes.set_theme(theme_name)
+        qt_themes.set_theme(theme_name)
+
     def setup_actions(self):
         style = self.style()
         self.new_project_action = QAction(
@@ -1535,11 +1547,17 @@ class CANBusObserver(QMainWindow):
 
     def setup_ui(self):
         self.tab_widget = QTabWidget()
+
+        # Set monospaced font for grouped and trace views
+        monospace_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+
         self.grouped_view = QTreeView()
         self.grouped_view.setModel(self.grouped_proxy_model)
         self.grouped_view.setAlternatingRowColors(True)
         self.grouped_view.setSortingEnabled(True)
+        self.grouped_view.setFont(monospace_font)
         self.tab_widget.addTab(self.grouped_view, "Grouped")
+
         trace_view_widget = QWidget()
         trace_layout = QVBoxLayout(trace_view_widget)
         trace_layout.setContentsMargins(5, 5, 5, 5)
@@ -1547,6 +1565,7 @@ class CANBusObserver(QMainWindow):
         self.trace_view.setModel(self.trace_model)
         self.trace_view.setAlternatingRowColors(True)
         self.trace_view.horizontalHeader().setStretchLastSection(True)
+        self.trace_view.setFont(monospace_font)
         self.autoscroll_cb = QCheckBox("Autoscroll", checked=True)
         trace_layout.addWidget(self.trace_view)
         trace_layout.addWidget(self.autoscroll_cb)
@@ -1665,6 +1684,19 @@ class CANBusObserver(QMainWindow):
             QSizePolicy.Preferred, QSizePolicy.Preferred
         )
         self.perspectives_combobox.activated.connect(self.load_perspective)
+
+        # Theme and Style menus
+        theme_menu = menubar.addMenu("&Themes")
+        self.theme_group = QActionGroup(self)
+        self.theme_group.setExclusive(True)
+        names = ["default"]
+        names.extend(qt_themes.get_themes().keys())
+        for theme_name in names:
+            action = QAction(theme_name, self, checkable=True)
+            action.triggered.connect(partial(self._set_theme, theme_name))
+            self.theme_group.addAction(action)
+            theme_menu.addAction(action)
+
         perspective_list_action = QWidgetAction(self)
         perspective_list_action.setDefaultWidget(self.perspectives_combobox)
         perspectives_menu.addAction(perspective_list_action)
@@ -2256,7 +2288,7 @@ class CANBusObserver(QMainWindow):
 def main():
     app = QApplication(sys.argv)
 
-    qt_themes.set_theme("catppuccin_mocha")
+    # qt_themes.set_theme("catppuccin_mocha")
 
     event_loop = QEventLoop(app)
     asyncio.set_event_loop(event_loop)
