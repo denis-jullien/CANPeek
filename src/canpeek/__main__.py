@@ -38,7 +38,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QPushButton,
     QLabel,
     QLineEdit,
@@ -71,7 +70,16 @@ from PySide6.QtCore import (
     QSortFilterProxyModel,
     QSettings,
 )
-from PySide6.QtGui import QAction, QKeyEvent, QIcon, QPixmap, QColor, QActionGroup, QFont, QFontDatabase
+from PySide6.QtGui import (
+    QAction,
+    QKeyEvent,
+    QIcon,
+    QPixmap,
+    QColor,
+    QActionGroup,
+    QFont,
+    QFontDatabase,
+)
 
 import can
 import cantools
@@ -1448,6 +1456,36 @@ class CANBusObserver(QMainWindow):
         )
         QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.FocusHighlighting, True)
         self.dock_manager = QtAds.CDockManager(self)
+
+        # Set monospaced font for grouped and trace views
+        monospace_font = QFont("monospace")
+        monospace_font.setStyleHint(QFont.Monospace)
+
+        self.grouped_view = QTreeView()
+        self.grouped_view.setModel(self.grouped_proxy_model)
+        self.grouped_view.setAlternatingRowColors(True)
+        self.grouped_view.setSortingEnabled(True)
+        self.grouped_view.setFont(monospace_font)
+
+        self.trace_view_widget = QWidget()
+        trace_layout = QVBoxLayout(self.trace_view_widget)
+        trace_layout.setContentsMargins(5, 5, 5, 5)
+        self.trace_view = QTableView()
+        self.trace_view.setModel(self.trace_model)
+        self.trace_view.setAlternatingRowColors(True)
+        self.trace_view.horizontalHeader().setStretchLastSection(True)
+        self.trace_view.setFont(monospace_font)
+        self.autoscroll_cb = QCheckBox("Autoscroll", checked=True)
+        trace_layout.addWidget(self.trace_view)
+        trace_layout.addWidget(self.autoscroll_cb)
+
+        self.object_dictionary_viewer = ObjectDictionaryViewer()
+        self.object_dictionary_viewer.frame_to_send.connect(self.send_can_frame)
+
+        self.nmt_sender = NMTSender(self.project)
+        self.nmt_sender.frame_to_send.connect(self.send_can_frame)
+        self.nmt_sender.status_update.connect(self.statusBar().showMessage)
+
         # self.setCentralWidget(self.dock_manager)
 
         self.setup_actions()
@@ -1546,8 +1584,6 @@ class CANBusObserver(QMainWindow):
         toolbar.addAction(self.load_log_action)
 
     def setup_ui(self):
-        self.tab_widget = QTabWidget()
-
         # Set monospaced font for grouped and trace views
         monospace_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
 
@@ -1556,10 +1592,9 @@ class CANBusObserver(QMainWindow):
         self.grouped_view.setAlternatingRowColors(True)
         self.grouped_view.setSortingEnabled(True)
         self.grouped_view.setFont(monospace_font)
-        self.tab_widget.addTab(self.grouped_view, "Grouped")
 
-        trace_view_widget = QWidget()
-        trace_layout = QVBoxLayout(trace_view_widget)
+        self.trace_view_widget = QWidget()
+        trace_layout = QVBoxLayout(self.trace_view_widget)
         trace_layout.setContentsMargins(5, 5, 5, 5)
         self.trace_view = QTableView()
         self.trace_view.setModel(self.trace_model)
@@ -1569,22 +1604,13 @@ class CANBusObserver(QMainWindow):
         self.autoscroll_cb = QCheckBox("Autoscroll", checked=True)
         trace_layout.addWidget(self.trace_view)
         trace_layout.addWidget(self.autoscroll_cb)
-        self.tab_widget.addTab(trace_view_widget, "Trace")
 
-        # Add Object Dictionary tab
         self.object_dictionary_viewer = ObjectDictionaryViewer()
         self.object_dictionary_viewer.frame_to_send.connect(self.send_can_frame)
-        self.tab_widget.addTab(self.object_dictionary_viewer, "Object Dictionary")
 
-        # Add NMT Sender tab
         self.nmt_sender = NMTSender(self.project)
         self.nmt_sender.frame_to_send.connect(self.send_can_frame)
         self.nmt_sender.status_update.connect(self.statusBar().showMessage)
-        self.tab_widget.addTab(self.nmt_sender, "NMT Sender")
-
-        central_dock_widget = QtAds.CDockWidget("CentralWidget")
-        central_dock_widget.setWidget(self.tab_widget)
-        self.dock_manager.setCentralWidget(central_dock_widget)
 
     def setup_docks(self):
         self.project_explorer = ProjectExplorer(self.project, self)
@@ -1611,10 +1637,33 @@ class CANBusObserver(QMainWindow):
         transmit_dock.setWidget(transmit_container)
         self.dock_manager.addDockWidget(QtAds.BottomDockWidgetArea, transmit_dock)
 
+        # New docks for previously tabbed views
+        grouped_dock = QtAds.CDockWidget("Grouped View")
+        grouped_dock.setWidget(self.grouped_view)
+        self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, grouped_dock)
+
+        trace_dock = QtAds.CDockWidget("Trace View")
+        trace_dock.setWidget(self.trace_view_widget)
+        self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, trace_dock)
+
+        object_dictionary_dock = QtAds.CDockWidget("Object Dictionary")
+        object_dictionary_dock.setWidget(self.object_dictionary_viewer)
+        self.dock_manager.addDockWidget(
+            QtAds.CenterDockWidgetArea, object_dictionary_dock
+        )
+
+        nmt_sender_dock = QtAds.CDockWidget("NMT Sender")
+        nmt_sender_dock.setWidget(self.nmt_sender)
+        self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, nmt_sender_dock)
+
         self.docks = {
             "explorer": explorer_dock,
             "properties": properties_dock,
             "transmit": transmit_dock,
+            "grouped": grouped_dock,
+            "trace": trace_dock,
+            "object_dictionary": object_dictionary_dock,
+            "nmt_sender": nmt_sender_dock,
         }
 
         self.properties_panel.message_to_transmit.connect(
