@@ -473,7 +473,7 @@ class ConnectionEditor(QWidget):
         for name, info in params.items():
             # Use the default prameter value from python-can if the interface type changed
             if self.connection.interface != interface_name:
-                current_value = info.get("default",self.connection.config.get(name))
+                current_value = info.get("default", self.connection.config.get(name))
             else:
                 current_value = self.connection.config.get(name, info.get("default"))
 
@@ -1628,10 +1628,11 @@ class CANBusObserver(QMainWindow):
         self.nmt_sender.status_update.connect(self.statusBar().showMessage)
 
     def setup_docks(self):
-
         # Set central widget
         label = QLabel()
-        label.setText("This is a DockArea which is always visible, even if it does not contain any DockWidgets.")
+        label.setText(
+            "This is a DockArea which is always visible, even if it does not contain any DockWidgets."
+        )
         label.setAlignment(Qt.AlignCenter)
         central_dock_widget = QtAds.CDockWidget("CentralWidget")
         central_dock_widget.setWidget(label)
@@ -1641,15 +1642,18 @@ class CANBusObserver(QMainWindow):
         self.project_explorer = ProjectExplorer(self.project, self)
         explorer_dock = QtAds.CDockWidget("Project Explorer")
         explorer_dock.setWidget(self.project_explorer)
-        project_aera = self.dock_manager.addDockWidget(QtAds.DockWidgetArea.LeftDockWidgetArea, explorer_dock)
+        project_aera = self.dock_manager.addDockWidget(
+            QtAds.DockWidgetArea.LeftDockWidgetArea, explorer_dock
+        )
 
         self.properties_panel = PropertiesPanel(
             self.project, self.project_explorer, self.interface_manager, self
         )
         properties_dock = QtAds.CDockWidget("Properties")
         properties_dock.setWidget(self.properties_panel)
-        self.dock_manager.addDockWidget(QtAds.DockWidgetArea.BottomDockWidgetArea, properties_dock, project_aera)
-
+        self.dock_manager.addDockWidget(
+            QtAds.DockWidgetArea.BottomDockWidgetArea, properties_dock, project_aera
+        )
 
         # New docks for previously tabbed views
         grouped_dock = QtAds.CDockWidget("Grouped View")
@@ -1678,7 +1682,9 @@ class CANBusObserver(QMainWindow):
         self.signal_transmit_panel.setVisible(False)
         transmit_dock = QtAds.CDockWidget("Transmit")
         transmit_dock.setWidget(transmit_container)
-        transmit_aera = self.dock_manager.addDockWidget(QtAds.BottomDockWidgetArea, transmit_dock, central_dock_area)
+        transmit_aera = self.dock_manager.addDockWidget(
+            QtAds.BottomDockWidgetArea, transmit_dock, central_dock_area
+        )
 
         nmt_sender_dock = QtAds.CDockWidget("NMT Sender")
         nmt_sender_dock.setWidget(self.nmt_sender)
