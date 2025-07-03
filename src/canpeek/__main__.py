@@ -84,6 +84,7 @@ from .co.canopen_utils import (
     PDODatabaseManager,
     ObjectDictionaryViewer,
 )
+from .co.nmt_editor import NMTSender
 
 from .data_utils import (
     CANFrame,
@@ -1541,6 +1542,12 @@ class CANBusObserver(QMainWindow):
         self.object_dictionary_viewer.frame_to_send.connect(self.send_can_frame)
         self.tab_widget.addTab(self.object_dictionary_viewer, "Object Dictionary")
 
+        # Add NMT Sender tab
+        self.nmt_sender = NMTSender(self.project)
+        self.nmt_sender.frame_to_send.connect(self.send_can_frame)
+        self.nmt_sender.status_update.connect(self.statusBar().showMessage)
+        self.tab_widget.addTab(self.nmt_sender, "NMT Sender")
+
     def setup_docks(self):
         self.project_explorer = ProjectExplorer(self.project, self)
         explorer_dock = QDockWidget("Project Explorer", self)
@@ -1579,6 +1586,7 @@ class CANBusObserver(QMainWindow):
         self.transmit_panel.row_selection_changed.connect(self.on_transmit_row_selected)
         self.signal_transmit_panel.data_encoded.connect(self.on_signal_data_encoded)
         self.project_explorer.project_changed.connect(self.on_project_changed)
+        self.project_explorer.project_changed.connect(self.nmt_sender.update_project_nodes)
         self.project_explorer.tree.currentItemChanged.connect(
             self.properties_panel.show_properties
         )
@@ -1767,11 +1775,23 @@ class CANBusObserver(QMainWindow):
             self.object_dictionary_viewer.clear_node()
             return
 
+        is_connected = bool(self.can_readers)
         data = current.data(0, Qt.UserRole)
         if isinstance(data, CANopenNode) and data.enabled:
             asyncio.create_task(self.object_dictionary_viewer.set_node(data))
+            self.nmt_sender.set_connection_context(data.connection_id, is_connected)
+        elif isinstance(data, Connection):
+            self.nmt_sender.set_connection_context(data.id, is_connected)
+        elif isinstance(data, str) and data.startswith("canopen_bus_"):
+            connection_id_str = data.replace("canopen_bus_", "")
+            try:
+                connection_id = uuid.UUID(connection_id_str)
+                self.nmt_sender.set_connection_context(connection_id, is_connected)
+            except ValueError:
+                self.nmt_sender.set_connection_context(None, is_connected)
         else:
             self.object_dictionary_viewer.clear_node()
+            self.nmt_sender.set_connection_context(None, is_connected)
 
     def _update_bus_state(self, state: can.BusState):
         """Updates the status bar with the current CAN bus state."""
@@ -1833,6 +1853,9 @@ class CANBusObserver(QMainWindow):
             if isinstance(self.properties_panel.current_widget, ConnectionEditor):
                 self.properties_panel.current_widget.set_connected_state(True)
 
+        # Update NMT sender context after connection state changes
+        self.on_project_explorer_selection_changed(self.project_explorer.tree.currentItem(), None)
+
     async def _connect_single(self, connection: Connection) -> bool:
         if connection.id in self.can_readers:
             return True  # Already connected
@@ -1867,6 +1890,9 @@ class CANBusObserver(QMainWindow):
             self.properties_panel.show_properties(current_item)
             if isinstance(self.properties_panel.current_widget, ConnectionEditor):
                 self.properties_panel.current_widget.set_connected_state(False)
+
+        # Update NMT sender context after connection state changes
+        self.on_project_explorer_selection_changed(self.project_explorer.tree.currentItem(), None)
 
     def send_can_frame(self, message: can.Message, connection_id: uuid.UUID):
         print(f"Sending frame: {message} on connection {connection_id}")
@@ -2048,6 +2074,7 @@ class CANBusObserver(QMainWindow):
         self.pdo_manager.invalidate_cache()  # Clear PDO cache
         self.project_explorer.set_project(self.project)
         self.transmit_panel.set_config([])
+        self.nmt_sender.set_project(self.project)
         self._set_dirty(False)
 
     def _open_project(self, path: Optional[str] = None):
@@ -2074,6 +2101,7 @@ class CANBusObserver(QMainWindow):
             self.statusBar().showMessage(
                 f"Project {self.current_project_path.name} loaded"
             )
+            self.nmt_sender.set_project(self.project)
         except Exception as e:
             QMessageBox.critical(
                 self, "Project Load Error", f"Failed to load project: {e}"
