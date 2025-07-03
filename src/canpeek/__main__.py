@@ -1496,10 +1496,10 @@ class CANBusObserver(QMainWindow):
         self.setup_statusbar()
         self._load_recent_projects()
         self._update_recent_projects_menu()
-        self.update_perspectives_menu()
         self.project_explorer.project_changed.connect(lambda: self._set_dirty(True))
         self.transmit_panel.config_changed.connect(lambda: self._set_dirty(True))
         self.restore_layout()
+        self.update_perspectives_menu()
         self.gui_update_timer = QTimer(self)
         self.gui_update_timer.timeout.connect(self.update_views)
         self.gui_update_timer.start(50)
@@ -2303,6 +2303,8 @@ class CANBusObserver(QMainWindow):
         settings = QSettings()
         settings.setValue("geometry", self.saveGeometry())
         settings.setValue("windowState", self.saveState())
+        settings.setValue("dockState", self.dock_manager.saveState())
+        self.dock_manager.savePerspectives(settings)
         if self.current_project_path:
             settings.setValue("lastProjectPath", str(self.current_project_path))
 
@@ -2310,13 +2312,17 @@ class CANBusObserver(QMainWindow):
         settings = QSettings()
         geometry = settings.value("geometry")
         state = settings.value("windowState")
+        dock_state = settings.value("dockState")
         last_project = settings.value("lastProjectPath")
         if geometry:
             self.restoreGeometry(geometry)
         if state:
             self.restoreState(state)
+        if dock_state:
+            self.dock_manager.restoreState(dock_state)
         if last_project and Path(last_project).exists():
             self._open_project(last_project)
+        self.dock_manager.loadPerspectives(settings)
 
     def _on_project_structure_changed(self):
         """Handle project structure changes that might affect PDO databases"""
