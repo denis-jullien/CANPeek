@@ -107,7 +107,7 @@ from .data_utils import (
 
 from .can_utils import CANAsyncReader
 
-from .models import CANTraceModel, CANGroupedModel
+from .models import CANTraceModel, CANGroupedModel, GroupedViewColumn
 
 if TYPE_CHECKING:
     from __main__ import ProjectExplorer, CANBusObserver
@@ -1602,6 +1602,7 @@ class CANBusObserver(QMainWindow):
         self.grouped_view.setAlternatingRowColors(True)
         self.grouped_view.setSortingEnabled(True)
         self.grouped_view.setFont(monospace_font)
+        self.grouped_view.sortByColumn(GroupedViewColumn.ID, Qt.AscendingOrder)
 
         self.trace_view_widget = QWidget()
         trace_layout = QVBoxLayout(self.trace_view_widget)
@@ -1753,7 +1754,7 @@ class CANBusObserver(QMainWindow):
         self.theme_group = QActionGroup(self)
         self.theme_group.setExclusive(True)
         names = ["default"]
-        names.extend(qt_themes.get_themes().keys())
+        names.extend(sorted(qt_themes.get_themes().keys()))
         for theme_name in names:
             action = QAction(theme_name, self, checkable=True)
             action.triggered.connect(partial(self._set_theme, theme_name))
@@ -1776,12 +1777,18 @@ class CANBusObserver(QMainWindow):
     def _remove_perspective(self):
         perspective_names = self.dock_manager.perspectiveNames()
         if not perspective_names:
-            QMessageBox.information(self, "Remove Perspective", "No perspectives to remove.")
+            QMessageBox.information(
+                self, "Remove Perspective", "No perspectives to remove."
+            )
             return
 
         perspective_name, ok = QInputDialog.getItem(
-            self, "Remove Perspective", "Select a perspective to remove:",
-            perspective_names, 0, False
+            self,
+            "Remove Perspective",
+            "Select a perspective to remove:",
+            perspective_names,
+            0,
+            False,
         )
         if ok and perspective_name:
             self.dock_manager.removePerspective(perspective_name)
