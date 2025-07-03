@@ -1513,7 +1513,15 @@ class CANBusObserver(QMainWindow):
         )
 
         # Apply default theme and style
-        # self._set_theme(list(qt_themes.get_themes().keys())[0])
+        settings = QSettings()
+        saved_theme = settings.value("selectedTheme", "default")
+        self._set_theme(saved_theme)
+
+        # Check the corresponding action in the menu
+        for action in self.theme_group.actions():
+            if action.text() == saved_theme:
+                action.setChecked(True)
+                break
 
     def _set_theme(self, theme_name: str):
         if theme_name == "default":
@@ -1523,6 +1531,8 @@ class CANBusObserver(QMainWindow):
         qt_themes.set_theme(theme_name)
         qt_themes.set_theme(theme_name)
         qt_themes.set_theme(theme_name)
+        settings = QSettings()
+        settings.setValue("selectedTheme", theme_name)
 
     def setup_actions(self):
         style = self.style()
@@ -1727,6 +1737,10 @@ class CANBusObserver(QMainWindow):
         save_perspective_action.triggered.connect(self.save_perspective)
         perspectives_menu.addAction(save_perspective_action)
 
+        remove_perspective_action = QAction("Remove Perspective...", self)
+        remove_perspective_action.triggered.connect(self._remove_perspective)
+        perspectives_menu.addAction(remove_perspective_action)
+
         self.perspectives_combobox = QComboBox(self)
         self.perspectives_combobox.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self.perspectives_combobox.setSizePolicy(
@@ -1758,6 +1772,20 @@ class CANBusObserver(QMainWindow):
         self.statusBar().addPermanentWidget(self.bus_state_label)
         self.statusBar().addPermanentWidget(self.frame_count_label)
         self.statusBar().addPermanentWidget(self.connection_label)
+
+    def _remove_perspective(self):
+        perspective_names = self.dock_manager.perspectiveNames()
+        if not perspective_names:
+            QMessageBox.information(self, "Remove Perspective", "No perspectives to remove.")
+            return
+
+        perspective_name, ok = QInputDialog.getItem(
+            self, "Remove Perspective", "Select a perspective to remove:",
+            perspective_names, 0, False
+        )
+        if ok and perspective_name:
+            self.dock_manager.removePerspective(perspective_name)
+            self.update_perspectives_menu()
 
     def _add_message_to_transmit_panel(self, message: cantools.db.Message):
         """Slot to handle request to add a DBC message to the transmit panel."""
