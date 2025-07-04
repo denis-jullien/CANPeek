@@ -12,7 +12,6 @@ Features:
 """
 
 import os
-import qt_themes
 import sys
 import json
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
@@ -20,7 +19,7 @@ from pathlib import Path
 from functools import partial
 import inspect
 import enum
-from . import rc_icons
+from canpeek import rc_icons
 import asyncio
 from qasync import QEventLoop, QApplication
 import uuid
@@ -81,12 +80,14 @@ from PySide6.QtGui import (
     QFontDatabase,
 )
 
+import PySide6QtAds as QtAds
+import qt_themes
+
 import can
 import cantools
 
-import PySide6QtAds as QtAds
 
-from .co.canopen_utils import (
+from canpeek.co.canopen_utils import (
     CANopenNode,
     CANopenNodeEditor,
     CANopenRootEditor,
@@ -94,9 +95,9 @@ from .co.canopen_utils import (
     PDODatabaseManager,
     ObjectDictionaryViewer,
 )
-from .co.nmt_editor import NMTSender
+from canpeek.co.nmt_editor import NMTSender
 
-from .data_utils import (
+from canpeek.data_utils import (
     CANFrame,
     Project,
     CANFrameFilter,
@@ -105,9 +106,9 @@ from .data_utils import (
     Connection,
 )
 
-from .can_utils import CANAsyncReader
+from canpeek.can_utils import CANAsyncReader
 
-from .models import CANTraceModel, CANGroupedModel, GroupedViewColumn
+from canpeek.models import CANTraceModel, CANGroupedModel, GroupedViewColumn
 
 if TYPE_CHECKING:
     from __main__ import ProjectExplorer, CANBusObserver
