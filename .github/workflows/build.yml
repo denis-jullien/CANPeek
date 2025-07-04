@@ -10,6 +10,7 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
 
@@ -36,22 +37,23 @@ jobs:
         if: ${{ runner.os == 'Linux' }}
         shell: bash
         run: |
-          sudo apt-get update && sudo apt-get install -y ccache patchelf
+          sudo apt-get update && sudo apt-get install -y patchelf
+#          sudo apt-get update && sudo apt-get install -y ccache patchelf
 
-      - name: Setup Environment Variables
-        shell: bash
-        run: |
-          echo "NUITKA_CACHE_DIR=${{ github.action_path }}/nuitka/cache" >> $GITHUB_ENV
-
-      - name: Cache Nuitka cache directory
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.NUITKA_CACHE_DIR }}
-          key: nuitka-${{ inputs.caching-key }}-${{ runner.os }}-${{ runner.arch }}-python-${{ env.PYTHON_VERSION }}-nuitka-${{ github.sha }}
-          restore-keys: |
-            nuitka-${{ inputs.caching-key }}-${{ runner.os }}-${{ runner.arch }}-python-${{ env.PYTHON_VERSION }}-
-            nuitka-${{ runner.os }}-${{ runner.arch }}-python-${{ env.PYTHON_VERSION }}-
-            nuitka-${{ runner.os }}-${{ runner.arch }}-
+#      - name: Setup Environment Variables
+#        shell: bash
+#        run: |
+#          echo "NUITKA_CACHE_DIR=${{ github.action_path }}/nuitka/cache" >> $GITHUB_ENV
+#
+#      - name: Cache Nuitka cache directory
+#        uses: actions/cache@v4
+#        with:
+#          path: ${{ env.NUITKA_CACHE_DIR }}
+#          key: nuitka-${{ inputs.caching-key }}-${{ runner.os }}-${{ runner.arch }}-python-${{ env.PYTHON_VERSION }}-nuitka-${{ github.sha }}
+#          restore-keys: |
+#            nuitka-${{ inputs.caching-key }}-${{ runner.os }}-${{ runner.arch }}-python-${{ env.PYTHON_VERSION }}-
+#            nuitka-${{ runner.os }}-${{ runner.arch }}-python-${{ env.PYTHON_VERSION }}-
+#            nuitka-${{ runner.os }}-${{ runner.arch }}-
 
       - run: uv run -m nuitka src/canpeek/__main__.py --mode=app --enable-plugins=pyside6 --include-package=can.interfaces --include-package-data=qt_themes
 
