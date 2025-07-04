@@ -2,9 +2,8 @@ name: Binary Build
 
 on:
   push:
-    tags:
-      # Publish on any tag starting with a `v`, e.g. v1.2.3
-      - v*
+    branches:
+      - master
 
 jobs:
   build:

@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://squidfunk.github.io/mkdocs-material/schema.json
+
+site_name: CANPeek
+site_url: https://mydomain.org/mysite
+repo_url: https://github.com/denis-jullien/CANPeek
+theme:
+  name: material
+  logo: canpeek.png
+  favicon: canpeek.png
+  features:
+    - search.suggest
+    - search.highlight
+  palette:
+    # Palette toggle for automatic mode
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/link
+        name: Switch to light mode
+
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      toggle:
+        icon: material/toggle-switch
+        name: Switch to dark mode
+
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      toggle:
+        icon: material/toggle-switch-off-outline
+        name: Switch to system preference
