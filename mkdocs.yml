@@ -10,6 +10,11 @@ theme:
   features:
     - search.suggest
     - search.highlight
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.indexes
   palette:
     # Palette toggle for automatic mode
     - media: "(prefers-color-scheme)"
@@ -32,3 +37,22 @@ theme:
       toggle:
         icon: material/toggle-switch-off-outline
         name: Switch to system preference
+
+nav:
+  - CANPeek: index.md
+  - CAN Interface Setup:
+    - interfaces/index.md
+    - SocketCAN: interfaces/socketcan.md
+    - PCAN: interfaces/pcan.md
+    - Kvaser: interfaces/kvaser.md
+    - Vector: interfaces/vector.md
+    - Other Interfaces: interfaces/other.md
+  - User Guide:
+    - Getting Started: user_guide/getting_started.md
+    - Main Window: user_guide/main_window.md
+    - Projects: user_guide/projects.md
+    - Filtering: user_guide/filtering.md
+    - Transmitting Frames: user_guide/transmitting.md
+    - CANopen: user_guide/canopen.md
+    - Logging: user_guide/logging.md
+
