@@ -131,14 +131,18 @@ class CANTraceModel(QAbstractTableModel):
         self.headers = [col.name.replace("_", " ").title() for col in TraceViewColumn]
         self.headers[TraceViewColumn.DIRECTION] = "Rx/Tx"  # Custom header name
 
-        self.frames: deque[CANFrame] = deque(maxlen=10000)
+        self.frames: deque[CANFrame] = deque(maxlen=1000000)
         self.dbc_files: List[DBCFile] = []
         self.pdo_databases: List[cantools.db.Database] = []
         self.canopen_enabled = True
 
-    def set_data(self, frames: List[CANFrame]):
+    def clear_frames(self):
         self.beginResetModel()
         self.frames.clear()
+        self.endResetModel()
+
+    def add_data(self, frames: List[CANFrame]):
+        self.beginResetModel()
         self.frames.extend(frames)
         self.endResetModel()
 

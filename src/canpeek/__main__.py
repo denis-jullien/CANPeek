@@ -118,10 +118,6 @@ if os.environ.get("XDG_SESSION_TYPE") == "wayland":
     print("Workaround for qt-ads on Wayland")
     os.environ["QT_QPA_PLATFORM"] = "xcb"
 
-# --- Data Structures ---
-TRACE_BUFFER_LIMIT = 5000
-
-
 # --- UI Classes ---
 class DBCEditor(QWidget):
     message_to_transmit = Signal(object)
@@ -1453,7 +1449,7 @@ class CANBusObserver(QMainWindow):
         self.grouped_proxy_model.setSourceModel(self.grouped_model)
         self.grouped_proxy_model.setSortRole(Qt.UserRole)
         self.frame_batch = []
-        self.all_received_frames = []
+        self.all_received_frames_count = []
 
         QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.OpaqueSplitterResize, True)
         QtAds.CDockManager.setConfigFlag(
@@ -1865,10 +1861,8 @@ class CANBusObserver(QMainWindow):
                 if self.grouped_view.isExpanded(self.grouped_proxy_model.index(row, 0))
             }
             self.grouped_model.update_frames(filtered_frames)
-            self.all_received_frames.extend(filtered_frames)
-            if len(self.all_received_frames) > TRACE_BUFFER_LIMIT:
-                del self.all_received_frames[:-TRACE_BUFFER_LIMIT]
-            self.trace_model.set_data(self.all_received_frames)
+            self.all_received_frames_count += len(filtered_frames)
+            self.trace_model.add_data(filtered_frames)
             for row in range(self.grouped_proxy_model.rowCount()):
                 proxy_index = self.grouped_proxy_model.index(row, 0)
                 if (
@@ -1880,7 +1874,7 @@ class CANBusObserver(QMainWindow):
                     self.grouped_view.setExpanded(proxy_index, True)
             if self.autoscroll_cb.isChecked():
                 self.trace_view.scrollToBottom()
-            self.frame_count_label.setText(f"Frames: {len(self.all_received_frames)}")
+            self.frame_count_label.setText(f"Frames: {self.all_received_frames_count}")
         except Exception as e:
             import traceback
 
@@ -2110,13 +2104,13 @@ class CANBusObserver(QMainWindow):
         self.disconnect_can()
 
     def clear_data(self):
-        self.all_received_frames.clear()
+        self.all_received_frames_count = 0
         self.grouped_model.clear_frames()
-        self.trace_model.set_data([])
+        self.trace_model.clear_frames()
         self.frame_count_label.setText("Frames: 0")
 
     def save_log(self):
-        if not self.all_received_frames:
+        if not self.trace_model.frames:
             QMessageBox.information(self, "No Data", "No frames to save.")
             return
         dialog = QFileDialog(self, "Save CAN Log", "", self.log_file_filter)
@@ -2128,7 +2122,7 @@ class CANBusObserver(QMainWindow):
         logger = None
         try:
             logger = can.Logger(filename)
-            for frame in self.all_received_frames:
+            for frame in self.trace_model.frames:
                 logger.on_message_received(
                     can.Message(
                         timestamp=frame.timestamp,
@@ -2158,22 +2152,44 @@ class CANBusObserver(QMainWindow):
             self.clear_data()
             frames_to_add = []
             for msg in can.LogReader(filename):
-                frames_to_add.append(
-                    CANFrame(
-                        timestamp=msg.timestamp,
-                        arbitration_id=msg.arbitration_id,
-                        data=msg.data,
-                        dlc=msg.dlc,
-                        is_extended=msg.is_extended_id,
-                        is_error=msg.is_error_frame,
-                        is_remote=msg.is_remote_frame,
-                        channel=msg.channel or "CAN1",
+                try:
+                    # Ensure arbitration_id is an integer
+                    arbitration_id = msg.arbitration_id
+                    if not isinstance(arbitration_id, int):
+                        raise ValueError(f"Arbitration ID is not an integer: {arbitration_id}")
+
+                    # Ensure dlc is an integer
+                    dlc = msg.dlc
+                    if not isinstance(dlc, int):
+                        raise ValueError(f"DLC is not an integer: {dlc}")
+
+                    # Ensure data is bytes or bytearray, convert to bytes if bytearray
+                    data = msg.data
+                    if isinstance(data, bytearray):
+                        data = bytes(data)
+                    if not isinstance(data, bytes):
+                        raise ValueError(f"Data is not bytes: {data}")
+
+                    frames_to_add.append(
+                        CANFrame(
+                            timestamp=msg.timestamp,
+                            arbitration_id=arbitration_id,
+                            data=b'' if msg.is_remote_frame else data,
+                            dlc=0 if msg.is_remote_frame else dlc,
+                            is_extended=msg.is_extended_id,
+                            is_error=msg.is_error_frame,
+                            is_remote=msg.is_remote_frame,
+                            bus=msg.channel or "CAN1",
+                        )
                     )
-                )
+                except Exception as frame_error:
+                    QMessageBox.warning(self, "Log Parse Warning",
+                                        f"Skipping malformed frame: {frame_error}. Original message: {msg}")
+                    continue
             self.frame_batch.extend(frames_to_add)
             self.update_views()
             self.statusBar().showMessage(
-                f"Loaded {len(self.all_received_frames)} frames from {filename}"
+                f"Loaded {self.all_received_frames_count} frames from {filename}"
             )
         except Exception as e:
             QMessageBox.critical(self, "Load Error", f"Failed to load log: {e}")

@@ -197,7 +197,7 @@ class TestUIModels:
     def test_trace_model(self, sample_can_frame):
         """Test data retrieval from the CANTraceModel."""
         model = canpeek_app.CANTraceModel()
-        model.set_data([sample_can_frame])
+        model.add_data([sample_can_frame])
 
         assert model.rowCount() == 1
         assert model.columnCount() == 8
