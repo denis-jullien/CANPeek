@@ -16,6 +16,9 @@ dependencies = [
     "qt-themes>=0.3.0",
 ]
 
+[tool.uv.sources]
+python-can = { git = "https://github.com/denis-jullien/python-can.git", branch = "trc-read-rtr-support" }
+
 [project.urls]
 Repository = "https://github.com/denis-jullien/CANPeek"
 Releases = "https://github.com/denis-jullien/CANPeek/releases/"
@@ -47,6 +50,8 @@ dev-dependencies = [
     "ruff>=0.7.1",
     "pytest-asyncio>=1.0.0",
 ]
+override-dependencies = ["python-can==0.1"]
+
 
 [tool.pytest.ini_options]
 minversion = "6.0"
