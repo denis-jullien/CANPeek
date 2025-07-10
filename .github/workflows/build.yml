@@ -55,7 +55,7 @@ jobs:
 #            nuitka-${{ runner.os }}-${{ runner.arch }}-python-${{ env.PYTHON_VERSION }}-
 #            nuitka-${{ runner.os }}-${{ runner.arch }}-
 
-      - run: uv run -m nuitka src/canpeek/__main__.py --output-dir=build --mode=standalone --enable-plugins=pyside6 --include-package=can.interfaces --include-package-data=qt_themes --assume-yes-for-downloads
+      - run: uv run -m nuitka src/canpeek --output-dir=build --mode=standalone --enable-plugins=pyside6 --include-package=can.interfaces --include-package-data=qt_themes --assume-yes-for-downloads
 
 #      - name: Build Executable
 #        uses: Nuitka/Nuitka-Action@main
