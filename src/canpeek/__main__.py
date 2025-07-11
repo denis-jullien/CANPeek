@@ -12,41 +12,26 @@ Features:
 """
 
 import os
+import queue
 import sys
 import json
+import subprocess
 
-from typing import Dict, List, Optional, Any, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 from pathlib import Path
 from functools import partial
-import inspect
-import enum
 from canpeek import rc_icons
 import asyncio
 from qasync import QEventLoop, QApplication
 import uuid
 
 
-__all__ = [
-    "rc_icons",  # remove ruff "Remove unused import: `.rc_icons`"
-]
-
-
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
     QVBoxLayout,
-    QHBoxLayout,
-    QTableWidget,
-    QTableWidgetItem,
-    QPushButton,
     QLabel,
-    QLineEdit,
-    QCheckBox,
     QComboBox,
-    QSpinBox,
-    QGroupBox,
-    QFormLayout,
-    QHeaderView,
     QFileDialog,
     QMessageBox,
     QMenu,
@@ -56,8 +41,6 @@ from PySide6.QtWidgets import (
     QTableView,
     QToolBar,
     QStyle,
-    QDialog,
-    QTextEdit,
     QSizePolicy,
     QWidgetAction,
     QInputDialog,
@@ -67,7 +50,6 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
     Qt,
-    QSortFilterProxyModel,
     QSettings,
 )
 from PySide6.QtGui import (
@@ -77,7 +59,6 @@ from PySide6.QtGui import (
     QPixmap,
     QColor,
     QActionGroup,
-    QFont,
     QFontDatabase,
 )
 
@@ -88,11 +69,11 @@ import can
 import cantools
 
 
+from canpeek.view.frame_processor import CANFrameProcessor
+from canpeek.ui.properties_panel import PropertiesPanel, ConnectionEditor
+
 from canpeek.co.canopen_utils import (
     CANopenNode,
-    CANopenNodeEditor,
-    CANopenRootEditor,
-    PDOEditor,
     PDODatabaseManager,
     ObjectDictionaryViewer,
 )
@@ -107,560 +88,26 @@ from canpeek.data_utils import (
     Connection,
 )
 
-from canpeek.can_utils import CANAsyncReader
 
-from canpeek.models import CANTraceModel, CANGroupedModel, GroupedViewColumn
+from canpeek.ui.transmit_panels import SignalTransmitPanel, TransmitPanel
+
+from canpeek.can_utils import CANMultiprocessReader
+from canpeek.view.trace2_view import CANTableModel, CANBuffer
+
+from src.canpeek.view.trace2_view import Trace2FilterHeaderView
 
 if TYPE_CHECKING:
     from __main__ import ProjectExplorer, CANBusObserver
+
+__all__ = [
+    "rc_icons",  # remove ruff "Remove unused import: `.rc_icons`"
+]
+
 
 # Workaround for qt-ads on wayland https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System/issues/714
 if os.environ.get("XDG_SESSION_TYPE") == "wayland":
     print("Workaround for qt-ads on Wayland")
     os.environ["QT_QPA_PLATFORM"] = "xcb"
-
-
-# --- UI Classes ---
-class DBCEditor(QWidget):
-    message_to_transmit = Signal(object)
-    project_changed = Signal()
-
-    def __init__(self, dbc_file: DBCFile, project: Project):
-        super().__init__()
-        self.dbc_file = dbc_file
-        self.project = project
-        self.sorted_messages = []  # Store sorted messages for transmission
-        self.setup_ui()
-
-    def setup_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        group = QGroupBox(f"DBC Content: {self.dbc_file.path.name}")
-
-        form_layout = QFormLayout()
-
-        self.channel_combo = QComboBox()
-        self.channel_combo.addItem("All", None)  # "All" option with None as data
-        self.connection_map = {conn.name: conn.id for conn in self.project.connections}
-        for conn in self.project.connections:
-            self.channel_combo.addItem(conn.name, conn.id)
-
-        if self.dbc_file.connection_id:
-            if self.dbc_file.connection_id == -1:
-                self.channel_combo.setCurrentIndex(-1)
-            else:
-                # Find the name corresponding to the stored connection_id
-                for name, conn_id in self.connection_map.items():
-                    if conn_id == self.dbc_file.connection_id:
-                        self.channel_combo.setCurrentText(name)
-                        break
-        else:
-            self.channel_combo.setCurrentIndex(0)  # Select "All"
-
-        self.channel_combo.currentTextChanged.connect(self._on_channel_changed)
-        form_layout.addRow("Channel:", self.channel_combo)
-
-        layout = QVBoxLayout(group)
-        layout.addLayout(form_layout)
-        main_layout.addWidget(group)
-
-        self.table = QTableWidget()
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Message", "ID (hex)", "DLC", "Signals"])
-        layout.addWidget(self.table)
-
-        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self.open_context_menu)
-
-        self.populate_table()
-        self.table.resizeColumnsToContents()
-
-    def _on_channel_changed(self, text: str):
-        selected_id = self.channel_combo.currentData()
-        self.dbc_file.connection_id = selected_id
-        self.project_changed.emit()
-
-    def populate_table(self):
-        # Store the sorted list in the instance variable
-        self.sorted_messages = sorted(
-            self.dbc_file.database.messages, key=lambda m: m.frame_id
-        )
-        self.table.setRowCount(len(self.sorted_messages))
-        for r, m in enumerate(self.sorted_messages):
-            self.table.setItem(r, 0, QTableWidgetItem(m.name))
-            self.table.setItem(r, 1, QTableWidgetItem(f"0x{m.frame_id:X}"))
-            self.table.setItem(r, 2, QTableWidgetItem(str(m.length)))
-            self.table.setItem(
-                r, 3, QTableWidgetItem(", ".join(s.name for s in m.signals))
-            )
-
-    # --- Add these two new methods ---
-    def open_context_menu(self, position):
-        """Creates and shows the context menu."""
-        item = self.table.itemAt(position)
-        if not item:
-            return
-
-        row = item.row()
-        message = self.sorted_messages[row]
-
-        menu = QMenu()
-        action = QAction(f"Add '{message.name}' to Transmit Panel", self)
-        action.triggered.connect(lambda: self._emit_transmit_signal(row))
-        menu.addAction(action)
-
-        menu.exec(self.table.viewport().mapToGlobal(position))
-
-    def _emit_transmit_signal(self, row: int):
-        """Emits the signal with the selected message object."""
-        message = self.sorted_messages[row]
-        self.message_to_transmit.emit(message)
-
-
-class FilterEditor(QWidget):
-    filter_changed = Signal()
-
-    def __init__(self, can_filter: CANFrameFilter, project: Project):
-        super().__init__()
-        self.filter = can_filter
-        self.project = project
-        self.setup_ui()
-
-    def setup_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        group = QGroupBox("Filter Properties")
-        layout = QFormLayout(group)
-        main_layout.addWidget(group)
-        self.name_edit = QLineEdit(self.filter.name)
-        layout.addRow("Name:", self.name_edit)
-
-        self.channel_combo = QComboBox()
-        self.channel_combo.addItem("All", None)  # "All" option with None as data
-        self.connection_map = {conn.name: conn.id for conn in self.project.connections}
-        for conn in self.project.connections:
-            self.channel_combo.addItem(conn.name, conn.id)
-
-        if self.filter.connection_id:
-            if self.filter.connection_id == -1:
-                self.channel_combo.setCurrentIndex(-1)
-            else:
-                # Find the name corresponding to the stored connection_id
-                for name, conn_id in self.connection_map.items():
-                    if conn_id == self.filter.connection_id:
-                        self.channel_combo.setCurrentText(name)
-                        break
-        else:
-            self.channel_combo.setCurrentIndex(0)  # Select "All"
-
-        self.channel_combo.currentTextChanged.connect(self._update_filter)
-        layout.addRow("Channel:", self.channel_combo)
-
-        id_layout = QHBoxLayout()
-        id_layout2 = QHBoxLayout()
-        self.min_id_edit = QLineEdit(f"0x{self.filter.min_id:X}")
-        self.max_id_edit = QLineEdit(f"0x{self.filter.max_id:X}")
-        self.mask_edit = QLineEdit(f"0x{self.filter.mask:X}")
-        self.mask_compare_edit = QLineEdit(f"0x{self.filter.mask_compare:X}")
-        id_layout.addWidget(QLabel("Min:"))
-        id_layout.addWidget(self.min_id_edit)
-        id_layout.addWidget(QLabel("Max:"))
-        id_layout.addWidget(self.max_id_edit)
-        layout.addRow("ID (hex):", id_layout)
-        id_layout2.addWidget(QLabel("Mask:"))
-        id_layout2.addWidget(self.mask_edit)
-        id_layout2.addWidget(QLabel("Mask Compare:"))
-        id_layout2.addWidget(self.mask_compare_edit)
-        layout.addRow(id_layout2)
-        self.standard_cb = QCheckBox("Standard")
-        self.standard_cb.setChecked(self.filter.accept_standard)
-        self.extended_cb = QCheckBox("Extended")
-        self.extended_cb.setChecked(self.filter.accept_extended)
-        self.data_cb = QCheckBox("Data")
-        self.data_cb.setChecked(self.filter.accept_data)
-        self.remote_cb = QCheckBox("Remote")
-        self.remote_cb.setChecked(self.filter.accept_remote)
-        type_layout = QHBoxLayout()
-        type_layout.addWidget(self.standard_cb)
-        type_layout.addWidget(self.extended_cb)
-        type_layout.addWidget(self.data_cb)
-        type_layout.addWidget(self.remote_cb)
-        type_layout.addStretch()
-        layout.addRow("Frame Types:", type_layout)
-        self.name_edit.editingFinished.connect(self._update_filter)
-        [
-            w.editingFinished.connect(self._update_filter)
-            for w in [self.min_id_edit, self.max_id_edit, self.mask_edit]
-        ]
-        [
-            cb.toggled.connect(self._update_filter)
-            for cb in [self.standard_cb, self.extended_cb, self.data_cb, self.remote_cb]
-        ]
-
-    def _update_filter(self):
-        self.filter.name = self.name_edit.text()
-        selected_id = self.channel_combo.currentData()
-        self.filter.connection_id = selected_id
-        try:
-            self.filter.min_id = int(self.min_id_edit.text(), 16)
-        except ValueError:
-            self.min_id_edit.setText(f"0x{self.filter.min_id:X}")
-        try:
-            self.filter.max_id = int(self.max_id_edit.text(), 16)
-        except ValueError:
-            self.max_id_edit.setText(f"0x{self.filter.max_id:X}")
-        try:
-            self.filter.mask = int(self.mask_edit.text(), 16)
-        except ValueError:
-            self.mask_edit.setText(f"0x{self.filter.mask:X}")
-        self.filter.accept_standard = self.standard_cb.isChecked()
-        self.filter.accept_extended = self.extended_cb.isChecked()
-        self.filter.accept_data = self.data_cb.isChecked()
-        self.filter.accept_remote = self.remote_cb.isChecked()
-        self.filter_changed.emit()
-
-
-class DocumentationWindow(QDialog):
-    """A separate, non-blocking window for displaying parsed documentation."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Interface Documentation")
-        self.setMinimumSize(600, 450)
-
-        layout = QVBoxLayout(self)
-        self.text_edit = QTextEdit()
-        self.text_edit.setReadOnly(True)
-        self.text_edit.setObjectName("documentationViewer")
-        layout.addWidget(self.text_edit)
-
-    def set_content(self, interface_name: str, parsed_doc: Dict):
-        """
-        Updates the window title and content by building an HTML string
-        from the parsed docstring dictionary, including type information.
-        """
-        self.setWindowTitle(f"Documentation for '{interface_name}'")
-
-        html = """
-        <style>
-            body { font-family: sans-serif; font-size: 14px; }
-            p { margin-bottom: 12px; }
-            dl { margin-left: 10px; }
-            dt { font-weight: bold; color: #af5aed; margin-top: 8px; }
-            dt .param-type { font-style: italic; color: #555555; font-weight: normal; }
-            dd { margin-left: 20px; margin-bottom: 8px; }
-            hr { border: 1px solid #cccccc; }
-        </style>
-        """
-
-        if parsed_doc and parsed_doc.get("description"):
-            desc = parsed_doc["description"].replace("<", "<").replace(">", ">")
-            html += f"<p>{desc.replace(chr(10), '<br>')}</p>"
-
-        if parsed_doc and parsed_doc.get("params"):
-            html += "<hr><h3>Parameters:</h3>"
-            html += "<dl>"
-            for name, param_info in parsed_doc["params"].items():
-                type_name = param_info.get("type_name")
-                description = (
-                    param_info.get("description", "")
-                    .replace("<", "<")
-                    .replace(">", ">")
-                )
-
-                # Build the header line (dt) with optional type info
-                header = f"<strong>{name}</strong>"
-                if type_name:
-                    header += f' <span class="param-type">({type_name})</span>'
-
-                html += f"<dt>{header}:</dt><dd>{description}</dd>"
-            html += "</dl>"
-
-        if not (
-            parsed_doc and (parsed_doc.get("description") or parsed_doc.get("params"))
-        ):
-            html += "<p>No documentation available.</p>"
-
-        self.text_edit.setHtml(html)
-
-
-# Fully dynamic editor for connection settings
-
-
-class ConnectionEditor(QWidget):
-    project_changed = Signal()
-
-    def __init__(self, connection: Connection, interface_manager: CANInterfaceManager):
-        super().__init__()
-        self.connection = connection
-        self.interface_manager = interface_manager
-        self.dynamic_widgets = {}
-        self.docs_window = DocumentationWindow(self)
-        self.setup_ui()
-        self.interface_combo.setCurrentText(self.connection.interface)
-        self._rebuild_dynamic_fields(self.connection.interface)
-
-    def setup_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        group = QGroupBox("Connection Properties")
-        self.form_layout = QFormLayout(group)
-        main_layout.addWidget(group)
-
-        self.name_edit = QLineEdit(self.connection.name)
-        self.form_layout.addRow("Name:", self.name_edit)
-
-        self.interface_combo = QComboBox()
-        self.interface_combo.addItems(self.interface_manager.get_available_interfaces())
-        self.form_layout.addRow("Interface:", self.interface_combo)
-
-        self.show_docs_button = QPushButton("Show python-can Documentation...")
-        self.form_layout.addRow(self.show_docs_button)
-
-        self.dynamic_fields_container = QWidget()
-        self.dynamic_layout = QFormLayout(self.dynamic_fields_container)
-        self.dynamic_layout.setContentsMargins(0, 0, 0, 0)
-        self.form_layout.addRow(self.dynamic_fields_container)
-
-        self.name_edit.editingFinished.connect(self._on_name_changed)
-        self.show_docs_button.clicked.connect(self._show_documentation_window)
-        self.interface_combo.currentTextChanged.connect(self._on_interface_changed)
-
-    def set_connected_state(self, connected):
-        """Enable/disable interface field and settings based on connection state"""
-        # Disable interface selection and name editing when connected
-        self.interface_combo.setEnabled(not connected)
-        # self.name_edit.setEnabled(not connected)
-
-        # Disable all dynamic interface settings when connected
-        for widget in self.dynamic_widgets.values():
-            if hasattr(widget, "setEnabled"):
-                widget.setEnabled(not connected)
-
-    def _on_name_changed(self):
-        self.connection.name = self.name_edit.text()
-        self.project_changed.emit()
-
-    def _show_documentation_window(self):
-        interface_name = self.interface_combo.currentText()
-        docstring = self.interface_manager.get_interface_docstring(interface_name)
-        self.docs_window.set_content(interface_name, docstring)
-        self.docs_window.show()
-        self.docs_window.raise_()
-        self.docs_window.activateWindow()
-
-    def _on_interface_changed(self, interface_name: str):
-        self._rebuild_dynamic_fields(interface_name)
-        self.connection.interface = interface_name
-        self.project_changed.emit()
-
-    def _rebuild_dynamic_fields(self, interface_name: str):
-        parsed_doc = self.interface_manager.get_interface_docstring(interface_name)
-        param_docs = parsed_doc.get("params", {}) if parsed_doc else {}
-        has_docs = bool(
-            parsed_doc and (parsed_doc.get("description") or parsed_doc.get("params"))
-        )
-        self.show_docs_button.setVisible(has_docs)
-
-        while self.dynamic_layout.count():
-            item = self.dynamic_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self.dynamic_widgets.clear()
-
-        params = self.interface_manager.get_interface_params(interface_name)
-        if not params:
-            self._update_project_config()
-            return
-
-        for name, info in params.items():
-            # Use the default prameter value from python-can if the interface type changed
-            if self.connection.interface != interface_name:
-                current_value = info.get("default", self.connection.config.get(name))
-            else:
-                current_value = self.connection.config.get(name, info.get("default"))
-
-            expected_type = info["type"]
-            widget = None
-            is_enum = False
-            try:
-                if inspect.isclass(expected_type) and issubclass(
-                    expected_type, enum.Enum
-                ):
-                    is_enum = True
-            except TypeError:
-                pass
-
-            if is_enum:
-                widget = QComboBox()
-                widget.setProperty("enum_class", expected_type)
-                widget.addItems([m.name for m in list(expected_type)])
-                if isinstance(current_value, enum.Enum):
-                    widget.setCurrentText(current_value.name)
-                elif isinstance(current_value, str) and current_value in [
-                    m.name for m in expected_type
-                ]:
-                    widget.setCurrentText(current_value)
-                widget.currentTextChanged.connect(self._update_project_config)
-            elif expected_type is bool:
-                widget = QCheckBox()
-                widget.setChecked(
-                    bool(current_value) if current_value is not None else False
-                )
-                widget.toggled.connect(self._update_project_config)
-            elif name == "bitrate" and expected_type is int:
-                widget = QSpinBox()
-                widget.setRange(1000, 4000000)
-                widget.setSuffix(" bps")
-                widget.setValue(
-                    int(current_value) if current_value is not None else 125000
-                )
-                widget.valueChanged.connect(self._update_project_config)
-            else:
-                widget = QLineEdit()
-                widget.setText(str(current_value) if current_value is not None else "")
-                widget.editingFinished.connect(self._update_project_config)
-
-            if widget:
-                tooltip_info = param_docs.get(name)
-                if tooltip_info and tooltip_info.get("description"):
-                    tooltip_parts = []
-                    type_name = tooltip_info.get("type_name")
-                    if type_name:
-                        tooltip_parts.append(f"({type_name})")
-                    tooltip_parts.append(tooltip_info["description"])
-                    tooltip_text = " ".join(tooltip_parts)
-                    widget.setToolTip(tooltip_text)
-
-                label_text = f"{name.replace('_', ' ').title()}:"
-                self.dynamic_layout.addRow(label_text, widget)
-                self.dynamic_widgets[name] = widget
-
-        self._update_project_config()
-
-    def _convert_line_edit_text(self, text: str, param_info: Dict) -> Any:
-        text = text.strip()
-        expected_type = param_info.get("type")
-        if text == "" or text.lower() == "none":
-            return None
-
-        try:
-            if expected_type is int:
-                return int(text) if not text.startswith("0x") else int(text, 16)
-            if expected_type is float:
-                return float(text)
-            if expected_type is bool:
-                return text.lower() in ("true", "1", "t", "yes", "y")
-        except (ValueError, TypeError):
-            return None
-
-        return text
-
-    def _update_project_config(self):
-        self.connection.interface = self.interface_combo.currentText()
-        params = (
-            self.interface_manager.get_interface_params(self.connection.interface) or {}
-        )
-        new_config = {}
-
-        for name, widget in self.dynamic_widgets.items():
-            param_info = params.get(name)
-            if not param_info:
-                continue
-
-            value = None
-            try:
-                if isinstance(widget, QCheckBox):
-                    value = widget.isChecked()
-                elif isinstance(widget, QSpinBox):
-                    value = widget.value()
-                elif isinstance(widget, QComboBox):
-                    enum_class = widget.property("enum_class")
-                    if enum_class and widget.currentText():
-                        value = enum_class[widget.currentText()]
-                elif isinstance(widget, QLineEdit):
-                    value = self._convert_line_edit_text(widget.text(), param_info)
-            except (ValueError, TypeError, KeyError) as e:
-                print(f"Warning: Invalid input for '{name}'. Error: {e}")
-                value = self.connection.config.get(name)
-
-            if value is not None:
-                new_config[name] = value
-
-        self.connection.config.clear()
-        self.connection.config.update(new_config)
-        self.project_changed.emit()
-
-
-class PropertiesPanel(QWidget):
-    message_to_transmit = Signal(object)
-
-    def __init__(
-        self,
-        project: Project,
-        explorer: "ProjectExplorer",
-        interface_manager: CANInterfaceManager,
-        main_window: "CANBusObserver",
-    ):
-        super().__init__()
-        self.project = project
-        self.explorer = explorer
-        self.interface_manager = interface_manager
-        self.main_window = main_window
-        self.current_widget = None
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        self.placeholder = QLabel("Select an item to see its properties.")
-        self.placeholder.setAlignment(Qt.AlignCenter)
-        self.layout.addWidget(self.placeholder)
-
-    def show_properties(self, item: QTreeWidgetItem):
-        self.clear()
-        data = item.data(0, Qt.UserRole) if item else None
-        if isinstance(data, Connection):
-            editor = ConnectionEditor(data, self.interface_manager)
-            editor.project_changed.connect(self.explorer.rebuild_tree)
-            # Set the initial connected state when the editor is shown
-            is_connected = data.name in self.main_window.can_readers
-            editor.set_connected_state(is_connected)
-            self.current_widget = editor
-        elif data == "canopen_root":
-            editor = CANopenRootEditor(self.project, self.main_window.canopen_network)
-            editor.settings_changed.connect(self.explorer.rebuild_tree)
-            self.current_widget = editor
-        elif isinstance(data, CANopenNode):
-            editor = CANopenNodeEditor(data, self.main_window.pdo_manager, self.project)
-            editor.node_changed.connect(self.explorer.rebuild_tree)
-            editor.node_changed.connect(self.explorer.project_changed.emit)
-            self.current_widget = editor
-        elif isinstance(data, CANFrameFilter):
-            editor = FilterEditor(data, self.project)
-            # editor.filter_changed.connect(lambda: item.setText(0, data.name))
-            editor.filter_changed.connect(self.explorer.project_changed.emit)
-            editor.filter_changed.connect(self.explorer.rebuild_tree)
-            self.current_widget = editor
-        elif isinstance(data, DBCFile):
-            editor = DBCEditor(data, self.project)
-            # Connect the editor's signal to the panel's signal
-            editor.message_to_transmit.connect(self.message_to_transmit.emit)
-            editor.project_changed.connect(self.explorer.rebuild_tree)
-            self.current_widget = editor
-        elif isinstance(data, tuple) and len(data) == 2 and data[0] == "pdo_content":
-            # PDO content viewer for CANopen node
-            node = data[1]
-            self.current_widget = PDOEditor(node, self.main_window.pdo_manager)
-        else:
-            self.layout.addWidget(self.placeholder)
-            self.placeholder.show()
-            return
-        self.layout.addWidget(self.current_widget)
-
-    def clear(self):
-        if self.current_widget:
-            self.current_widget.deleteLater()
-            self.current_widget = None
-        self.placeholder.hide()
 
 
 class ProjectExplorer(QWidget):
@@ -878,7 +325,7 @@ class ProjectExplorer(QWidget):
                     if node.connection_id == removed_conn_id:
                         node.connection_id = -1
 
-                # Clean up CANAsyncReader if it exists
+                # Clean up CANMultiprocessReader if it exists
                 if removed_conn_id in self.main_window.can_readers:
                     reader = self.main_window.can_readers.pop(removed_conn_id)
                     reader.stop_reading()
@@ -909,510 +356,6 @@ class ProjectExplorer(QWidget):
             self.rebuild_tree()
 
 
-class TransmitViewColumn(enum.IntEnum):
-    """Defines the columns for the TransmitPanel."""
-
-    ON = 0
-    ID = 1
-    TYPE = 2
-    RTR = 3
-    DLC = 4
-    DATA = 5
-    CYCLE = 6
-    SEND = 7
-    SENT = 8
-
-
-class TransmitPanel(QWidget):
-    frame_to_send = Signal(object, object)  # message, connection_id (uuid.UUID)
-    row_selection_changed = Signal(int, str, str)  # row, id_text, data_hex
-    config_changed = Signal()
-
-    def __init__(self):
-        super().__init__()
-        self.timers: Dict[int, QTimer] = {}
-        self.dbcs: List[object] = []
-        self.connections: Dict[str, CANAsyncReader] = {}
-        self.setup_ui()
-
-    def set_dbc_databases(self, dbs):
-        self.dbcs = dbs
-
-    def set_connections(self, connections: Dict[uuid.UUID, CANAsyncReader]):
-        """Updates the connection list in the combo box, preserving selection."""
-        self.connections = connections
-        current_id = self.connection_combo.currentData()
-        self.connection_combo.clear()
-
-        if connections:
-            sorted_connections = sorted(
-                connections.values(), key=lambda r: r.connection.name
-            )
-            for reader in sorted_connections:
-                self.connection_combo.addItem(
-                    reader.connection.name, reader.connection.id
-                )
-
-            # Restore selection if possible
-            if current_id and current_id in connections:
-                index = self.connection_combo.findData(current_id)
-                if index != -1:
-                    self.connection_combo.setCurrentIndex(index)
-
-            self.connection_combo.setEnabled(True)
-        else:
-            self.connection_combo.setEnabled(False)
-
-    def get_message_from_id(self, can_id):
-        for db_file in self.dbcs:
-            try:
-                return db_file.database.get_message_by_frame_id(can_id)
-            except KeyError:
-                continue
-
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        ctrl_layout = QHBoxLayout()
-        self.add_btn = QPushButton("Add")
-        self.rem_btn = QPushButton("Remove")
-        self.connection_combo = QComboBox()
-        self.connection_combo.setEnabled(False)
-        self.connection_combo.setToolTip("Select the connection for sending frames")
-
-        ctrl_layout.addWidget(self.add_btn)
-        ctrl_layout.addWidget(self.rem_btn)
-        ctrl_layout.addStretch()
-        ctrl_layout.addWidget(QLabel("Send on:"))
-        ctrl_layout.addWidget(self.connection_combo)
-        layout.addLayout(ctrl_layout)
-
-        self.table = QTableWidget()
-        self.table.setColumnCount(9)
-        headers = [col.name.replace("_", " ").title() for col in TransmitViewColumn]
-        headers[TransmitViewColumn.ID] = "ID(hex)"
-        headers[TransmitViewColumn.DATA] = "Data(hex)"
-        self.table.setHorizontalHeaderLabels(headers)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        layout.addWidget(self.table)
-        self.add_btn.clicked.connect(self.add_frame)
-        self.rem_btn.clicked.connect(self.remove_frames)
-        self.table.currentItemChanged.connect(self._on_item_changed)
-        self.table.cellChanged.connect(self._on_cell_changed)
-
-    def add_frame(self):
-        r = self.table.rowCount()
-        self.table.insertRow(r)
-        self._setup_row_widgets(r)
-        self.config_changed.emit()
-
-    def add_message_frame(self, message: cantools.db.Message):
-        """Adds a new row to the transmit table based on a DBC message definition."""
-        r = self.table.rowCount()
-        self.table.insertRow(r)
-        self._setup_row_widgets(r)
-
-        # Now, populate the new row with data from the message object
-        self.table.blockSignals(True)
-
-        # ID
-        self.table.item(r, 1).setText(f"{message.frame_id:X}")
-
-        # Type (Std/Ext)
-        self.table.cellWidget(r, 2).setCurrentIndex(
-            1 if message.is_extended_frame else 0
-        )
-
-        # DLC
-        self.table.item(r, 4).setText(str(message.length))
-
-        # Data (encode with defaults to get initial values)
-        try:
-            initial_data = message.encode({}, scaling=False, padding=True)
-            self.table.item(r, 5).setText(initial_data.hex(" "))
-        except Exception as e:
-            print(f"Could not encode initial data for {message.name}: {e}")
-            self.table.item(r, 5).setText("00 " * message.length)
-
-        self.table.blockSignals(False)
-        self.config_changed.emit()  # Mark project as dirty
-
-    def remove_frames(self):
-        if self.table.selectionModel().selectedRows():
-            [
-                self.table.removeRow(r)
-                for r in sorted(
-                    [i.row() for i in self.table.selectionModel().selectedRows()],
-                    reverse=True,
-                )
-            ]
-            self.config_changed.emit()
-
-    def _setup_row_widgets(self, r):
-        # ID
-        self.table.setItem(r, TransmitViewColumn.ID, QTableWidgetItem("100"))
-
-        # TYPE
-        combo = QComboBox()
-        combo.addItems(["Std", "Ext"])
-        self.table.setCellWidget(r, TransmitViewColumn.TYPE, combo)
-        combo.currentIndexChanged.connect(self.config_changed.emit)
-
-        # RTR
-        cb_rtr = QCheckBox()
-        self.table.setCellWidget(r, TransmitViewColumn.RTR, self._center(cb_rtr))
-        cb_rtr.toggled.connect(self.config_changed.emit)
-
-        # DLC
-        self.table.setItem(r, TransmitViewColumn.DLC, QTableWidgetItem("0"))
-
-        # DATA
-        self.table.setItem(r, TransmitViewColumn.DATA, QTableWidgetItem(""))
-
-        # CYCLE
-        self.table.setItem(r, TransmitViewColumn.CYCLE, QTableWidgetItem("100"))
-
-        # SEND
-        btn = QPushButton("Send")
-        btn.clicked.connect(partial(self.send_from_row, r))
-        self.table.setCellWidget(r, TransmitViewColumn.SEND, btn)
-
-        # SENT
-        sent_item = QTableWidgetItem("0")
-        sent_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        self.table.setItem(r, TransmitViewColumn.SENT, sent_item)
-
-        # ON
-        cb_on = QCheckBox()
-        cb_on.toggled.connect(partial(self._toggle_periodic, r))
-        self.table.setCellWidget(r, TransmitViewColumn.ON, self._center(cb_on))
-
-    def _center(self, w):
-        c = QWidget()
-        layout = QHBoxLayout(c)
-        layout.addWidget(w)
-        layout.setAlignment(Qt.AlignCenter)
-        layout.setContentsMargins(0, 0, 0, 0)
-        return c
-
-    def _on_item_changed(self, curr, prev):
-        if curr and (not prev or curr.row() != prev.row()):
-            row = curr.row()
-            id_text = self.table.item(row, TransmitViewColumn.ID).text()
-            data_item = self.table.item(row, TransmitViewColumn.DATA)
-            data_hex = data_item.text() if data_item else ""
-            self.row_selection_changed.emit(row, id_text, data_hex)
-
-    def _on_cell_changed(self, r, c):
-        self.config_changed.emit()
-        if c == TransmitViewColumn.ID or c == TransmitViewColumn.DATA:
-            id_text = self.table.item(r, TransmitViewColumn.ID).text()
-            data_item = self.table.item(r, TransmitViewColumn.DATA)
-            data_hex = data_item.text() if data_item else ""
-            self.row_selection_changed.emit(r, id_text, data_hex)
-        elif c == TransmitViewColumn.DATA:
-            self._update_dlc(r)
-
-    def _update_dlc(self, r):
-        try:
-            data_len = len(
-                bytes.fromhex(
-                    self.table.item(r, TransmitViewColumn.DATA).text().replace(" ", "")
-                )
-            )
-            self.table.item(r, TransmitViewColumn.DLC).setText(str(data_len))
-        except (ValueError, TypeError):
-            pass
-
-    def update_row_data(self, r, data):
-        self.table.blockSignals(True)
-        self.table.item(r, TransmitViewColumn.DATA).setText(data.hex(" "))
-        self.table.item(r, TransmitViewColumn.DLC).setText(str(len(data)))
-        self.table.blockSignals(False)
-        self.config_changed.emit()
-
-    def _toggle_periodic(self, r, state):
-        self.config_changed.emit()
-        if state:
-            try:
-                cycle = int(self.table.item(r, TransmitViewColumn.CYCLE).text())
-                t = QTimer(self)
-                t.timeout.connect(partial(self.send_from_row, r))
-                t.start(cycle)
-                self.timers[r] = t
-            except (ValueError, TypeError):
-                QMessageBox.warning(self, "Bad Cycle", f"Row {r + 1}: bad cycle time.")
-                self.table.cellWidget(r, TransmitViewColumn.ON).findChild(
-                    QCheckBox
-                ).setChecked(False)
-        elif r in self.timers:
-            self.timers.pop(r).stop()
-
-    def stop_all_timers(self):
-        [t.stop() for t in self.timers.values()]
-        self.timers.clear()
-        [
-            self.table.cellWidget(r, 0).findChild(QCheckBox).setChecked(False)
-            for r in range(self.table.rowCount())
-        ]
-
-    def send_from_row(self, r):
-        connection_id = self.connection_combo.currentData()
-        if not connection_id:
-            QMessageBox.warning(
-                self, "No Connection", "Please select a connection to send from."
-            )
-            return
-        try:
-            message_to_send = can.Message(
-                arbitration_id=int(
-                    self.table.item(r, TransmitViewColumn.ID).text(), 16
-                ),
-                is_extended_id=self.table.cellWidget(
-                    r, TransmitViewColumn.TYPE
-                ).currentIndex()
-                == 1,
-                is_remote_frame=self.table.cellWidget(r, TransmitViewColumn.RTR)
-                .findChild(QCheckBox)
-                .isChecked(),
-                dlc=int(self.table.item(r, TransmitViewColumn.DLC).text()),
-                data=bytes.fromhex(
-                    self.table.item(r, TransmitViewColumn.DATA).text().replace(" ", "")
-                ),
-            )
-            self.frame_to_send.emit(message_to_send, connection_id)
-
-            sent_item = self.table.item(r, TransmitViewColumn.SENT)
-            current_count = int(sent_item.text())
-            sent_item.setText(str(current_count + 1))
-
-        except (ValueError, TypeError) as e:
-            QMessageBox.warning(self, "Bad Tx Data", f"Row {r + 1}: {e}")
-            self._toggle_periodic(r, False)
-
-    def send_selected(self):
-        [
-            self.send_from_row(r)
-            for r in sorted(
-                {i.row() for i in self.table.selectionModel().selectedIndexes()}
-            )
-        ]
-
-    def get_config(self) -> List[Dict]:
-        return [
-            {
-                "on": self.table.cellWidget(r, TransmitViewColumn.ON)
-                .findChild(QCheckBox)
-                .isChecked(),
-                "id": self.table.item(r, TransmitViewColumn.ID).text(),
-                "type_idx": self.table.cellWidget(
-                    r, TransmitViewColumn.TYPE
-                ).currentIndex(),
-                "rtr": self.table.cellWidget(r, TransmitViewColumn.RTR)
-                .findChild(QCheckBox)
-                .isChecked(),
-                "dlc": self.table.item(r, TransmitViewColumn.DLC).text(),
-                "data": self.table.item(r, TransmitViewColumn.DATA).text(),
-                "cycle": self.table.item(r, TransmitViewColumn.CYCLE).text(),
-            }
-            for r in range(self.table.rowCount())
-        ]
-
-    def set_config(self, config: List[Dict]):
-        self.stop_all_timers()
-        self.table.clearContents()
-        self.table.setRowCount(0)
-        self.table.setRowCount(len(config))
-        self.table.blockSignals(True)
-        for r, row_data in enumerate(config):
-            self._setup_row_widgets(r)
-            self.table.cellWidget(r, TransmitViewColumn.ON).findChild(
-                QCheckBox
-            ).setChecked(row_data.get("on", False))
-            self.table.item(r, TransmitViewColumn.ID).setText(row_data.get("id", "0"))
-            self.table.cellWidget(r, TransmitViewColumn.TYPE).setCurrentIndex(
-                row_data.get("type_idx", 0)
-            )
-            self.table.cellWidget(r, TransmitViewColumn.RTR).findChild(
-                QCheckBox
-            ).setChecked(row_data.get("rtr", False))
-            self.table.item(r, TransmitViewColumn.DLC).setText(row_data.get("dlc", "0"))
-            self.table.item(r, TransmitViewColumn.DATA).setText(
-                row_data.get("data", "")
-            )
-            self.table.item(r, TransmitViewColumn.CYCLE).setText(
-                row_data.get("cycle", "100")
-            )
-        self.table.blockSignals(False)
-        self.config_changed.emit()
-
-
-class SignalTransmitPanel(QGroupBox):
-    data_encoded = Signal(bytes)
-
-    def __init__(self):
-        super().__init__("Signal Config")
-        self.message = None
-        self.setup_ui()
-
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(
-            ["Signal", "Value", "Unit", "Min", "Max", "Status"]
-        )
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(self.table)
-        self.table.cellChanged.connect(self._validate_and_encode)
-
-    def clear_panel(self):
-        self.message = None
-        self.table.setRowCount(0)
-        self.setTitle("Signal Config")
-        self.setVisible(False)
-
-    def _set_status(self, row: int, text: str, is_error: bool):
-        """Helper to set the text and color of a status cell."""
-        status_item = QTableWidgetItem(text)
-        if is_error:
-            status_item.setForeground(Qt.red)
-            status_item.setToolTip(text)
-        else:
-            status_item.setForeground(Qt.green)
-
-        status_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        self.table.setItem(row, 5, status_item)
-
-    def populate(self, msg, data_hex: str):
-        self.message = msg
-        initial_values = {}
-
-        # Try to decode the existing data to pre-fill the values
-        if data_hex:
-            try:
-                data_bytes = bytes.fromhex(data_hex.replace(" ", ""))
-                # Use allow_truncated=True to handle cases where data is shorter than expected
-                initial_values = msg.decode(
-                    data_bytes, decode_choices=False, allow_truncated=True
-                )
-            except (ValueError, KeyError) as e:
-                print(f"Could not decode existing data for signal panel: {e}")
-                initial_values = {}  # Fallback to defaults on error
-
-        self.table.blockSignals(True)
-        self.table.setRowCount(len(msg.signals))
-
-        for r, s in enumerate(msg.signals):
-            # Use the decoded value if available, otherwise use the signal's default initial value
-            value = initial_values.get(
-                s.name, s.initial if s.initial is not None else 0
-            )
-
-            self.table.setItem(r, 0, QTableWidgetItem(s.name))
-            self.table.item(r, 0).setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-
-            self.table.setItem(r, 1, QTableWidgetItem(str(value)))
-
-            self.table.setItem(r, 2, QTableWidgetItem(str(s.unit or "")))
-            self.table.item(r, 2).setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-
-            # --- Min (Col 3) - NEW ---
-            min_val = s.minimum if s.minimum is not None else "N/A"
-            min_item = QTableWidgetItem(str(min_val))
-            min_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            min_item.setToolTip(f"Minimum allowed value for {s.name}")
-            self.table.setItem(r, 3, min_item)
-
-            # --- Max (Col 4) - NEW ---
-            max_val = s.maximum if s.maximum is not None else "N/A"
-            max_item = QTableWidgetItem(str(max_val))
-            max_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            max_item.setToolTip(f"Maximum allowed value for {s.name}")
-            self.table.setItem(r, 4, max_item)
-
-            self.table.setItem(r, 5, QTableWidgetItem(""))
-
-        self.table.blockSignals(False)
-        self.setTitle(f"Signal Config: {msg.name}")
-        self.setVisible(True)
-        # Trigger an initial encode to ensure the data field is up-to-date,
-        # especially if we fell back to default values.
-        self._validate_and_encode()
-
-    def _validate_and_encode(self):
-        """
-        Validates the signal values against the DBC, updates the status column
-        with any errors, and emits the encoded data if successful.
-        """
-        if not self.message:
-            return
-
-        # --- 1. Build the data dictionary from the table ---
-        data_dict = {}
-        parse_errors = False
-
-        # We don't need to block signals here as we are just reading
-        for r in range(self.table.rowCount()):
-            signal_name = self.table.item(r, 0).text()
-            value_text = self.table.item(r, 1).text()
-            try:
-                data_dict[signal_name] = float(value_text)
-            except (ValueError, TypeError):
-                parse_errors = True
-                # We will set the status message for this *after* reading all values
-
-        # --- Temporarily block signals to prevent recursion when updating status ---
-        self.table.blockSignals(True)
-
-        # Update status based on initial parsing
-        for r in range(self.table.rowCount()):
-            signal_name = self.table.item(r, 0).text()
-            if signal_name not in data_dict:
-                self._set_status(r, "Invalid number", is_error=True)
-            else:
-                self._set_status(r, "", is_error=False)  # Clear previous parse errors
-
-        self.table.blockSignals(False)
-        # --------------------------------------------------------------------------
-
-        if parse_errors:
-            return
-
-        # --- 2. Attempt to encode and handle validation errors ---
-        try:
-            encoded_data = self.message.encode(data_dict, strict=True)
-
-            # Block signals again for the success case
-            self.table.blockSignals(True)
-            for r in range(self.table.rowCount()):
-                self._set_status(r, "OK", is_error=False)
-            self.table.blockSignals(False)
-
-            self.data_encoded.emit(encoded_data)
-
-        except (cantools.database.errors.EncodeError, ValueError, KeyError) as e:
-            error_str = str(e)
-
-            # Block signals while we update rows with error messages
-            self.table.blockSignals(True)
-            found_error_signal = False
-            for r in range(self.table.rowCount()):
-                signal_name = self.table.item(r, 0).text()
-                if f'"{signal_name}"' in error_str:
-                    self._set_status(r, error_str, is_error=True)
-                    found_error_signal = True
-                else:
-                    self._set_status(r, "OK", is_error=False)
-
-            if not found_error_signal:
-                self._set_status(0, error_str, is_error=True)
-
-            self.table.blockSignals(False)
-
-
 # --- Main Application Window ---
 class CANBusObserver(QMainWindow):
     def __init__(self):
@@ -1427,7 +370,7 @@ class CANBusObserver(QMainWindow):
         self.project = Project()
         self.current_project_path: Optional[Path] = None
         self.project_dirty = False
-        self.can_readers: Dict[uuid.UUID, CANAsyncReader] = {}
+        self.can_readers: Dict[uuid.UUID, CANMultiprocessReader] = {}
         self.bus_states: Dict[uuid.UUID, can.BusState] = {}
 
         file_loggers = {
@@ -1450,13 +393,13 @@ class CANBusObserver(QMainWindow):
             f"All Supported ({' '.join(['*' + ext for _, ext in sorted_loggers])});;"
             + self.log_file_filter
         )
-        self.trace_model = CANTraceModel()
-        self.grouped_model = CANGroupedModel()
-        self.grouped_proxy_model = QSortFilterProxyModel()
-        self.grouped_proxy_model.setSourceModel(self.grouped_model)
-        self.grouped_proxy_model.setSortRole(Qt.UserRole)
-        self.frame_batch = []
-        self.all_received_frames_count = []
+        # Get the current event loop
+        self.loop = asyncio.get_event_loop()
+
+        self.frame_processor = CANFrameProcessor()
+        self.grouped_model = self.frame_processor.get_grouped_model()
+
+        self.all_received_frames_count = 0
 
         QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.OpaqueSplitterResize, True)
         QtAds.CDockManager.setConfigFlag(
@@ -1465,36 +408,16 @@ class CANBusObserver(QMainWindow):
         QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.FocusHighlighting, True)
         self.dock_manager = QtAds.CDockManager(self)
 
-        # Set monospaced font for grouped and trace views
-        monospace_font = QFont("monospace")
-        monospace_font.setStyleHint(QFont.Monospace)
+        self.trace2_queue = queue.Queue()
+        self.trace2_canbuffer = CANBuffer(self.trace2_queue)
+        self.trace2_table = QTableView()
+        self.trace2_model = CANTableModel(self.trace2_canbuffer)
+        self.trace2_table.setModel(self.trace2_model)
+        self.trace2_canbuffer.start()
 
-        self.grouped_view = QTreeView()
-        self.grouped_view.setModel(self.grouped_proxy_model)
-        self.grouped_view.setAlternatingRowColors(True)
-        self.grouped_view.setSortingEnabled(True)
-        self.grouped_view.setFont(monospace_font)
-
-        self.trace_view_widget = QWidget()
-        trace_layout = QVBoxLayout(self.trace_view_widget)
-        trace_layout.setContentsMargins(5, 5, 5, 5)
-        self.trace_view = QTableView()
-        self.trace_view.setModel(self.trace_model)
-        self.trace_view.setAlternatingRowColors(True)
-        self.trace_view.horizontalHeader().setStretchLastSection(True)
-        self.trace_view.setFont(monospace_font)
-        self.autoscroll_cb = QCheckBox("Autoscroll", checked=True)
-        trace_layout.addWidget(self.trace_view)
-        trace_layout.addWidget(self.autoscroll_cb)
-
-        self.object_dictionary_viewer = ObjectDictionaryViewer()
-        self.object_dictionary_viewer.frame_to_send.connect(self.send_can_frame)
-
-        self.nmt_sender = NMTSender(self.project)
-        self.nmt_sender.frame_to_send.connect(self.send_can_frame)
-        self.nmt_sender.status_update.connect(self.statusBar().showMessage)
-
-        # self.setCentralWidget(self.dock_manager)
+        header_view = Trace2FilterHeaderView(Qt.Horizontal)
+        header_view.set_model(self.trace2_model)
+        self.trace2_table.setHorizontalHeader(header_view)
 
         self.setup_actions()
         self.setup_ui()
@@ -1508,9 +431,11 @@ class CANBusObserver(QMainWindow):
         self.transmit_panel.config_changed.connect(lambda: self._set_dirty(True))
         self.restore_layout()
         self.update_perspectives_menu()
+
         self.gui_update_timer = QTimer(self)
         self.gui_update_timer.timeout.connect(self.update_views)
         self.gui_update_timer.start(50)
+
         self._update_window_title()
 
         icon = QIcon(QPixmap(":/icons/canpeek.png"))
@@ -1606,23 +531,10 @@ class CANBusObserver(QMainWindow):
         monospace_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
 
         self.grouped_view = QTreeView()
-        self.grouped_view.setModel(self.grouped_proxy_model)
+        self.grouped_view.setModel(self.grouped_model)
         self.grouped_view.setAlternatingRowColors(True)
         self.grouped_view.setSortingEnabled(True)
         self.grouped_view.setFont(monospace_font)
-        self.grouped_view.sortByColumn(GroupedViewColumn.ID, Qt.AscendingOrder)
-
-        self.trace_view_widget = QWidget()
-        trace_layout = QVBoxLayout(self.trace_view_widget)
-        trace_layout.setContentsMargins(5, 5, 5, 5)
-        self.trace_view = QTableView()
-        self.trace_view.setModel(self.trace_model)
-        self.trace_view.setAlternatingRowColors(True)
-        self.trace_view.horizontalHeader().setStretchLastSection(True)
-        self.trace_view.setFont(monospace_font)
-        self.autoscroll_cb = QCheckBox("Autoscroll", checked=True)
-        trace_layout.addWidget(self.trace_view)
-        trace_layout.addWidget(self.autoscroll_cb)
 
         self.object_dictionary_viewer = ObjectDictionaryViewer()
         self.object_dictionary_viewer.frame_to_send.connect(self.send_can_frame)
@@ -1664,15 +576,14 @@ class CANBusObserver(QMainWindow):
         grouped_dock.setWidget(self.grouped_view)
         self.dock_manager.addDockWidgetTabToArea(grouped_dock, central_dock_area)
 
-        trace_dock = QtAds.CDockWidget(self.dock_manager, "Trace View")
-        trace_dock.setWidget(self.trace_view_widget)
-        self.dock_manager.addDockWidgetTabToArea(trace_dock, central_dock_area)
+        trace2_dock = QtAds.CDockWidget(self.dock_manager, "Trace View")
+        trace2_dock.setWidget(self.trace2_table)
+        self.dock_manager.addDockWidgetTabToArea(trace2_dock, central_dock_area)
 
-        object_dictionary_dock = QtAds.CDockWidget(self.dock_manager, "Object Dictionary")
-        object_dictionary_dock.setWidget(self.object_dictionary_viewer)
-        self.dock_manager.addDockWidgetTabToArea(
-            object_dictionary_dock, central_dock_area
-        )
+        od_dock = QtAds.CDockWidget(self.dock_manager, "Object Dictionary")
+        od_dock.setWidget(self.object_dictionary_viewer)
+        self.dock_manager.addDockWidgetTabToArea(od_dock, central_dock_area)
+
         # Set the Grouped View active
         central_dock_area.setCurrentDockWidget(grouped_dock)
 
@@ -1696,15 +607,13 @@ class CANBusObserver(QMainWindow):
 
         transmit_aera.setCurrentDockWidget(transmit_dock)
 
-        transmit_aera
-
         self.docks = {
             "explorer": explorer_dock,
             "properties": properties_dock,
             "transmit": transmit_dock,
             "grouped": grouped_dock,
-            "trace": trace_dock,
-            "object_dictionary": object_dictionary_dock,
+            "trace": trace2_dock,
+            "object_dictionary": od_dock,
             "nmt_sender": nmt_sender_dock,
         }
 
@@ -1752,6 +661,23 @@ class CANBusObserver(QMainWindow):
         file_menu.addAction(self.save_project_action)
         file_menu.addAction(self.save_project_as_action)
         file_menu.addSeparator()
+
+        # Add new instance menu actions
+        new_instance_action = QAction("New &Instance", self)
+        new_instance_action.setShortcut("Ctrl+Shift+N")
+        new_instance_action.setToolTip("Launch a new independent CANPeek window")
+        new_instance_action.triggered.connect(self.launch_new_instance)
+        file_menu.addAction(new_instance_action)
+
+        open_instance_action = QAction("Open in New &Instance...", self)
+        open_instance_action.setShortcut("Ctrl+Shift+O")
+        open_instance_action.setToolTip(
+            "Open a project file in a new independent CANPeek window"
+        )
+        open_instance_action.triggered.connect(self.open_in_new_instance)
+        file_menu.addAction(open_instance_action)
+
+        file_menu.addSeparator()
         file_menu.addAction(self.clear_action)
         file_menu.addAction(self.load_log_action)
         file_menu.addAction(self.save_log_action)
@@ -1760,9 +686,15 @@ class CANBusObserver(QMainWindow):
         connect_menu = menubar.addMenu("&Connect")
         connect_menu.addAction(self.connect_action)
         connect_menu.addAction(self.disconnect_action)
+
         view_menu = menubar.addMenu("&View")
         for dock in self.docks.values():
             view_menu.addAction(dock.toggleViewAction())
+
+        # Add Window menu for instance management
+        window_menu = menubar.addMenu("&Window")
+        window_menu.addAction(new_instance_action)
+        window_menu.addAction(open_instance_action)
 
         perspectives_menu = menubar.addMenu("&Perspectives")
         save_perspective_action = QAction("Save Perspective...", self)
@@ -1801,6 +733,8 @@ class CANBusObserver(QMainWindow):
         self.frame_count_label = QLabel("Frames: 0")
         self.connection_label = QLabel("Disconnected")
         self.bus_state_label = QLabel("Bus States: N/A")
+        self.performance_label = QLabel("Performance: Ready")
+        self.statusBar().addPermanentWidget(self.performance_label)
         self.statusBar().addPermanentWidget(self.bus_state_label)
         self.statusBar().addPermanentWidget(self.frame_count_label)
         self.statusBar().addPermanentWidget(self.connection_label)
@@ -1838,55 +772,26 @@ class CANBusObserver(QMainWindow):
 
     def _process_frame(self, frame: CANFrame):
         try:
-            self.frame_batch.append(frame)
+            # # Convert bytearray to bytes for Polars backend compatibility
+            # if isinstance(frame.data, bytearray):
+            #     frame.data = bytes(frame.data)
+
+            self.all_received_frames_count += 1
+
+            # # Feed frames to frame processor for distribution to both views
+            # self.frame_processor.add_frame(frame)
+
             if frame.arbitration_id & 0x580 == 0x580:
                 self.object_dictionary_viewer.frame_rx_sdo.emit(frame)
         except Exception as e:
             print(f"Error processing frame: {e}")
 
     def update_views(self):
-        if not self.frame_batch:
-            return
-        try:
-            frames_to_process, self.frame_batch = self.frame_batch[:], []
-            active_filters = self.project.get_active_filters()
-            filtered_frames = [
-                f
-                for f in frames_to_process
-                if not active_filters or any(filt.matches(f) for filt in active_filters)
-            ]
-            if not filtered_frames:
-                return
-            expanded_ids = {
-                self.grouped_model.data(
-                    self.grouped_proxy_model.mapToSource(
-                        self.grouped_proxy_model.index(row, 0)
-                    ),
-                    Qt.UserRole,
-                )
-                for row in range(self.grouped_proxy_model.rowCount())
-                if self.grouped_view.isExpanded(self.grouped_proxy_model.index(row, 0))
-            }
-            self.grouped_model.update_frames(filtered_frames)
-            self.all_received_frames_count += len(filtered_frames)
-            self.trace_model.add_data(filtered_frames)
-            for row in range(self.grouped_proxy_model.rowCount()):
-                proxy_index = self.grouped_proxy_model.index(row, 0)
-                if (
-                    self.grouped_model.data(
-                        self.grouped_proxy_model.mapToSource(proxy_index), Qt.UserRole
-                    )
-                    in expanded_ids
-                ):
-                    self.grouped_view.setExpanded(proxy_index, True)
-            if self.autoscroll_cb.isChecked():
-                self.trace_view.scrollToBottom()
-            self.frame_count_label.setText(f"Frames: {self.all_received_frames_count}")
-        except Exception as e:
-            import traceback
+        """Update frame counter and handle autoscroll - Polars backend handles the rest"""
 
-            print(f"Error in update_views: {e}")
-            traceback.print_exc()
+        # if True:  # self.autoscroll_cb.isChecked():
+        #     self.trace2_table.scrollToBottom()
+        self.frame_count_label.setText(f"Frames: {self.all_received_frames_count}")
 
     def _create_pdo_databases(self) -> List[object]:
         """Create PDO databases from enabled CANopen nodes using manager"""
@@ -1896,11 +801,16 @@ class CANBusObserver(QMainWindow):
         active_dbcs = self.project.get_active_dbcs()
         pdo_databases = self._create_pdo_databases()
 
-        self.trace_model.set_config(
-            active_dbcs, self.project.canopen_enabled, pdo_databases
+        # Update grouped model configuration
+        self.grouped_model.set_dbc_config(
+            active_dbcs, pdo_databases, self.project.canopen_enabled
         )
-        self.grouped_model.set_config(
-            active_dbcs, self.project.canopen_enabled, pdo_databases
+
+        # Update trace2_canbuffer DBC configuration for cached decoding
+        self.trace2_canbuffer.dbc_decoder.set_dbc_files(active_dbcs)
+        self.trace2_canbuffer.dbc_decoder.set_pdo_databases(pdo_databases)
+        self.trace2_canbuffer.dbc_decoder.set_canopen_enabled(
+            self.project.canopen_enabled
         )
 
         if self.can_readers:
@@ -1992,7 +902,7 @@ class CANBusObserver(QMainWindow):
     def _update_bus_state(self, state: can.BusState):
         """Updates the status bar with the current CAN bus state."""
         sender_reader = self.sender()
-        if not isinstance(sender_reader, CANAsyncReader):
+        if not isinstance(sender_reader, CANMultiprocessReader):
             return
 
         conn_id = sender_reader.connection.id
@@ -2058,12 +968,15 @@ class CANBusObserver(QMainWindow):
         if connection.id in self.can_readers:
             return True  # Already connected
 
-        reader = CANAsyncReader(connection)
+        reader = CANMultiprocessReader(
+            connection,
+            [self.frame_processor.grouped_queue, self.trace2_queue],
+        )
         reader.frame_received.connect(self._process_frame)
         reader.error_occurred.connect(self.on_can_error)
         reader.bus_state_changed.connect(self._update_bus_state)
 
-        if await reader.start_reading():
+        if reader.start_reading():
             self.can_readers[connection.id] = reader
             return True
         else:
@@ -2112,8 +1025,24 @@ class CANBusObserver(QMainWindow):
 
     def clear_data(self):
         self.all_received_frames_count = 0
-        self.grouped_model.clear_frames()
-        self.trace_model.clear_frames()
+        # Reset frame processor
+        self.frame_processor.clear_data()
+        self.trace2_canbuffer.clear()
+        # Clear DBC decoder caches
+        self.trace2_canbuffer.dbc_decoder.clear_caches()
+        # self.trace_model = self.frame_processor.get_trace_model()
+        # self.grouped_model = self.frame_processor.get_grouped_model()
+        #
+        # # Update views with new models
+        # self.trace_view.setModel(self.trace_model)
+        # self.grouped_view.setModel(self.grouped_model)
+        #
+        # # Update filter header view with new model
+        # self.trace_header_view.set_model(self.trace_model)
+
+        # Update configuration for new models
+        self.on_project_changed()
+
         self.frame_count_label.setText("Frames: 0")
 
     def ask_for_file_path(self, title: str) -> str | None:
@@ -2125,27 +1054,42 @@ class CANBusObserver(QMainWindow):
         return dialog.selectedFiles()[0]
 
     def save_log(self):
-        if not self.trace_model.frames:
+        # Get all frames from CANBuffer (entire buffer content)
+        buffer_data = self.trace2_canbuffer.get_polars_data(self.trace2_canbuffer.index)
+
+        if buffer_data.is_empty():
             QMessageBox.information(self, "No Data", "No frames to save.")
             return
+
         filename = self.ask_for_file_path("Save CAN Log")
+        if not filename:
+            return
+
         logger = None
         try:
             logger = can.Logger(filename)
-            for frame in self.trace_model.frames:
+            # Convert Polars DataFrame rows to can.Message objects
+            for row in buffer_data.iter_rows(named=True):
+                # Convert hex string ID back to int
+                arbitration_id = int(row["id"], 16)
+                # Convert hex string data back to bytes
+                data_bytes = bytes.fromhex(row["data"].replace(" ", ""))
+
                 logger.on_message_received(
                     can.Message(
-                        timestamp=frame.timestamp,
-                        arbitration_id=frame.arbitration_id,
-                        is_extended_id=frame.is_extended,
-                        is_remote_frame=frame.is_remote,
-                        is_error_frame=frame.is_error,
-                        dlc=frame.dlc,
-                        data=frame.data,
-                        channel=frame.bus,
+                        timestamp=row["timestamp"],
+                        arbitration_id=arbitration_id,
+                        is_extended_id=row["is_extended"],
+                        is_remote_frame=row["is_rtr"],
+                        is_error_frame=False,  # Not stored in current buffer format
+                        dlc=row["dlc"],
+                        data=data_bytes,
+                        channel=row["bus"],
                     )
                 )
-            self.statusBar().showMessage(f"Log saved to {filename}")
+            self.statusBar().showMessage(
+                f"Log saved to {filename} ({buffer_data.height} frames)"
+            )
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save log: {e}")
         finally:
@@ -2159,7 +1103,7 @@ class CANBusObserver(QMainWindow):
         if not filename:
             return
         try:
-            self.clear_data()
+            # self.clear_data()
             frames_to_add = []
             for msg in can.LogReader(filename):
                 try:
@@ -2186,8 +1130,8 @@ class CANBusObserver(QMainWindow):
                         CANFrame(
                             timestamp=msg.timestamp,
                             arbitration_id=arbitration_id,
-                            data=b"" if msg.is_remote_frame else data,
-                            dlc=0 if msg.is_remote_frame else dlc,
+                            data=data,
+                            dlc=dlc,
                             is_extended=msg.is_extended_id,
                             is_error=msg.is_error_frame,
                             is_remote=msg.is_remote_frame,
@@ -2201,8 +1145,14 @@ class CANBusObserver(QMainWindow):
                         f"Skipping malformed frame: {frame_error}. Original message: {msg}",
                     )
                     continue
-            self.frame_batch.extend(frames_to_add)
-            self.update_views()
+            # Add frames to frame processor
+            if frames_to_add:
+                # self.frame_processor.add_frames(frames_to_add)
+                self.all_received_frames_count += len(frames_to_add)
+                for frame in frames_to_add:
+                    self.grouped_model.add_frame(frame)
+                    self.trace2_queue.put(frame)
+
             self.statusBar().showMessage(
                 f"Loaded {self.all_received_frames_count} frames from {filename}"
             )
@@ -2428,13 +1378,110 @@ class CANBusObserver(QMainWindow):
         if not self._prompt_save_if_dirty():
             event.ignore()
             return
+
+        self.frame_processor.shutdown()
+
         self.save_layout()
         self.disconnect_can()
         QApplication.processEvents()
         event.accept()
 
+    def get_current_executable(self):
+        """Get the current executable path for launching new instances"""
+        if getattr(sys, "frozen", False):
+            # Running as Nuitka/PyInstaller executable
+            return [sys.executable]
+        else:
+            # Development mode - try different approaches
+            if __name__ == "__main__":
+                # Running as script directly
+                return [sys.executable, sys.argv[0]]
+            else:
+                # Running as module
+                return [sys.executable, "-m", "canpeek"]
+
+    def launch_new_canpeek_instance(self, project_path=None):
+        """Launch a completely independent CANPeek instance"""
+        cmd = self.get_current_executable()
+
+        # Validate project path if specified
+        if project_path:
+            if not Path(project_path).exists():
+                QMessageBox.warning(
+                    self,
+                    "File Not Found",
+                    f"Project file does not exist:\n{project_path}",
+                )
+                return None
+            cmd.extend(["--project", project_path])
+
+        # Platform-specific process creation
+        kwargs = {
+            "cwd": os.getcwd(),
+        }
+
+        # Add platform-specific flags for process isolation
+        if os.name == "nt":  # Windows
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:  # Unix-like (Linux, macOS)
+            kwargs["start_new_session"] = True
+
+        try:
+            # Launch the process
+            process = subprocess.Popen(cmd, **kwargs)
+
+            # Show success message
+            if project_path:
+                filename = Path(project_path).name
+                message = f"Opened '{filename}' in new instance (PID: {process.pid})"
+            else:
+                message = f"Launched new CANPeek instance (PID: {process.pid})"
+
+            self.statusBar().showMessage(message)
+            print(f"Command executed: {' '.join(cmd)}")
+            return process
+
+        except FileNotFoundError:
+            QMessageBox.critical(
+                self,
+                "Launch Error",
+                f"Could not find executable. Command attempted:\n{' '.join(cmd)}\n\n"
+                "Make sure CANPeek is properly installed or running from the correct directory.",
+            )
+            return None
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Launch Error",
+                f"Failed to launch new CANPeek instance:\n{e}\n\n"
+                f"Command attempted: {' '.join(cmd)}",
+            )
+            return None
+
+    def launch_new_instance(self):
+        """Launch new empty CANPeek instance"""
+        self.launch_new_canpeek_instance()
+
+    def open_in_new_instance(self):
+        """Open project file dialog and launch in new instance"""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Project in New Instance",
+            "",
+            "CANPeek Project (*.cpeek);;All Files (*)",
+        )
+        if path:
+            self.launch_new_canpeek_instance(path)
+
 
 def main():
+    import argparse
+
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="CANPeek - CAN Bus Analyzer")
+    parser.add_argument("--project", type=str, help="Project file to open on startup")
+    args = parser.parse_args()
+
     app = QApplication(sys.argv)
 
     # qt_themes.set_theme("catppuccin_mocha")
@@ -2448,6 +1495,10 @@ def main():
     app.setOrganizationName("CANPeek")
     app.setApplicationName("CANPeek")
     window = CANBusObserver()
+
+    # Open project if specified via command line
+    if args.project:
+        window._open_project(args.project)
 
     window.show()
 
