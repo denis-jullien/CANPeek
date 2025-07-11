@@ -137,7 +137,7 @@ class TestDataStructures:
     def test_filter_matches(self, sample_connection):
         """Test the CANFrameFilter logic."""
         f = canpeek_app.CANFrameFilter(
-            min_id=0x100, max_id=0x1FF, mask=0x7FF, connection_id=sample_connection.id
+            min_id=0x100, max_id=0x1FF, connection_id=sample_connection.id
         )
         frame_match = canpeek_app.CANFrame(
             0, 0x150, b"", 0, connection_id=sample_connection.id
@@ -207,7 +207,7 @@ class TestUIModels:
             model.data(
                 model.index(0, canpeek_models.TraceViewColumn.TIMESTAMP), Qt.DisplayRole
             )
-            == "12345.678000"
+            == "04:25:45.678000"
         )
         assert (
             model.data(

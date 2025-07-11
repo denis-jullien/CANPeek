@@ -256,16 +256,21 @@ class FilterEditor(QWidget):
         layout.addRow("Channel:", self.channel_combo)
 
         id_layout = QHBoxLayout()
+        id_layout2 = QHBoxLayout()
         self.min_id_edit = QLineEdit(f"0x{self.filter.min_id:X}")
         self.max_id_edit = QLineEdit(f"0x{self.filter.max_id:X}")
         self.mask_edit = QLineEdit(f"0x{self.filter.mask:X}")
+        self.mask_compare_edit = QLineEdit(f"0x{self.filter.mask_compare:X}")
         id_layout.addWidget(QLabel("Min:"))
         id_layout.addWidget(self.min_id_edit)
         id_layout.addWidget(QLabel("Max:"))
         id_layout.addWidget(self.max_id_edit)
-        id_layout.addWidget(QLabel("Mask:"))
-        id_layout.addWidget(self.mask_edit)
         layout.addRow("ID (hex):", id_layout)
+        id_layout2.addWidget(QLabel("Mask:"))
+        id_layout2.addWidget(self.mask_edit)
+        id_layout2.addWidget(QLabel("Mask Compare:"))
+        id_layout2.addWidget(self.mask_compare_edit)
+        layout.addRow(id_layout2)
         self.standard_cb = QCheckBox("Standard")
         self.standard_cb.setChecked(self.filter.accept_standard)
         self.extended_cb = QCheckBox("Extended")
@@ -2132,7 +2137,7 @@ class CANBusObserver(QMainWindow):
                         is_error_frame=frame.is_error,
                         dlc=frame.dlc,
                         data=frame.data,
-                        channel=frame.channel,
+                        channel=frame.bus,
                     )
                 )
             self.statusBar().showMessage(f"Log saved to {filename}")

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Any, Dict
 import enum
 import uuid
+from datetime import datetime
 
 from PySide6.QtCore import QAbstractItemModel, QAbstractTableModel, QModelIndex, Qt
 
@@ -179,7 +180,7 @@ class CANTraceModel(QAbstractTableModel):
             return None
 
         if col == TraceViewColumn.TIMESTAMP:
-            return f"{frame.timestamp:.6f}"
+            return datetime.fromtimestamp(frame.timestamp).strftime("%H:%M:%S.%f")
         if col == TraceViewColumn.BUS:
             return str(frame.bus)
         if col == TraceViewColumn.DIRECTION:
