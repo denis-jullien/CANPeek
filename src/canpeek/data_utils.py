@@ -58,7 +58,9 @@ class CANFrameFilter:
             return False
         if not frame.is_remote and not self.accept_data:
             return False
-        return (self.min_id <= frame.arbitration_id <= self.max_id) and ((frame.arbitration_id & self.mask) == self.mask_compare)
+        return (self.min_id <= frame.arbitration_id <= self.max_id) and (
+            (frame.arbitration_id & self.mask) == self.mask_compare
+        )
 
 
 @dataclass

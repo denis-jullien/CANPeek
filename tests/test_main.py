@@ -167,6 +167,21 @@ class TestDataStructures:
         f.accept_extended = False
         assert not f.matches(frame_ext)
 
+    def test_filter_mask_matches(self, sample_connection):
+        """Test the CANFrameFilter logic with a mask."""
+        f = canpeek_app.CANFrameFilter(
+            mask=0x700, mask_compare=0x100, connection_id=sample_connection.id
+        )
+        frame_match = canpeek_app.CANFrame(
+            0, 0x150, b"", 0, connection_id=sample_connection.id
+        )
+        frame_no_match = canpeek_app.CANFrame(
+            0, 0x250, b"", 0, connection_id=sample_connection.id
+        )
+
+        assert f.matches(frame_match)
+        assert not f.matches(frame_no_match)
+
 
 class TestDecoders:
     """Tests for the CANopen decoder logic."""

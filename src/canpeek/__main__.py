@@ -14,6 +14,7 @@ Features:
 import os
 import sys
 import json
+
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
 from pathlib import Path
 from functools import partial
@@ -117,6 +118,7 @@ if TYPE_CHECKING:
 if os.environ.get("XDG_SESSION_TYPE") == "wayland":
     print("Workaround for qt-ads on Wayland")
     os.environ["QT_QPA_PLATFORM"] = "xcb"
+
 
 # --- UI Classes ---
 class DBCEditor(QWidget):
@@ -2114,16 +2116,19 @@ class CANBusObserver(QMainWindow):
         self.trace_model.clear_frames()
         self.frame_count_label.setText("Frames: 0")
 
+    def ask_for_file_path(self, title: str) -> str | None:
+        dialog = QFileDialog(self, title, "", self.log_file_filter)
+        dialog.setDefaultSuffix("log")
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        if not dialog.exec():
+            return None
+        return dialog.selectedFiles()[0]
+
     def save_log(self):
         if not self.trace_model.frames:
             QMessageBox.information(self, "No Data", "No frames to save.")
             return
-        dialog = QFileDialog(self, "Save CAN Log", "", self.log_file_filter)
-        dialog.setDefaultSuffix("log")
-        dialog.setAcceptMode(QFileDialog.AcceptSave)
-        if not dialog.exec():
-            return
-        filename = dialog.selectedFiles()[0]
+        filename = self.ask_for_file_path("Save CAN Log")
         logger = None
         try:
             logger = can.Logger(filename)
@@ -2161,7 +2166,9 @@ class CANBusObserver(QMainWindow):
                     # Ensure arbitration_id is an integer
                     arbitration_id = msg.arbitration_id
                     if not isinstance(arbitration_id, int):
-                        raise ValueError(f"Arbitration ID is not an integer: {arbitration_id}")
+                        raise ValueError(
+                            f"Arbitration ID is not an integer: {arbitration_id}"
+                        )
 
                     # Ensure dlc is an integer
                     dlc = msg.dlc
@@ -2179,7 +2186,7 @@ class CANBusObserver(QMainWindow):
                         CANFrame(
                             timestamp=msg.timestamp,
                             arbitration_id=arbitration_id,
-                            data=b'' if msg.is_remote_frame else data,
+                            data=b"" if msg.is_remote_frame else data,
                             dlc=0 if msg.is_remote_frame else dlc,
                             is_extended=msg.is_extended_id,
                             is_error=msg.is_error_frame,
@@ -2188,8 +2195,11 @@ class CANBusObserver(QMainWindow):
                         )
                     )
                 except Exception as frame_error:
-                    QMessageBox.warning(self, "Log Parse Warning",
-                                        f"Skipping malformed frame: {frame_error}. Original message: {msg}")
+                    QMessageBox.warning(
+                        self,
+                        "Log Parse Warning",
+                        f"Skipping malformed frame: {frame_error}. Original message: {msg}",
+                    )
                     continue
             self.frame_batch.extend(frames_to_add)
             self.update_views()
