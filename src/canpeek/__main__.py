@@ -1668,11 +1668,9 @@ class CANBusObserver(QMainWindow):
         trace_dock.setWidget(self.trace_view_widget)
         self.dock_manager.addDockWidgetTabToArea(trace_dock, central_dock_area)
 
-        object_dictionary_dock = QtAds.CDockWidget(self.dock_manager, "Object Dictionary")
-        object_dictionary_dock.setWidget(self.object_dictionary_viewer)
-        self.dock_manager.addDockWidgetTabToArea(
-            object_dictionary_dock, central_dock_area
-        )
+        od_dock = QtAds.CDockWidget(self.dock_manager, "Object Dictionary")
+        od_dock.setWidget(self.object_dictionary_viewer)
+        self.dock_manager.addDockWidgetTabToArea(od_dock, central_dock_area)
         # Set the Grouped View active
         central_dock_area.setCurrentDockWidget(grouped_dock)
 
@@ -1696,15 +1694,13 @@ class CANBusObserver(QMainWindow):
 
         transmit_aera.setCurrentDockWidget(transmit_dock)
 
-        transmit_aera
-
         self.docks = {
             "explorer": explorer_dock,
             "properties": properties_dock,
             "transmit": transmit_dock,
             "grouped": grouped_dock,
             "trace": trace_dock,
-            "object_dictionary": object_dictionary_dock,
+            "object_dictionary": od_dock,
             "nmt_sender": nmt_sender_dock,
         }
 

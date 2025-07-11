@@ -32,6 +32,54 @@ def capture_logs(logger_name: str):
         target_logger.setLevel(original_level)
 
 
+# def get_socketcan_details() -> Dict[str, Dict[str, Any]]:
+#     """
+#     Executes 'ip -d -j link show' and parses the JSON output to extract
+#     details for SocketCAN interfaces.
+#     """
+#     import subprocess
+#     import json
+#     import sys
+#
+#     if not sys.platform.startswith("linux"):
+#         return {}
+#
+#     socketcan_details = {}
+#     try:
+#         result = subprocess.run(
+#             ["ip", "-d", "-j", "link", "show"], capture_output=True, text=True, check=True
+#         )
+#         interfaces_data = json.loads(result.stdout)
+#         for iface in interfaces_data:
+#             if iface.get("link_type") == "can":
+#                 ifname = iface.get("ifname")
+#                 if ifname:
+#                     details = {
+#                         "operstate": iface.get("operstate"),
+#                         "state": iface.get("linkinfo", {}).get("info_data", {}).get("state"),
+#                         "bitrate": iface.get("linkinfo", {}).get("info_data", {}).get("bittiming", {}).get("bitrate"),
+#                         "bus_down": "UP" not in iface.get("flags", []),
+#                     }
+#                     socketcan_details[ifname] = details
+#     except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError) as e:
+#         print(f"Warning: Could not get SocketCAN details: {e}")
+#     return socketcan_details
+#
+# def get_qtcan_list():
+#     from PySide6.QtSerialBus import QCanBus
+#     qtbus = QCanBus.instance()
+#     device_list, error_string = qtbus.availableDevices()
+#     print(device_list)
+#     for device in device_list:
+#         try:
+#             print('pldf')
+#             print(
+#                 f"{device.plugin()} + {device.name()} + {device.serialNumber()} + {device.alias()} + {device.channel()} + {device.isVirtual()} + {device.hasFlexibleDataRate()} + {device.description()}")
+#         except:
+#             print(device)
+#             pass
+
+
 class CANInterfaceManager:
     """
     Dynamically discovers available python-can interfaces. It uses the
