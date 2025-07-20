@@ -38,7 +38,8 @@ class CANFrameFilter:
     connection_id: Optional[uuid.UUID] = None
     min_id: int = 0x000
     max_id: int = 0x7FF
-    mask: int = 0x7FF
+    mask: int = 0x000
+    mask_compare: int = 0x000
     accept_extended: bool = True
     accept_standard: bool = True
     accept_data: bool = True
@@ -57,7 +58,9 @@ class CANFrameFilter:
             return False
         if not frame.is_remote and not self.accept_data:
             return False
-        return self.min_id <= (frame.arbitration_id & self.mask) <= self.max_id
+        return (self.min_id <= frame.arbitration_id <= self.max_id) and (
+            (frame.arbitration_id & self.mask) == self.mask_compare
+        )
 
 
 @dataclass

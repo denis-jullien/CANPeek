@@ -36,6 +36,13 @@ canpeek
 1. Install [uv](https://github.com/astral-sh/uv)
 2. Run `uv run canpeek --extra interfaces`
 
+## Developpement
+
+```bash
+uv sync --extra interfaces
+pre-commit install
+```
+
 ## 🤖 About the Code (aka “AI Slop” Warning)
 
 This project includes code — and this very README — that were generated almost entirely with large language models (LLMs). Yes, the term “AI slop” was insisted upon.

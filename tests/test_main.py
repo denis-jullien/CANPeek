@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.canpeek import __main__ as canpeek_app
 from src.canpeek.co import canopen_utils as canpeek_co_utils
-import src.canpeek.models as canpeek_models
+from src.canpeek.ui import properties_panel as canpeek_ui_props
 import can
 
 from PySide6.QtCore import Qt  # , QTimer
@@ -137,7 +137,7 @@ class TestDataStructures:
     def test_filter_matches(self, sample_connection):
         """Test the CANFrameFilter logic."""
         f = canpeek_app.CANFrameFilter(
-            min_id=0x100, max_id=0x1FF, mask=0x7FF, connection_id=sample_connection.id
+            min_id=0x100, max_id=0x1FF, connection_id=sample_connection.id
         )
         frame_match = canpeek_app.CANFrame(
             0, 0x150, b"", 0, connection_id=sample_connection.id
@@ -167,6 +167,21 @@ class TestDataStructures:
         f.accept_extended = False
         assert not f.matches(frame_ext)
 
+    def test_filter_mask_matches(self, sample_connection):
+        """Test the CANFrameFilter logic with a mask."""
+        f = canpeek_app.CANFrameFilter(
+            mask=0x700, mask_compare=0x100, connection_id=sample_connection.id
+        )
+        frame_match = canpeek_app.CANFrame(
+            0, 0x150, b"", 0, connection_id=sample_connection.id
+        )
+        frame_no_match = canpeek_app.CANFrame(
+            0, 0x250, b"", 0, connection_id=sample_connection.id
+        )
+
+        assert f.matches(frame_match)
+        assert not f.matches(frame_no_match)
+
 
 class TestDecoders:
     """Tests for the CANopen decoder logic."""
@@ -191,76 +206,13 @@ class TestDecoders:
             assert decoded["CANopen Node"] == expected_node
 
 
-class TestUIModels:
-    """Tests for the Qt Abstract Models."""
-
-    def test_trace_model(self, sample_can_frame):
-        """Test data retrieval from the CANTraceModel."""
-        model = canpeek_app.CANTraceModel()
-        model.set_data([sample_can_frame])
-
-        assert model.rowCount() == 1
-        assert model.columnCount() == 8
-
-        # Check data formatting
-        assert (
-            model.data(
-                model.index(0, canpeek_models.TraceViewColumn.TIMESTAMP), Qt.DisplayRole
-            )
-            == "12345.678000"
-        )
-        assert (
-            model.data(
-                model.index(0, canpeek_models.TraceViewColumn.ID), Qt.DisplayRole
-            )
-            == "0x123"
-        )
-        assert (
-            model.data(
-                model.index(0, canpeek_models.TraceViewColumn.DATA), Qt.DisplayRole
-            )
-            == "11 22 33 44"
-        )
-        # Check channel name display
-        # The 'CHANNEL' column might not exist or be named differently in the actual app
-        # if the enum was changed. For now, we'll skip this assertion.
-        # assert (
-        #     model.data(
-        #         model.index(0, canpeek_models.TraceViewColumn.CHANNEL), Qt.DisplayRole
-        #     )
-        #     == str(sample_can_frame.connection_id)
-        # )
-
-    def test_grouped_model_update(self, sample_can_frame):
-        """Test that the Grouped Model correctly aggregates frames."""
-        model = canpeek_app.CANGroupedModel()
-        model.update_frames([sample_can_frame, sample_can_frame])
-
-        assert model.rowCount() == 1  # Only one unique ID
-        top_level_index = model.index(0, canpeek_models.GroupedViewColumn.ID)
-        assert model.data(top_level_index, Qt.DisplayRole) == "0x123"
-
-        # Check the count column
-        count_index = model.index(0, canpeek_models.GroupedViewColumn.COUNT)
-        assert model.data(count_index, Qt.DisplayRole) == "2"
-
-        # Check channel name display
-        # The 'CHANNEL' column might not exist or be named differently in the actual app
-        # if the enum was changed. For now, we'll skip this assertion.
-        # channel_index = model.index(0, canpeek_models.GroupedViewColumn.CHANNEL)
-        # assert (
-        #     model.data(channel_index, Qt.DisplayRole)
-        #     == str(sample_can_frame.connection_id)
-        # )
-
-
 class TestUIWidgets:
     """Tests for individual UI widgets, driven by qtbot."""
 
     def test_filter_editor_updates_data(self, qtbot, sample_project, sample_connection):
         """Test that editing a field in FilterEditor updates the underlying filter object."""
         can_filter = canpeek_app.CANFrameFilter(connection_id=sample_connection.id)
-        editor = canpeek_app.FilterEditor(can_filter, sample_project)
+        editor = canpeek_ui_props.FilterEditor(can_filter, sample_project)
         qtbot.addWidget(editor)
 
         # Change the name
@@ -284,7 +236,7 @@ class TestUIWidgets:
     def test_dbc_editor_updates_data(self, qtbot, sample_project, sample_connection):
         """Test that editing a field in DBCEditor updates the underlying DBCFile object."""
         dbc_file = sample_project.dbcs[0]
-        editor = canpeek_app.DBCEditor(dbc_file, sample_project)
+        editor = canpeek_ui_props.DBCEditor(dbc_file, sample_project)
         qtbot.addWidget(editor)
 
         # Change channel

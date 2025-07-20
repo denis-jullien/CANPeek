@@ -1,6 +1,6 @@
 [project]
 name = "canpeek"
-version = "0.7.0"
+version = "0.8.0"
 description = "A simple CAN bus monitoring tool, with dbc support."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,7 +14,13 @@ dependencies = [
     "python-can>=4.5.0",
     "qasync>=0.27.1",
     "qt-themes>=0.3.0",
+    "polars>=0.20.0",
+    "numpy>=1.24.0",
+    "numba>=0.61.2",
 ]
+
+[tool.uv.sources]
+python-can = { git = "https://github.com/denis-jullien/python-can.git", branch = "trc-read-rtr-support" }
 
 [project.urls]
 Repository = "https://github.com/denis-jullien/CANPeek"
@@ -46,7 +52,12 @@ dev-dependencies = [
     "pytest-mock",
     "ruff>=0.7.1",
     "pytest-asyncio>=1.0.0",
+    "psutil>=7.0.0",
+    "pytest-cov>=6.2.1",
+    "pre-commit>=4.2.0",
 ]
+override-dependencies = ["python-can==0.1"]
+
 
 [tool.pytest.ini_options]
 minversion = "6.0"
@@ -58,3 +69,4 @@ testpaths = [
 ]
 # Needed for pytest-qt to know which Qt binding to use
 qt_api = "pyside6"
+#asyncio_mode="auto"
