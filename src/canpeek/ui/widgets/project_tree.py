@@ -150,9 +150,11 @@ class ProjectTree(QWidget):
             item.setData(0, Qt.UserRole, self.TYPE_CONNECTION)
             item.setData(0, Qt.UserRole + 1, conn)
 
-            # Checkbox for enabled state
+            # Checkbox for connected state (unchecked = disconnected)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(0, Qt.Checked if conn.enabled else Qt.Unchecked)
+            state = self._bus_states.get(conn.id, BusState.UNKNOWN)
+            is_connected = state not in (BusState.UNKNOWN, BusState.STOPPED, BusState.BUS_OFF)
+            item.setCheckState(0, Qt.Checked if is_connected else Qt.Unchecked)
 
             # Bus state indicator
             self._update_connection_item(item, conn)
@@ -196,6 +198,16 @@ class ProjectTree(QWidget):
             item = self._conn_root.child(i)
             conn = item.data(0, Qt.UserRole + 1)
             if conn and conn.id == connection_id:
+                # Block signals to prevent recursive connect/disconnect
+                self._tree.blockSignals(True)
+
+                # Update checkbox based on connection state
+                is_connected = state not in (BusState.UNKNOWN, BusState.STOPPED, BusState.BUS_OFF)
+                item.setCheckState(0, Qt.Checked if is_connected else Qt.Unchecked)
+
+                self._tree.blockSignals(False)
+
+                # Update visual appearance
                 self._update_connection_item(item, conn)
                 break
 
@@ -247,10 +259,12 @@ class ProjectTree(QWidget):
         item_data = item.data(0, Qt.UserRole + 1)
 
         if item_type == self.TYPE_CONNECTION and item_data:
-            enabled = item.checkState(0) == Qt.Checked
-            item_data.enabled = enabled
-            self.connection_toggled.emit(item_data, enabled)
-            self.project_changed.emit()
+            checked = item.checkState(0) == Qt.Checked
+            # Checkbox controls connected state
+            if checked:
+                self.connect_connection_requested.emit(item_data)
+            else:
+                self.disconnect_connection_requested.emit(item_data)
 
     def _show_context_menu(self, pos) -> None:
         """Show context menu."""

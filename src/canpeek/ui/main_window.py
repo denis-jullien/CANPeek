@@ -412,10 +412,17 @@ class MainWindow(QMainWindow):
         success = self._bus_manager.start_connection(connection.id)
         if success:
             self._status_bar.showMessage(f"Connected: {connection.name}")
-            # Update button states if any connection is active
+            # Update state to show connected
+            state = self._bus_manager.get_bus_state(connection.id)
+            if state == BusState.UNKNOWN:
+                state = BusState.ERROR_ACTIVE  # Assume active if unknown
+            self._project_tree.update_bus_state(connection.id, state)
+            self._status_bar.update_bus_state(connection.id, state)
             self._update_connection_buttons()
         else:
             self._status_bar.showMessage(f"Failed to connect: {connection.name}", 3000)
+            # Make sure checkbox reflects failed state
+            self._project_tree.update_bus_state(connection.id, BusState.UNKNOWN)
 
     def _on_disconnect_single(self, connection: Connection) -> None:
         """Disconnect a single bus."""
@@ -437,6 +444,17 @@ class MainWindow(QMainWindow):
 
         connected = sum(1 for success in results.values() if success)
         failed = len(results) - connected
+
+        # Update states for each connection
+        for conn_id, success in results.items():
+            if success:
+                state = self._bus_manager.get_bus_state(conn_id)
+                if state == BusState.UNKNOWN:
+                    state = BusState.ERROR_ACTIVE
+                self._project_tree.update_bus_state(conn_id, state)
+                self._status_bar.update_bus_state(conn_id, state)
+            else:
+                self._project_tree.update_bus_state(conn_id, BusState.UNKNOWN)
 
         if connected > 0:
             self._connect_action.setEnabled(False)
