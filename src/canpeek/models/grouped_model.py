@@ -21,6 +21,7 @@ from PySide6.QtCore import (
 )
 
 from canpeek.core.types import CANFrame
+from canpeek.protocols.canopen import decode_frame as decode_canopen, format_canopen_short
 
 
 class GroupedColumn(IntEnum):
@@ -368,7 +369,14 @@ class GroupedModel(QAbstractItemModel):
                 return msg.bus_name or str(msg.bus_id)
 
             if column == GroupedColumn.SYMBOL:
-                return msg.message_name
+                if msg.message_name:
+                    return msg.message_name
+                # Try CANopen decoding for symbol
+                if msg.frame:
+                    canopen_msg = decode_canopen(msg.frame)
+                    if canopen_msg:
+                        return format_canopen_short(canopen_msg)
+                return ""
 
             if column == GroupedColumn.DLC:
                 return str(msg.dlc)

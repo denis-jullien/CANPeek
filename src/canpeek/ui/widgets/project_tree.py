@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from canpeek.core.types import Connection, BusState
+from canpeek.protocols.canopen import CANopenNode, NMTState
 
 
 class ProjectTree(QWidget):
@@ -72,6 +73,7 @@ class ProjectTree(QWidget):
 
         self._connections: list[Connection] = []
         self._bus_states: dict[UUID, BusState] = {}
+        self._canopen_nodes: dict[int, QTreeWidgetItem] = {}  # node_id -> item
 
         self._setup_ui()
         self._connect_signals()
@@ -334,6 +336,75 @@ class ProjectTree(QWidget):
         # TODO: Implement filter dialog
         self.add_filter(f"Filter {self._filter_root.childCount() + 1}", None)
         self.project_changed.emit()
+
+    # --- CANopen node management ---
+
+    def add_canopen_node(self, node: CANopenNode) -> None:
+        """Add a discovered CANopen node to the tree."""
+        if node.node_id in self._canopen_nodes:
+            # Already exists, just update
+            self.update_canopen_node(node)
+            return
+
+        item = QTreeWidgetItem(self._canopen_root)
+        item.setText(0, f"Node {node.node_id}")
+        item.setData(0, Qt.UserRole, self.TYPE_CANOPEN_NODE)
+        item.setData(0, Qt.UserRole + 1, node)
+
+        self._canopen_nodes[node.node_id] = item
+        self._update_canopen_node_item(item, node)
+
+    def update_canopen_node(self, node: CANopenNode) -> None:
+        """Update a CANopen node's display."""
+        item = self._canopen_nodes.get(node.node_id)
+        if item:
+            item.setData(0, Qt.UserRole + 1, node)
+            self._update_canopen_node_item(item, node)
+
+    def _update_canopen_node_item(self, item: QTreeWidgetItem, node: CANopenNode) -> None:
+        """Update CANopen node item appearance based on state."""
+        # Update text with state
+        state_str = node.state_name
+        if node.device_name:
+            item.setText(0, f"Node {node.node_id}: {node.device_name} [{state_str}]")
+        else:
+            item.setText(0, f"Node {node.node_id} [{state_str}]")
+
+        # Color based on state
+        if node.state == NMTState.OPERATIONAL:
+            item.setForeground(0, QColor("#4CAF50"))  # Green
+        elif node.state == NMTState.PRE_OPERATIONAL:
+            item.setForeground(0, QColor("#2196F3"))  # Blue
+        elif node.state == NMTState.STOPPED:
+            item.setForeground(0, QColor("#FFC107"))  # Yellow
+        elif node.state == NMTState.BOOT_UP:
+            item.setForeground(0, QColor("#9C27B0"))  # Purple
+        else:
+            item.setForeground(0, QColor("#888888"))  # Gray
+
+        # Tooltip
+        tooltip = f"Node ID: {node.node_id}\n"
+        tooltip += f"State: {node.state_name}\n"
+        tooltip += f"Messages: {node.message_count}\n"
+        if node.error_count > 0:
+            tooltip += f"Errors: {node.error_count}\n"
+        if node.heartbeat_interval_ms:
+            tooltip += f"Heartbeat: {node.heartbeat_interval_ms:.0f} ms\n"
+        item.setToolTip(0, tooltip)
+
+    def remove_canopen_node(self, node_id: int) -> None:
+        """Remove a CANopen node from the tree."""
+        item = self._canopen_nodes.pop(node_id, None)
+        if item:
+            index = self._canopen_root.indexOfChild(item)
+            if index >= 0:
+                self._canopen_root.takeChild(index)
+
+    def clear_canopen_nodes(self) -> None:
+        """Clear all CANopen nodes."""
+        while self._canopen_root.childCount() > 0:
+            self._canopen_root.removeChild(self._canopen_root.child(0))
+        self._canopen_nodes.clear()
 
     def expand_all(self) -> None:
         """Expand all items."""

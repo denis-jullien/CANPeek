@@ -799,34 +799,34 @@ canpeek2/
 
 ## 8. Implementation Phases
 
-### Phase 1: Core Infrastructure (Current)
+### Phase 1: Core Infrastructure ✅ COMPLETE
 - [x] Requirements document
-- [ ] Project structure setup
-- [ ] Core types (CANFrame, etc.)
-- [ ] Ring buffer implementation
-- [ ] Basic CAN reader (single bus)
-- [ ] SocketCAN manager (discovery, sudo)
+- [x] Project structure setup
+- [x] Core types (CANFrame, etc.)
+- [x] Ring buffer implementation
+- [x] Basic CAN reader (single bus)
+- [x] SocketCAN manager (discovery, sudo)
 
-### Phase 2: Basic UI
-- [ ] Main window with docking
-- [ ] Project tree (static)
-- [ ] Grouped receive view
-- [ ] Trace view
-- [ ] Basic connection dialog
+### Phase 2: Basic UI ✅ COMPLETE
+- [x] Main window with docking
+- [x] Project tree (dynamic with connection editing)
+- [x] Grouped receive view
+- [x] Trace view
+- [x] Basic connection dialog
 
-### Phase 3: Multi-bus & Performance
-- [ ] Multi-bus reader
+### Phase 3: Multi-bus & Performance (In Progress)
+- [x] Multi-bus reader
 - [ ] Background processor
 - [ ] DBC decoder with caching
 - [ ] Frame filtering
 - [ ] Performance optimization
 
-### Phase 4: Full Features
+### Phase 4: Full Features (Partial)
 - [ ] Project save/load
 - [ ] Transmit panel
 - [ ] Properties panel
-- [ ] Hardware configuration
-- [ ] CANopen support
+- [x] Hardware configuration (via connection dialog)
+- [x] CANopen support (decoding + node discovery)
 
 ### Phase 5: Polish
 - [ ] Themes and styling

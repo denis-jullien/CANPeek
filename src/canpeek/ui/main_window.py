@@ -35,6 +35,7 @@ import PySide6QtAds as QtAds
 
 from canpeek.core.types import Connection, BusState, CANFrame
 from canpeek.core.reader import BusManager
+from canpeek.protocols.canopen import CANopenNodeManager, CANopenNode, CANopenMessage
 from canpeek.ui.widgets.receive_view import ReceiveView
 from canpeek.ui.widgets.trace_view import TraceView
 from canpeek.ui.widgets.project_tree import ProjectTree
@@ -66,6 +67,7 @@ class MainWindow(QMainWindow):
 
         # Core components
         self._bus_manager = BusManager()
+        self._canopen_manager = CANopenNodeManager()
         self._connections: list[Connection] = []
 
         # Update timer for GUI refresh
@@ -310,6 +312,10 @@ class MainWindow(QMainWindow):
         # Frame received signal
         self.frames_received.connect(self._on_frames_received)
 
+        # CANopen manager callbacks
+        self._canopen_manager.on_node_discovered = self._on_canopen_node_discovered
+        self._canopen_manager.on_node_state_changed = self._on_canopen_node_state_changed
+
     def _add_default_connection(self) -> None:
         """Add a default virtual CAN connection."""
         conn = Connection(
@@ -347,6 +353,18 @@ class MainWindow(QMainWindow):
         """Handle received frames."""
         self._receive_view.update_frames(frames)
         self._trace_view.add_frames(frames)
+
+        # Process through CANopen decoder
+        self._canopen_manager.process_frames(frames)
+
+    def _on_canopen_node_discovered(self, node: CANopenNode) -> None:
+        """Handle CANopen node discovery."""
+        self._project_tree.add_canopen_node(node)
+        self._status_bar.showMessage(f"CANopen node {node.node_id} discovered")
+
+    def _on_canopen_node_state_changed(self, node: CANopenNode) -> None:
+        """Handle CANopen node state change."""
+        self._project_tree.update_canopen_node(node)
 
     def _on_bus_state_change(self, connection_id: UUID, state: BusState) -> None:
         """Handle bus state change."""
@@ -483,6 +501,8 @@ class MainWindow(QMainWindow):
         """Clear all received data."""
         self._receive_view.clear()
         self._trace_view.clear()
+        self._canopen_manager.clear()
+        self._project_tree.clear_canopen_nodes()
         self._frame_count = 0
         self._last_frame_count = 0
         self._status_bar.set_frame_count(0)

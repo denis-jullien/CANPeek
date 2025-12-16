@@ -19,6 +19,7 @@ from PySide6.QtCore import (
 )
 
 from canpeek.core.types import CANFrame
+from canpeek.protocols.canopen import decode_frame as decode_canopen, format_canopen_full
 
 
 class TraceColumn(IntEnum):
@@ -346,18 +347,22 @@ class TraceModel(QAbstractTableModel):
         return self._get_display_data(frame, col, row)
 
     def _decode_frame(self, frame: CANFrame) -> str:
-        """Decode frame using DBC decoder."""
-        if not self._decoder:
-            return ""
+        """Decode frame using DBC decoder or CANopen."""
+        # Try DBC decoder first
+        if self._decoder:
+            try:
+                result = self._decoder.decode(frame)
+                if result:
+                    # Format as "SignalName=Value SignalName2=Value2"
+                    parts = [f"{k}={v}" for k, v in result.items()]
+                    return " ".join(parts)
+            except Exception:
+                pass
 
-        try:
-            result = self._decoder.decode(frame)
-            if result:
-                # Format as "SignalName=Value SignalName2=Value2"
-                parts = [f"{k}={v}" for k, v in result.items()]
-                return " ".join(parts)
-        except Exception:
-            pass
+        # Try CANopen decoding
+        canopen_msg = decode_canopen(frame)
+        if canopen_msg:
+            return format_canopen_full(canopen_msg)
 
         return ""
 
