@@ -49,6 +49,8 @@ class ProjectTree(QWidget):
     item_selected = Signal(str, object)  # item_type, item_data
     item_double_clicked = Signal(str, object)
     connection_toggled = Signal(object, bool)  # Connection, enabled
+    add_connection_requested = Signal()  # Request to add a new connection
+    edit_connection_requested = Signal(object)  # Connection to edit
     project_changed = Signal()
 
     # Item type constants
@@ -278,11 +280,8 @@ class ProjectTree(QWidget):
             menu.exec(self._tree.viewport().mapToGlobal(pos))
 
     def _add_connection(self) -> None:
-        """Add a new connection."""
-        conn = Connection(name=f"Connection {len(self._connections) + 1}")
-        self._connections.append(conn)
-        self._rebuild_connections()
-        self.project_changed.emit()
+        """Request to add a new connection."""
+        self.add_connection_requested.emit()
 
     def _add_database(self) -> None:
         """Add a new database file."""

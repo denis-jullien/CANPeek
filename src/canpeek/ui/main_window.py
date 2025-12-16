@@ -40,6 +40,7 @@ from canpeek.ui.widgets.trace_view import TraceView
 from canpeek.ui.widgets.project_tree import ProjectTree
 from canpeek.ui.widgets.status_bar import StatusBar
 from canpeek.ui.dialogs.sudo_dialog import SudoDialog
+from canpeek.ui.dialogs.connection_dialog import ConnectionDialog
 
 
 class MainWindow(QMainWindow):
@@ -197,16 +198,22 @@ class MainWindow(QMainWindow):
         self._exit_action.triggered.connect(self.close)
 
         # Connection actions
+        self._new_connection_action = QAction(
+            style.standardIcon(QStyle.SP_DriveNetIcon),
+            "&New Connection...", self
+        )
+        self._new_connection_action.triggered.connect(self._on_new_connection)
+
         self._connect_action = QAction(
             style.standardIcon(QStyle.SP_MediaPlay),
-            "&Connect", self
+            "&Connect All", self
         )
         self._connect_action.setShortcut("F5")
         self._connect_action.triggered.connect(self._on_connect)
 
         self._disconnect_action = QAction(
             style.standardIcon(QStyle.SP_MediaStop),
-            "&Disconnect", self
+            "&Disconnect All", self
         )
         self._disconnect_action.setShortcut("F6")
         self._disconnect_action.triggered.connect(self._on_disconnect)
@@ -231,6 +238,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self._open_action)
         toolbar.addAction(self._save_action)
         toolbar.addSeparator()
+        toolbar.addAction(self._new_connection_action)
         toolbar.addAction(self._connect_action)
         toolbar.addAction(self._disconnect_action)
         toolbar.addSeparator()
@@ -250,6 +258,8 @@ class MainWindow(QMainWindow):
 
         # Connection menu
         conn_menu = menubar.addMenu("&Connection")
+        conn_menu.addAction(self._new_connection_action)
+        conn_menu.addSeparator()
         conn_menu.addAction(self._connect_action)
         conn_menu.addAction(self._disconnect_action)
 
@@ -281,6 +291,9 @@ class MainWindow(QMainWindow):
         self._project_tree.project_changed.connect(
             self._on_project_changed
         )
+        self._project_tree.add_connection_requested.connect(
+            self._on_new_connection
+        )
 
         # Frame received signal
         self.frames_received.connect(self._on_frames_received)
@@ -288,9 +301,9 @@ class MainWindow(QMainWindow):
     def _add_default_connection(self) -> None:
         """Add a default virtual CAN connection."""
         conn = Connection(
-            name="can0",
-            interface="socketcan",
-            channel="can0",
+            name="Virtual Bus",
+            interface="virtual",
+            channel="test",
             bitrate=500000,
         )
         self._connections.append(conn)
@@ -343,6 +356,14 @@ class MainWindow(QMainWindow):
         pass  # TODO: Mark project as dirty
 
     # --- Actions ---
+
+    def _on_new_connection(self) -> None:
+        """Show dialog to create a new connection."""
+        dialog = ConnectionDialog(self)
+        if dialog.exec() == ConnectionDialog.Accepted:
+            conn = dialog.get_connection()
+            self.add_connection(conn)
+            self._status_bar.showMessage(f"Added connection: {conn.name}")
 
     def _on_connect(self) -> None:
         """Connect to all enabled buses."""
