@@ -68,11 +68,7 @@ class ReceiveView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Toolbar
-        toolbar = self._create_toolbar()
-        layout.addWidget(toolbar)
-
-        # Tree view
+        # Tree view (created first so toolbar can reference it)
         self._tree_view = QTreeView()
         self._tree_view.setModel(self._proxy_model)
         self._tree_view.setRootIsDecorated(True)
@@ -101,6 +97,9 @@ class ReceiveView(QWidget):
         # Default sort by ID
         self._tree_view.sortByColumn(GroupedColumn.ID, Qt.AscendingOrder)
 
+        # Toolbar (created after tree view so it can reference it)
+        toolbar = self._create_toolbar()
+        layout.addWidget(toolbar)
         layout.addWidget(self._tree_view)
 
         # Status bar

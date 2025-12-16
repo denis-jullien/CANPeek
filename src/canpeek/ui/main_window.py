@@ -288,9 +288,9 @@ class MainWindow(QMainWindow):
     def _add_default_connection(self) -> None:
         """Add a default virtual CAN connection."""
         conn = Connection(
-            name="vcan0",
-            interface="virtual",
-            channel="vcan0",
+            name="can0",
+            interface="socketcan",
+            channel="can0",
             bitrate=500000,
         )
         self._connections.append(conn)
