@@ -823,7 +823,7 @@ canpeek2/
 
 ### Phase 4: Full Features (Partial)
 - [ ] Project save/load
-- [ ] Transmit panel
+- [x] Transmit panel (manual + cyclic transmission)
 - [ ] Properties panel
 - [x] Hardware configuration (via connection dialog)
 - [x] CANopen support (decoding + node discovery)

@@ -40,6 +40,7 @@ from canpeek.ui.widgets.receive_view import ReceiveView
 from canpeek.ui.widgets.trace_view import TraceView
 from canpeek.ui.widgets.project_tree import ProjectTree
 from canpeek.ui.widgets.status_bar import StatusBar
+from canpeek.ui.widgets.transmit_panel import TransmitPanel
 from canpeek.ui.dialogs.sudo_dialog import SudoDialog
 from canpeek.ui.dialogs.connection_dialog import ConnectionDialog
 
@@ -151,9 +152,7 @@ class MainWindow(QMainWindow):
         )
 
         # --- Bottom: Transmit panel ---
-        self._transmit_panel = QWidget()
-        transmit_layout = QVBoxLayout(self._transmit_panel)
-        transmit_layout.addWidget(QLabel("Transmit Panel - TODO"))
+        self._transmit_panel = TransmitPanel()
         transmit_dock = QtAds.CDockWidget("Transmit")
         transmit_dock.setWidget(self._transmit_panel)
         self._dock_manager.addDockWidget(
@@ -316,6 +315,9 @@ class MainWindow(QMainWindow):
         self._canopen_manager.on_node_discovered = self._on_canopen_node_discovered
         self._canopen_manager.on_node_state_changed = self._on_canopen_node_state_changed
 
+        # Transmit panel
+        self._transmit_panel.send_frame.connect(self._on_transmit_frame)
+
     def _add_default_connection(self) -> None:
         """Add a default virtual CAN connection."""
         conn = Connection(
@@ -327,6 +329,7 @@ class MainWindow(QMainWindow):
         self._connections.append(conn)
         self._bus_manager.add_connection(conn)
         self._project_tree.set_connections(self._connections)
+        self._transmit_panel.set_connections(self._connections)
         self._status_bar.add_bus(conn.id, conn.name)
 
     # --- Event handlers ---
@@ -365,6 +368,13 @@ class MainWindow(QMainWindow):
     def _on_canopen_node_state_changed(self, node: CANopenNode) -> None:
         """Handle CANopen node state change."""
         self._project_tree.update_canopen_node(node)
+
+    def _on_transmit_frame(self, connection_id: UUID, frame: CANFrame) -> None:
+        """Handle frame transmission request from transmit panel."""
+        if connection_id:
+            success = self._bus_manager.send_frame(connection_id, frame)
+            if not success:
+                self._status_bar.showMessage("Failed to send frame", 2000)
 
     def _on_bus_state_change(self, connection_id: UUID, state: BusState) -> None:
         """Handle bus state change."""
@@ -595,6 +605,7 @@ class MainWindow(QMainWindow):
         self._connections.append(connection)
         self._bus_manager.add_connection(connection)
         self._project_tree.set_connections(self._connections)
+        self._transmit_panel.set_connections(self._connections)
         self._status_bar.add_bus(connection.id, connection.name)
 
     def remove_connection(self, connection_id: UUID) -> None:
@@ -604,4 +615,5 @@ class MainWindow(QMainWindow):
             c for c in self._connections if c.id != connection_id
         ]
         self._project_tree.set_connections(self._connections)
+        self._transmit_panel.set_connections(self._connections)
         self._status_bar.remove_bus(connection_id)
