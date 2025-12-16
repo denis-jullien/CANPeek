@@ -215,7 +215,7 @@ class TransmitModel(QAbstractTableModel):
 
         if role == Qt.DisplayRole:
             if col == TransmitColumn.ENABLED:
-                return ""  # Checkbox handled by flags
+                return None  # Checkbox only, no text
             elif col == TransmitColumn.ID:
                 if msg.is_extended_id:
                     return f"0x{msg.arbitration_id:08X}"
@@ -274,7 +274,8 @@ class TransmitModel(QAbstractTableModel):
         msg = self._messages[row]
 
         if role == Qt.CheckStateRole and col == TransmitColumn.ENABLED:
-            msg.enabled = value == Qt.Checked
+            # Handle both enum and int comparison
+            msg.enabled = (value == Qt.Checked or value == Qt.Checked.value)
             self.dataChanged.emit(index, index)
             return True
 
