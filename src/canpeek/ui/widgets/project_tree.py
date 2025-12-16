@@ -51,6 +51,9 @@ class ProjectTree(QWidget):
     connection_toggled = Signal(object, bool)  # Connection, enabled
     add_connection_requested = Signal()  # Request to add a new connection
     edit_connection_requested = Signal(object)  # Connection to edit
+    remove_connection_requested = Signal(object)  # Connection to remove
+    connect_connection_requested = Signal(object)  # Connection to connect
+    disconnect_connection_requested = Signal(object)  # Connection to disconnect
     project_changed = Signal()
 
     # Item type constants
@@ -231,6 +234,11 @@ class ProjectTree(QWidget):
         item_type = item.data(0, Qt.UserRole)
         item_data = item.data(0, Qt.UserRole + 1)
 
+        # Edit connection on double-click
+        if item_type == self.TYPE_CONNECTION and item_data:
+            self.edit_connection_requested.emit(item_data)
+            return
+
         self.item_double_clicked.emit(item_type, item_data)
 
     def _on_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
@@ -258,12 +266,17 @@ class ProjectTree(QWidget):
             add_action.triggered.connect(self._add_connection)
 
         elif item_type == self.TYPE_CONNECTION:
+            conn = item.data(0, Qt.UserRole + 1)
             connect_action = menu.addAction("Connect")
+            connect_action.triggered.connect(lambda: self.connect_connection_requested.emit(conn))
             disconnect_action = menu.addAction("Disconnect")
+            disconnect_action.triggered.connect(lambda: self.disconnect_connection_requested.emit(conn))
             menu.addSeparator()
             configure_action = menu.addAction("Configure...")
+            configure_action.triggered.connect(lambda: self.edit_connection_requested.emit(conn))
             menu.addSeparator()
             remove_action = menu.addAction("Remove")
+            remove_action.triggered.connect(lambda: self.remove_connection_requested.emit(conn))
 
         elif item_type == self.TYPE_DATABASES_ROOT:
             add_action = menu.addAction("Add Database...")

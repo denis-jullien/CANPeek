@@ -536,3 +536,21 @@ class BusManager:
         with self._lock:
             reader = self._readers.get(connection_id)
             return reader.bus_state if reader else BusState.UNKNOWN
+
+    # Convenience aliases
+    def start_connection(self, connection_id: UUID) -> bool:
+        """Start a single connection (alias for start_reader)."""
+        return self.start_reader(connection_id)
+
+    def stop_connection(self, connection_id: UUID) -> None:
+        """Stop a single connection (alias for stop_reader)."""
+        self.stop_reader(connection_id)
+
+    def has_active_connections(self) -> bool:
+        """Check if any connections are active."""
+        return self.get_any_running()
+
+    def active_connection_count(self) -> int:
+        """Get the number of active connections."""
+        with self._lock:
+            return sum(1 for r in self._readers.values() if r.is_running)

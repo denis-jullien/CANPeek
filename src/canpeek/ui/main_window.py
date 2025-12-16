@@ -294,6 +294,18 @@ class MainWindow(QMainWindow):
         self._project_tree.add_connection_requested.connect(
             self._on_new_connection
         )
+        self._project_tree.edit_connection_requested.connect(
+            self._on_edit_connection
+        )
+        self._project_tree.remove_connection_requested.connect(
+            self._on_remove_connection
+        )
+        self._project_tree.connect_connection_requested.connect(
+            self._on_connect_single
+        )
+        self._project_tree.disconnect_connection_requested.connect(
+            self._on_disconnect_single
+        )
 
         # Frame received signal
         self.frames_received.connect(self._on_frames_received)
@@ -364,6 +376,60 @@ class MainWindow(QMainWindow):
             conn = dialog.get_connection()
             self.add_connection(conn)
             self._status_bar.showMessage(f"Added connection: {conn.name}")
+
+    def _on_edit_connection(self, connection: Connection) -> None:
+        """Show dialog to edit an existing connection."""
+        dialog = ConnectionDialog(self, connection=connection)
+        if dialog.exec() == ConnectionDialog.Accepted:
+            updated_conn = dialog.get_connection()
+            # Update the connection in place
+            connection.name = updated_conn.name
+            connection.interface = updated_conn.interface
+            connection.channel = updated_conn.channel
+            connection.bitrate = updated_conn.bitrate
+            connection.data_bitrate = updated_conn.data_bitrate
+            connection.fd = updated_conn.fd
+            connection.extra_config = updated_conn.extra_config
+            # Refresh the tree
+            self._project_tree.set_connections(self._connections)
+            self._status_bar.showMessage(f"Updated connection: {connection.name}")
+
+    def _on_remove_connection(self, connection: Connection) -> None:
+        """Remove a connection after confirmation."""
+        reply = QMessageBox.question(
+            self,
+            "Remove Connection",
+            f"Remove connection '{connection.name}'?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self.remove_connection(connection.id)
+            self._status_bar.showMessage(f"Removed connection: {connection.name}")
+
+    def _on_connect_single(self, connection: Connection) -> None:
+        """Connect a single bus."""
+        success = self._bus_manager.start_connection(connection.id)
+        if success:
+            self._status_bar.showMessage(f"Connected: {connection.name}")
+            # Update button states if any connection is active
+            self._update_connection_buttons()
+        else:
+            self._status_bar.showMessage(f"Failed to connect: {connection.name}", 3000)
+
+    def _on_disconnect_single(self, connection: Connection) -> None:
+        """Disconnect a single bus."""
+        self._bus_manager.stop_connection(connection.id)
+        self._status_bar.showMessage(f"Disconnected: {connection.name}")
+        self._project_tree.update_bus_state(connection.id, BusState.UNKNOWN)
+        self._status_bar.update_bus_state(connection.id, BusState.UNKNOWN)
+        self._update_connection_buttons()
+
+    def _update_connection_buttons(self) -> None:
+        """Update connect/disconnect button states."""
+        any_connected = self._bus_manager.has_active_connections()
+        self._connect_action.setEnabled(not any_connected or len(self._connections) > self._bus_manager.active_connection_count())
+        self._disconnect_action.setEnabled(any_connected)
 
     def _on_connect(self) -> None:
         """Connect to all enabled buses."""
