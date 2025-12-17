@@ -821,10 +821,10 @@ canpeek2/
 - [ ] Background processor (optional - current performance is adequate)
 - [ ] Performance optimization (optional)
 
-### Phase 4: Full Features (Partial)
-- [ ] Project save/load
+### Phase 4: Full Features ✅ COMPLETE
+- [x] Project save/load (YAML format)
 - [x] Transmit panel (manual + cyclic transmission)
-- [ ] Properties panel
+- [x] Properties panel (context-sensitive)
 - [x] Hardware configuration (via connection dialog)
 - [x] CANopen support (decoding + node discovery)
 

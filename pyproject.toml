@@ -29,6 +29,7 @@ dependencies = [
     "PySide6>=6.9.0",
     "PySide6-QtAds>=4.4.0",
     "qasync>=0.27.1",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]

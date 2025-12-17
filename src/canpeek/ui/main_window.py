@@ -37,11 +37,13 @@ from canpeek.core.types import Connection, BusState, CANFrame
 from canpeek.core.reader import BusManager
 from canpeek.core.decoder import DBCDecoder
 from canpeek.protocols.canopen import CANopenNodeManager, CANopenNode, CANopenMessage
+from canpeek.project import Project, DatabaseConfig
 from canpeek.ui.widgets.receive_view import ReceiveView
 from canpeek.ui.widgets.trace_view import TraceView
 from canpeek.ui.widgets.project_tree import ProjectTree
 from canpeek.ui.widgets.status_bar import StatusBar
 from canpeek.ui.widgets.transmit_panel import TransmitPanel
+from canpeek.ui.widgets.properties_panel import PropertiesPanel
 from canpeek.ui.dialogs.sudo_dialog import SudoDialog
 from canpeek.ui.dialogs.connection_dialog import ConnectionDialog
 
@@ -72,6 +74,7 @@ class MainWindow(QMainWindow):
         self._canopen_manager = CANopenNodeManager()
         self._dbc_decoder = DBCDecoder()
         self._connections: list[Connection] = []
+        self._project = Project()
 
         # Update timer for GUI refresh
         self._update_timer = QTimer(self)
@@ -147,10 +150,7 @@ class MainWindow(QMainWindow):
         )
 
         # Properties panel (below project tree)
-        self._properties_panel = QWidget()
-        properties_layout = QVBoxLayout(self._properties_panel)
-        properties_layout.addWidget(QLabel("Properties"))
-        properties_layout.addStretch()
+        self._properties_panel = PropertiesPanel()
         properties_dock = QtAds.CDockWidget("Properties")
         properties_dock.setWidget(self._properties_panel)
         self._dock_manager.addDockWidget(
@@ -326,6 +326,11 @@ class MainWindow(QMainWindow):
         # Frame received signal
         self.frames_received.connect(self._on_frames_received)
 
+        # View selection signals -> properties panel
+        self._receive_view.frame_selected.connect(self._on_frame_selected)
+        self._trace_view.frame_selected.connect(self._on_frame_selected)
+        self._project_tree.item_selected.connect(self._on_project_item_selected)
+
         # CANopen manager callbacks
         self._canopen_manager.on_node_discovered = self._on_canopen_node_discovered
         self._canopen_manager.on_node_state_changed = self._on_canopen_node_state_changed
@@ -416,6 +421,50 @@ class MainWindow(QMainWindow):
             success = self._dbc_decoder.unload_database(path)
             if success:
                 self._status_bar.showMessage(f"Disabled database: {path}")
+
+    def _on_frame_selected(self, frame: CANFrame) -> None:
+        """Handle frame selection in views."""
+        # Get message info from decoder
+        msg_info = self._dbc_decoder.get_message_info(frame.arbitration_id)
+        message_name = msg_info.get("name", "") if msg_info else ""
+
+        # Decode signals
+        decoded = self._dbc_decoder.decode(frame)
+
+        # Get message from grouped model for stats
+        grouped_msg = self._receive_view.model.get_message(
+            self._find_message_row(frame)
+        )
+        cycle_time = grouped_msg.get_cycle_time_ms() if grouped_msg else None
+        count = grouped_msg.count if grouped_msg else 0
+
+        self._properties_panel.show_frame(
+            frame, decoded, message_name, cycle_time, count
+        )
+
+    def _find_message_row(self, frame: CANFrame) -> int:
+        """Find the row index for a message in the grouped model."""
+        model = self._receive_view.model
+        for row in range(model.message_count):
+            msg = model.get_message(row)
+            if msg and msg.arbitration_id == frame.arbitration_id:
+                if msg.connection_id == frame.connection_id:
+                    return row
+        return -1
+
+    def _on_project_item_selected(self, item_type: str, item_data) -> None:
+        """Handle project tree item selection."""
+        if item_type == "connection" and item_data:
+            state = self._bus_states.get(item_data.id, BusState.UNKNOWN) if hasattr(self, '_bus_states') else BusState.UNKNOWN
+            state = self._bus_manager.get_bus_state(item_data.id)
+            self._properties_panel.show_connection(item_data, state)
+        elif item_type == "canopen_node" and item_data:
+            self._properties_panel.show_canopen_node(item_data)
+        elif item_type == "database" and item_data:
+            # item_data is the database path
+            self._properties_panel.clear()
+        else:
+            self._properties_panel.clear()
 
     def _on_bus_state_change(self, connection_id: UUID, state: BusState) -> None:
         """Handle bus state change."""
@@ -561,8 +610,33 @@ class MainWindow(QMainWindow):
 
     def _on_new_project(self) -> None:
         """Create new project."""
-        # TODO: Check for unsaved changes
+        # Check for unsaved changes
+        if self._project.connections or self._project.databases:
+            reply = QMessageBox.question(
+                self,
+                "New Project",
+                "Discard current project?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # Clear everything
+        self._on_disconnect()
         self._on_clear_data()
+
+        # Remove all connections except default
+        for conn in self._connections[:]:
+            self.remove_connection(conn.id)
+
+        # Clear databases
+        self._dbc_decoder.clear()
+
+        # Create new project
+        self._project = Project()
+        self._add_default_connection()
+        self._update_window_title()
         self._status_bar.showMessage("New project created")
 
     def _on_open_project(self) -> None:
@@ -573,12 +647,52 @@ class MainWindow(QMainWindow):
             "",
             "CANPeek Projects (*.cpeek);;All Files (*)"
         )
-        if path:
-            # TODO: Load project
-            self._status_bar.showMessage(f"Opened {path}")
+        if not path:
+            return
+
+        project = Project.load(path)
+        if not project:
+            QMessageBox.warning(
+                self,
+                "Open Project",
+                f"Failed to load project from {path}"
+            )
+            return
+
+        # Clear current state
+        self._on_disconnect()
+        self._on_clear_data()
+        for conn in self._connections[:]:
+            self.remove_connection(conn.id)
+        self._dbc_decoder.clear()
+
+        # Load project
+        self._project = project
+
+        # Add connections
+        for conn in project.connections:
+            self.add_connection(conn)
+
+        # Load databases
+        for db in project.databases:
+            if db.enabled:
+                self._dbc_decoder.load_database(db.path)
+            self._project_tree.add_database(db.path, db.path.split('/')[-1])
+
+        self._update_window_title()
+        self._status_bar.showMessage(f"Opened {path}")
 
     def _on_save_project(self) -> None:
         """Save current project."""
+        if self._project.path:
+            # Save to existing path
+            self._save_project_to_path(self._project.path)
+        else:
+            # Ask for path
+            self._on_save_project_as()
+
+    def _on_save_project_as(self) -> None:
+        """Save project to new path."""
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Project",
@@ -586,8 +700,35 @@ class MainWindow(QMainWindow):
             "CANPeek Projects (*.cpeek)"
         )
         if path:
-            # TODO: Save project
+            if not path.endswith('.cpeek'):
+                path += '.cpeek'
+            self._save_project_to_path(path)
+
+    def _save_project_to_path(self, path: str) -> None:
+        """Save project to specified path."""
+        # Update project with current state
+        self._project.connections = list(self._connections)
+        self._project.databases = [
+            DatabaseConfig(path=db_path, enabled=True)
+            for db_path in self._dbc_decoder.loaded_databases
+        ]
+
+        if self._project.save(path):
+            self._update_window_title()
             self._status_bar.showMessage(f"Saved to {path}")
+        else:
+            QMessageBox.warning(
+                self,
+                "Save Project",
+                f"Failed to save project to {path}"
+            )
+
+    def _update_window_title(self) -> None:
+        """Update window title with project name."""
+        title = "CANPeek"
+        if self._project.path:
+            title += f" - {self._project.display_name}"
+        self.setWindowTitle(title)
 
     def _on_about(self) -> None:
         """Show about dialog."""
