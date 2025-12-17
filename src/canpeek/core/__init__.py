@@ -16,6 +16,7 @@ from canpeek.core.types import (
     FLAG_IS_RX,
 )
 from canpeek.core.buffer import RingBuffer
+from canpeek.core.decoder import DBCDecoder
 
 __all__ = [
     "CANFrame",
@@ -23,6 +24,7 @@ __all__ = [
     "FrameDirection",
     "FrameType",
     "RingBuffer",
+    "DBCDecoder",
     "FLAG_EXTENDED_ID",
     "FLAG_FD_FRAME",
     "FLAG_BITRATE_SWITCH",

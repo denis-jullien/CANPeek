@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QSortFilterProxyModel, QTimer
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QAction
 from PySide6.QtWidgets import (
     QWidget,
@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QStyle,
 )
 
-from canpeek.models.grouped_model import GroupedModel, GroupedColumn
+from canpeek.models.grouped_model import GroupedModel, GroupedColumn, MessageFilterProxyModel
 from canpeek.core.types import CANFrame
 
 
@@ -55,9 +55,8 @@ class ReceiveView(QWidget):
         super().__init__(parent)
 
         self._model = GroupedModel()
-        self._proxy_model = QSortFilterProxyModel()
+        self._proxy_model = MessageFilterProxyModel()
         self._proxy_model.setSourceModel(self._model)
-        self._proxy_model.setSortRole(Qt.UserRole)
 
         self._setup_ui()
         self._connect_signals()
@@ -250,14 +249,11 @@ class ReceiveView(QWidget):
     def _on_bus_filter_changed(self, index: int) -> None:
         """Handle bus filter change."""
         bus_name = self._bus_combo.currentData()
-        # TODO: Implement filtering in proxy model
-        pass
+        self._proxy_model.set_bus_filter(bus_name)
 
     def _on_filter_changed(self, text: str) -> None:
         """Handle filter text change."""
-        # Simple filter by ID or name
-        self._proxy_model.setFilterFixedString(text)
-        self._proxy_model.setFilterKeyColumn(GroupedColumn.ID)
+        self._proxy_model.set_id_pattern(text)
 
     def _clear_filter(self) -> None:
         """Clear all filters."""

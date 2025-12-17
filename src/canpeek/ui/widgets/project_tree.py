@@ -55,6 +55,9 @@ class ProjectTree(QWidget):
     remove_connection_requested = Signal(object)  # Connection to remove
     connect_connection_requested = Signal(object)  # Connection to connect
     disconnect_connection_requested = Signal(object)  # Connection to disconnect
+    database_loaded = Signal(str)  # path - emitted when database is added
+    database_unloaded = Signal(str)  # path - emitted when database is removed
+    database_toggled = Signal(str, bool)  # path, enabled - emitted on checkbox toggle
     project_changed = Signal()
 
     # Item type constants
@@ -268,6 +271,10 @@ class ProjectTree(QWidget):
             else:
                 self.disconnect_connection_requested.emit(item_data)
 
+        elif item_type == self.TYPE_DATABASE and item_data:
+            checked = item.checkState(0) == Qt.Checked
+            self.database_toggled.emit(item_data, checked)
+
     def _show_context_menu(self, pos) -> None:
         """Show context menu."""
         item = self._tree.itemAt(pos)
@@ -299,7 +306,9 @@ class ProjectTree(QWidget):
             add_action.triggered.connect(self._add_database)
 
         elif item_type == self.TYPE_DATABASE:
+            db_path = item.data(0, Qt.UserRole + 1)
             remove_action = menu.addAction("Remove")
+            remove_action.triggered.connect(lambda: self.remove_database(db_path))
 
         elif item_type == self.TYPE_FILTERS_ROOT:
             add_action = menu.addAction("Add Filter")
@@ -327,9 +336,20 @@ class ProjectTree(QWidget):
             from pathlib import Path
             name = Path(path).name
             self.add_database(path, name)
+            self.database_loaded.emit(path)
 
         if paths:
             self.project_changed.emit()
+
+    def remove_database(self, path: str) -> None:
+        """Remove a database from the tree."""
+        for i in range(self._db_root.childCount()):
+            item = self._db_root.child(i)
+            if item.data(0, Qt.UserRole + 1) == path:
+                self._db_root.removeChild(item)
+                self.database_unloaded.emit(path)
+                self.project_changed.emit()
+                break
 
     def _add_filter(self) -> None:
         """Add a new filter."""

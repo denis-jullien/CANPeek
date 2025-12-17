@@ -18,6 +18,7 @@ from PySide6.QtCore import (
     QAbstractItemModel,
     QModelIndex,
     QPersistentModelIndex,
+    QSortFilterProxyModel,
 )
 
 from canpeek.core.types import CANFrame
@@ -476,15 +477,78 @@ class GroupedModel(QAbstractItemModel):
         return Qt.ItemIsEnabled | Qt.ItemIsSelectable
 
 
-class FilterProxyModel:
+class MessageFilterProxyModel(QSortFilterProxyModel):
     """
     Proxy model for filtering grouped messages.
 
     Supports filtering by:
-    - CAN ID range
-    - Bus/connection
-    - Message name pattern
-
-    TODO: Implement as QSortFilterProxyModel subclass
+    - CAN ID range (min_id, max_id)
+    - Bus/connection name
+    - Message name pattern (regex)
+    - ID pattern (hex string)
     """
-    pass
+
+    def __init__(self, parent: Optional[Any] = None):
+        super().__init__(parent)
+        self._min_id: Optional[int] = None
+        self._max_id: Optional[int] = None
+        self._bus_filter: Optional[str] = None
+        self._id_pattern: str = ""
+
+        # Use UserRole for sorting (raw values)
+        self.setSortRole(Qt.UserRole)
+
+    def set_id_range(self, min_id: Optional[int], max_id: Optional[int]) -> None:
+        """Set CAN ID range filter."""
+        self._min_id = min_id
+        self._max_id = max_id
+        self.invalidateFilter()
+
+    def set_bus_filter(self, bus_name: Optional[str]) -> None:
+        """Set bus name filter."""
+        self._bus_filter = bus_name
+        self.invalidateFilter()
+
+    def set_id_pattern(self, pattern: str) -> None:
+        """Set ID pattern filter (hex string like '0x1' or '1A')."""
+        self._id_pattern = pattern.strip().upper()
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
+        """Check if row should be shown."""
+        # Only filter top-level items (messages)
+        if source_parent.isValid():
+            return True
+
+        source_model = self.sourceModel()
+        if not isinstance(source_model, GroupedModel):
+            return True
+
+        msg = source_model.get_message(source_row)
+        if msg is None:
+            return True
+
+        # ID range filter
+        if self._min_id is not None and msg.arbitration_id < self._min_id:
+            return False
+        if self._max_id is not None and msg.arbitration_id > self._max_id:
+            return False
+
+        # Bus filter
+        if self._bus_filter:
+            if msg.bus_name != self._bus_filter:
+                return False
+
+        # ID pattern filter (hex string matching)
+        if self._id_pattern:
+            id_hex = f"{msg.arbitration_id:X}"
+            pattern = self._id_pattern.lstrip("0X")
+            if pattern and pattern not in id_hex:
+                # Also check message name if available
+                if msg.message_name:
+                    if self._id_pattern.upper() not in msg.message_name.upper():
+                        return False
+                else:
+                    return False
+
+        return True

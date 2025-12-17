@@ -16,6 +16,7 @@ from PySide6.QtCore import (
     QAbstractTableModel,
     QModelIndex,
     QPersistentModelIndex,
+    QSortFilterProxyModel,
 )
 
 from canpeek.core.types import CANFrame
@@ -370,3 +371,81 @@ class TraceModel(QAbstractTableModel):
         if not index.isValid():
             return Qt.NoItemFlags
         return Qt.ItemIsEnabled | Qt.ItemIsSelectable
+
+
+class TraceFilterProxyModel(QSortFilterProxyModel):
+    """
+    Proxy model for filtering trace frames.
+
+    Supports filtering by:
+    - CAN ID range (min_id, max_id)
+    - Bus/connection name
+    - ID pattern (hex string)
+    - Direction (RX/TX)
+    """
+
+    def __init__(self, parent: Optional[Any] = None):
+        super().__init__(parent)
+        self._min_id: Optional[int] = None
+        self._max_id: Optional[int] = None
+        self._bus_filter: Optional[str] = None
+        self._id_pattern: str = ""
+        self._direction_filter: Optional[bool] = None  # None=all, True=RX, False=TX
+
+        self.setSortRole(Qt.UserRole)
+
+    def set_id_range(self, min_id: Optional[int], max_id: Optional[int]) -> None:
+        """Set CAN ID range filter."""
+        self._min_id = min_id
+        self._max_id = max_id
+        self.invalidateFilter()
+
+    def set_bus_filter(self, bus_name: Optional[str]) -> None:
+        """Set bus name filter."""
+        self._bus_filter = bus_name
+        self.invalidateFilter()
+
+    def set_id_pattern(self, pattern: str) -> None:
+        """Set ID pattern filter (hex string like '0x1' or '1A')."""
+        self._id_pattern = pattern.strip().upper()
+        self.invalidateFilter()
+
+    def set_direction_filter(self, direction: Optional[bool]) -> None:
+        """Set direction filter (None=all, True=RX only, False=TX only)."""
+        self._direction_filter = direction
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
+        """Check if row should be shown."""
+        source_model = self.sourceModel()
+        if not isinstance(source_model, TraceModel):
+            return True
+
+        frame = source_model.get_frame(source_row)
+        if frame is None:
+            return True
+
+        # ID range filter
+        if self._min_id is not None and frame.arbitration_id < self._min_id:
+            return False
+        if self._max_id is not None and frame.arbitration_id > self._max_id:
+            return False
+
+        # Bus filter
+        if self._bus_filter:
+            if frame.bus_name != self._bus_filter:
+                return False
+
+        # Direction filter
+        if self._direction_filter is not None:
+            if frame.is_rx != self._direction_filter:
+                return False
+
+        # ID pattern filter (hex string matching)
+        if self._id_pattern:
+            id_hex = f"{frame.arbitration_id:X}"
+            pattern = self._id_pattern.lstrip("0X")
+            if pattern and pattern not in id_hex:
+                return False
+
+        return True

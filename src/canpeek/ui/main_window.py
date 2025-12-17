@@ -35,6 +35,7 @@ import PySide6QtAds as QtAds
 
 from canpeek.core.types import Connection, BusState, CANFrame
 from canpeek.core.reader import BusManager
+from canpeek.core.decoder import DBCDecoder
 from canpeek.protocols.canopen import CANopenNodeManager, CANopenNode, CANopenMessage
 from canpeek.ui.widgets.receive_view import ReceiveView
 from canpeek.ui.widgets.trace_view import TraceView
@@ -69,6 +70,7 @@ class MainWindow(QMainWindow):
         # Core components
         self._bus_manager = BusManager()
         self._canopen_manager = CANopenNodeManager()
+        self._dbc_decoder = DBCDecoder()
         self._connections: list[Connection] = []
 
         # Update timer for GUI refresh
@@ -85,6 +87,10 @@ class MainWindow(QMainWindow):
         self._setup_menubar()
         self._setup_status_bar()
         self._connect_signals()
+
+        # Set up decoder for views
+        self._receive_view.set_decoder(self._dbc_decoder)
+        self._trace_view.set_decoder(self._dbc_decoder)
 
         # Add default connection
         self._add_default_connection()
@@ -307,6 +313,15 @@ class MainWindow(QMainWindow):
         self._project_tree.disconnect_connection_requested.connect(
             self._on_disconnect_single
         )
+        self._project_tree.database_loaded.connect(
+            self._on_database_loaded
+        )
+        self._project_tree.database_unloaded.connect(
+            self._on_database_unloaded
+        )
+        self._project_tree.database_toggled.connect(
+            self._on_database_toggled
+        )
 
         # Frame received signal
         self.frames_received.connect(self._on_frames_received)
@@ -375,6 +390,32 @@ class MainWindow(QMainWindow):
             success = self._bus_manager.send_frame(connection_id, frame)
             if not success:
                 self._status_bar.showMessage("Failed to send frame", 2000)
+
+    def _on_database_loaded(self, path: str) -> None:
+        """Handle database file loaded."""
+        success = self._dbc_decoder.load_database(path)
+        if success:
+            count = self._dbc_decoder.message_count
+            self._status_bar.showMessage(f"Loaded database: {path} ({count} messages)")
+        else:
+            self._status_bar.showMessage(f"Failed to load database: {path}", 3000)
+
+    def _on_database_unloaded(self, path: str) -> None:
+        """Handle database file unloaded."""
+        success = self._dbc_decoder.unload_database(path)
+        if success:
+            self._status_bar.showMessage(f"Unloaded database: {path}")
+
+    def _on_database_toggled(self, path: str, enabled: bool) -> None:
+        """Handle database enabled/disabled toggle."""
+        if enabled:
+            success = self._dbc_decoder.load_database(path)
+            if success:
+                self._status_bar.showMessage(f"Enabled database: {path}")
+        else:
+            success = self._dbc_decoder.unload_database(path)
+            if success:
+                self._status_bar.showMessage(f"Disabled database: {path}")
 
     def _on_bus_state_change(self, connection_id: UUID, state: BusState) -> None:
         """Handle bus state change."""

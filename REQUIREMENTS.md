@@ -814,12 +814,12 @@ canpeek2/
 - [x] Trace view
 - [x] Basic connection dialog
 
-### Phase 3: Multi-bus & Performance (In Progress)
+### Phase 3: Multi-bus & Performance ✅ COMPLETE
 - [x] Multi-bus reader
-- [ ] Background processor
-- [ ] DBC decoder with caching
-- [ ] Frame filtering
-- [ ] Performance optimization
+- [x] DBC decoder with caching
+- [x] Frame filtering (ID range, bus, pattern)
+- [ ] Background processor (optional - current performance is adequate)
+- [ ] Performance optimization (optional)
 
 ### Phase 4: Full Features (Partial)
 - [ ] Project save/load

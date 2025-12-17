@@ -22,10 +22,12 @@ from PySide6.QtWidgets import (
     QPushButton,
     QToolBar,
     QStyle,
+    QLineEdit,
+    QComboBox,
 )
 from PySide6.QtGui import QAction
 
-from canpeek.models.trace_model import TraceModel, TraceColumn
+from canpeek.models.trace_model import TraceModel, TraceColumn, TraceFilterProxyModel
 from canpeek.core.types import CANFrame
 
 
@@ -54,6 +56,8 @@ class TraceView(QWidget):
         super().__init__(parent)
 
         self._model = TraceModel(max_frames=max_frames)
+        self._proxy_model = TraceFilterProxyModel()
+        self._proxy_model.setSourceModel(self._model)
         self._autoscroll = True
 
         self._setup_ui()
@@ -71,7 +75,7 @@ class TraceView(QWidget):
 
         # Table view
         self._table_view = QTableView()
-        self._table_view.setModel(self._model)
+        self._table_view.setModel(self._proxy_model)
         self._table_view.setAlternatingRowColors(True)
         self._table_view.setSelectionBehavior(QTableView.SelectRows)
         self._table_view.setSelectionMode(QTableView.SingleSelection)
@@ -138,6 +142,43 @@ class TraceView(QWidget):
 
         toolbar.addSeparator()
 
+        # Bus filter
+        toolbar.addWidget(QLabel(" Bus: "))
+        self._bus_combo = QComboBox()
+        self._bus_combo.setMinimumWidth(80)
+        self._bus_combo.addItem("All", None)
+        self._bus_combo.currentIndexChanged.connect(self._on_bus_filter_changed)
+        toolbar.addWidget(self._bus_combo)
+
+        # Direction filter
+        toolbar.addWidget(QLabel(" Dir: "))
+        self._direction_combo = QComboBox()
+        self._direction_combo.setMinimumWidth(60)
+        self._direction_combo.addItem("All", None)
+        self._direction_combo.addItem("RX", True)
+        self._direction_combo.addItem("TX", False)
+        self._direction_combo.currentIndexChanged.connect(self._on_direction_filter_changed)
+        toolbar.addWidget(self._direction_combo)
+
+        # ID filter
+        toolbar.addWidget(QLabel(" ID: "))
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText("0x...")
+        self._filter_edit.setMaximumWidth(100)
+        self._filter_edit.textChanged.connect(self._on_id_filter_changed)
+        toolbar.addWidget(self._filter_edit)
+
+        # Clear filter button
+        clear_filter_action = QAction(
+            style.standardIcon(QStyle.SP_LineEditClearButton),
+            "Clear Filter",
+            self
+        )
+        clear_filter_action.triggered.connect(self._clear_filter)
+        toolbar.addAction(clear_filter_action)
+
+        toolbar.addSeparator()
+
         # Time display mode
         toolbar.addWidget(QLabel(" Time: "))
         self._relative_time_checkbox = QCheckBox("Relative")
@@ -188,6 +229,7 @@ class TraceView(QWidget):
 
         self._model.add_frames(frames)
         self._update_status()
+        self._update_bus_combo(frames)
         self._maybe_autoscroll()
 
     def clear(self) -> None:
@@ -221,15 +263,63 @@ class TraceView(QWidget):
         """Handle time display mode change."""
         self._model.set_relative_time(relative)
 
+    def _on_bus_filter_changed(self, index: int) -> None:
+        """Handle bus filter change."""
+        bus_name = self._bus_combo.currentData()
+        self._proxy_model.set_bus_filter(bus_name)
+
+    def _on_direction_filter_changed(self, index: int) -> None:
+        """Handle direction filter change."""
+        direction = self._direction_combo.currentData()
+        self._proxy_model.set_direction_filter(direction)
+
+    def _on_id_filter_changed(self, text: str) -> None:
+        """Handle ID filter text change."""
+        self._proxy_model.set_id_pattern(text)
+
+    def _clear_filter(self) -> None:
+        """Clear all filters."""
+        self._filter_edit.clear()
+        self._bus_combo.setCurrentIndex(0)
+        self._direction_combo.setCurrentIndex(0)
+
     def _on_selection_changed(self) -> None:
         """Handle selection change."""
         indexes = self._table_view.selectionModel().selectedRows()
         if not indexes:
             return
 
-        frame = self._model.get_frame(indexes[0].row())
+        source_index = self._proxy_model.mapToSource(indexes[0])
+        frame = self._model.get_frame(source_index.row())
         if frame:
             self.frame_selected.emit(frame)
+
+    def add_bus(self, bus_name: str) -> None:
+        """Add a bus to the filter combo."""
+        for i in range(self._bus_combo.count()):
+            if self._bus_combo.itemData(i) == bus_name:
+                return
+        self._bus_combo.addItem(bus_name, bus_name)
+
+    def remove_bus(self, bus_name: str) -> None:
+        """Remove a bus from the filter combo."""
+        for i in range(self._bus_combo.count()):
+            if self._bus_combo.itemData(i) == bus_name:
+                self._bus_combo.removeItem(i)
+                break
+
+    def _update_bus_combo(self, frames: list[CANFrame]) -> None:
+        """Update bus combo with new bus names."""
+        existing_buses = set()
+        for i in range(self._bus_combo.count()):
+            data = self._bus_combo.itemData(i)
+            if data is not None:
+                existing_buses.add(data)
+
+        for frame in frames:
+            if frame.bus_name and frame.bus_name not in existing_buses:
+                self._bus_combo.addItem(frame.bus_name, frame.bus_name)
+                existing_buses.add(frame.bus_name)
 
     @property
     def model(self) -> TraceModel:
