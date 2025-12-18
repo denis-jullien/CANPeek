@@ -162,32 +162,12 @@ class TraceModel(QAbstractTableModel):
             self._frames.extend(frames)
             self.endInsertRows()
         else:
-            # Overflow case - need to handle removed rows
-            overflow = total - self._max_frames
-
-            if overflow >= current_count:
-                # Complete replacement - reset model
-                self.beginResetModel()
-                self._frames.extend(frames)
-                self.endResetModel()
-            else:
-                # Partial overflow - remove from beginning, add to end
-                # This is more complex but provides smoother UI updates
-
-                # First, remove overflowed rows from the beginning
-                self.beginRemoveRows(QModelIndex(), 0, overflow - 1)
-                # deque with maxlen handles this automatically when we extend
-                self.endRemoveRows()
-
-                # Then insert new rows at the end
-                new_start = len(self._frames)  # After removal
-                self.beginInsertRows(
-                    QModelIndex(),
-                    new_start,
-                    new_start + new_count - 1
-                )
-                self._frames.extend(frames)
-                self.endInsertRows()
+            # Overflow case - use model reset for safety
+            # The deque's maxlen auto-removes old items, which doesn't work well
+            # with separate beginRemoveRows/beginInsertRows calls
+            self.beginResetModel()
+            self._frames.extend(frames)
+            self.endResetModel()
 
     def set_frames(self, frames: list[CANFrame]) -> None:
         """
@@ -393,6 +373,8 @@ class TraceFilterProxyModel(QSortFilterProxyModel):
         self._direction_filter: Optional[bool] = None  # None=all, True=RX, False=TX
 
         self.setSortRole(Qt.UserRole)
+        # Disable dynamic sort to prevent issues during batch updates
+        self.setDynamicSortFilter(False)
 
     def set_id_range(self, min_id: Optional[int], max_id: Optional[int]) -> None:
         """Set CAN ID range filter."""
@@ -417,35 +399,38 @@ class TraceFilterProxyModel(QSortFilterProxyModel):
 
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
         """Check if row should be shown."""
-        source_model = self.sourceModel()
-        if not isinstance(source_model, TraceModel):
+        try:
+            source_model = self.sourceModel()
+            if not isinstance(source_model, TraceModel):
+                return True
+
+            frame = source_model.get_frame(source_row)
+            if frame is None:
+                return True
+
+            # ID range filter
+            if self._min_id is not None and frame.arbitration_id < self._min_id:
+                return False
+            if self._max_id is not None and frame.arbitration_id > self._max_id:
+                return False
+
+            # Bus filter
+            if self._bus_filter:
+                if frame.bus_name != self._bus_filter:
+                    return False
+
+            # Direction filter
+            if self._direction_filter is not None:
+                if frame.is_rx != self._direction_filter:
+                    return False
+
+            # ID pattern filter (hex string matching)
+            if self._id_pattern:
+                id_hex = f"{frame.arbitration_id:X}"
+                pattern = self._id_pattern.lstrip("0X")
+                if pattern and pattern not in id_hex:
+                    return False
+
             return True
-
-        frame = source_model.get_frame(source_row)
-        if frame is None:
-            return True
-
-        # ID range filter
-        if self._min_id is not None and frame.arbitration_id < self._min_id:
-            return False
-        if self._max_id is not None and frame.arbitration_id > self._max_id:
-            return False
-
-        # Bus filter
-        if self._bus_filter:
-            if frame.bus_name != self._bus_filter:
-                return False
-
-        # Direction filter
-        if self._direction_filter is not None:
-            if frame.is_rx != self._direction_filter:
-                return False
-
-        # ID pattern filter (hex string matching)
-        if self._id_pattern:
-            id_hex = f"{frame.arbitration_id:X}"
-            pattern = self._id_pattern.lstrip("0X")
-            if pattern and pattern not in id_hex:
-                return False
-
-        return True
+        except Exception:
+            return True  # On error, accept the row

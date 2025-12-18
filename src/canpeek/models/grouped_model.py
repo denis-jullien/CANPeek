@@ -518,6 +518,8 @@ class MessageFilterProxyModel(QSortFilterProxyModel):
 
         # Use UserRole for sorting (raw values)
         self.setSortRole(Qt.UserRole)
+        # Disable dynamic sort to prevent issues during batch updates
+        self.setDynamicSortFilter(False)
 
     def set_id_range(self, min_id: Optional[int], max_id: Optional[int]) -> None:
         """Set CAN ID range filter."""
@@ -537,39 +539,42 @@ class MessageFilterProxyModel(QSortFilterProxyModel):
 
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
         """Check if row should be shown."""
-        # Only filter top-level items (messages)
-        if source_parent.isValid():
-            return True
+        try:
+            # Only filter top-level items (messages)
+            if source_parent.isValid():
+                return True
 
-        source_model = self.sourceModel()
-        if not isinstance(source_model, GroupedModel):
-            return True
+            source_model = self.sourceModel()
+            if not isinstance(source_model, GroupedModel):
+                return True
 
-        msg = source_model.get_message(source_row)
-        if msg is None:
-            return True
+            msg = source_model.get_message(source_row)
+            if msg is None:
+                return True  # Accept if we can't get the message (safety)
 
-        # ID range filter
-        if self._min_id is not None and msg.arbitration_id < self._min_id:
-            return False
-        if self._max_id is not None and msg.arbitration_id > self._max_id:
-            return False
-
-        # Bus filter
-        if self._bus_filter:
-            if msg.bus_name != self._bus_filter:
+            # ID range filter
+            if self._min_id is not None and msg.arbitration_id < self._min_id:
+                return False
+            if self._max_id is not None and msg.arbitration_id > self._max_id:
                 return False
 
-        # ID pattern filter (hex string matching)
-        if self._id_pattern:
-            id_hex = f"{msg.arbitration_id:X}"
-            pattern = self._id_pattern.lstrip("0X")
-            if pattern and pattern not in id_hex:
-                # Also check message name if available
-                if msg.message_name:
-                    if self._id_pattern.upper() not in msg.message_name.upper():
-                        return False
-                else:
+            # Bus filter
+            if self._bus_filter:
+                if msg.bus_name != self._bus_filter:
                     return False
 
-        return True
+            # ID pattern filter (hex string matching)
+            if self._id_pattern:
+                id_hex = f"{msg.arbitration_id:X}"
+                pattern = self._id_pattern.lstrip("0X")
+                if pattern and pattern not in id_hex:
+                    # Also check message name if available
+                    if msg.message_name:
+                        if self._id_pattern.upper() not in msg.message_name.upper():
+                            return False
+                    else:
+                        return False
+
+            return True
+        except Exception:
+            return True  # On error, accept the row
