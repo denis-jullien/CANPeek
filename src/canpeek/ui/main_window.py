@@ -45,7 +45,6 @@ from canpeek.ui.widgets.status_bar import StatusBar
 from canpeek.ui.widgets.transmit_panel import TransmitPanel
 from canpeek.ui.widgets.properties_panel import PropertiesPanel
 from canpeek.ui.dialogs.sudo_dialog import SudoDialog
-from canpeek.ui.dialogs.connection_dialog import ConnectionDialog
 
 
 class MainWindow(QMainWindow):
@@ -347,6 +346,17 @@ class MainWindow(QMainWindow):
         # Transmit panel
         self._transmit_panel.send_frame.connect(self._on_transmit_frame)
 
+        # Properties panel signals
+        self._properties_panel.connection_changed.connect(self._on_connection_edited)
+        self._properties_panel.connection_connect.connect(self._on_connect_single)
+        self._properties_panel.connection_disconnect.connect(self._on_disconnect_single)
+        self._properties_panel.connection_delete.connect(self._on_remove_connection)
+        self._properties_panel.filter_changed.connect(self._on_filter_edited)
+        self._properties_panel.filter_delete.connect(self._on_filter_deleted)
+        self._properties_panel.add_to_transmit.connect(self._on_add_to_transmit)
+        self._properties_panel.create_filter_for_id.connect(self._on_create_filter_for_id)
+        self._properties_panel.send_nmt_command.connect(self._on_send_nmt_command)
+
     def _add_default_connection(self) -> None:
         """Add a default virtual CAN connection."""
         conn = Connection(
@@ -508,14 +518,17 @@ class MainWindow(QMainWindow):
     def _on_project_item_selected(self, item_type: str, item_data) -> None:
         """Handle project tree item selection."""
         if item_type == "connection" and item_data:
-            state = self._bus_states.get(item_data.id, BusState.UNKNOWN) if hasattr(self, '_bus_states') else BusState.UNKNOWN
             state = self._bus_manager.get_bus_state(item_data.id)
-            self._properties_panel.show_connection(item_data, state)
+            is_connected = state not in (BusState.UNKNOWN, BusState.STOPPED, BusState.BUS_OFF)
+            self._properties_panel.show_connection(item_data, is_connected)
+        elif item_type == "filter" and item_data:
+            self._properties_panel.show_filter(item_data)
         elif item_type == "canopen_node" and item_data:
             self._properties_panel.show_canopen_node(item_data)
         elif item_type == "database" and item_data:
             # item_data is the database path
-            self._properties_panel.clear()
+            msg_count = self._dbc_decoder.message_count
+            self._properties_panel.show_database(item_data, msg_count)
         else:
             self._properties_panel.clear()
 
@@ -523,6 +536,9 @@ class MainWindow(QMainWindow):
         """Handle bus state change."""
         self._status_bar.update_bus_state(connection_id, state)
         self._project_tree.update_bus_state(connection_id, state)
+        # Update properties panel if showing this connection
+        is_connected = state not in (BusState.UNKNOWN, BusState.STOPPED, BusState.BUS_OFF)
+        self._properties_panel.update_connection_state(connection_id, is_connected)
 
     def _on_bus_error(self, connection_id: UUID, message: str) -> None:
         """Handle bus error."""
@@ -541,41 +557,107 @@ class MainWindow(QMainWindow):
     # --- Actions ---
 
     def _on_new_connection(self) -> None:
-        """Show dialog to create a new connection."""
-        dialog = ConnectionDialog(self)
-        if dialog.exec() == ConnectionDialog.Accepted:
-            conn = dialog.get_connection()
-            self.add_connection(conn)
-            self._status_bar.showMessage(f"Added connection: {conn.name}")
+        """Create a new connection with defaults and select it for editing."""
+        # Create connection with defaults
+        count = len(self._connections)
+        conn = Connection(
+            name=f"Connection {count + 1}",
+            interface="socketcan",
+            channel="can0",
+            bitrate=500000,
+        )
+        # Add connection
+        self.add_connection(conn)
+        # Select it in tree (triggers properties panel display)
+        self._project_tree.select_connection(conn)
+        self._status_bar.showMessage(f"Created connection: {conn.name} - configure in properties panel")
 
     def _on_edit_connection(self, connection: Connection) -> None:
-        """Show dialog to edit an existing connection."""
-        old_name = connection.name
-        dialog = ConnectionDialog(self, connection=connection)
-        if dialog.exec() == ConnectionDialog.Accepted:
-            updated_conn = dialog.get_connection()
-            # Update the connection in place
-            connection.name = updated_conn.name
-            connection.interface = updated_conn.interface
-            connection.channel = updated_conn.channel
-            connection.bitrate = updated_conn.bitrate
-            connection.data_bitrate = updated_conn.data_bitrate
-            connection.fd = updated_conn.fd
-            connection.extra_config = updated_conn.extra_config
+        """Show dialog to edit an existing connection (legacy - now uses properties panel)."""
+        # Select connection in tree to show in properties panel
+        self._properties_panel.show_connection(
+            connection,
+            self._bus_manager.get_bus_state(connection.id) not in (BusState.UNKNOWN, BusState.STOPPED, BusState.BUS_OFF)
+        )
 
-            # Refresh UI components
-            self._project_tree.set_connections(self._connections)
-            self._transmit_panel.set_connections(self._connections)
+    def _on_connection_edited(self, connection: Connection) -> None:
+        """Handle connection edited via properties panel."""
+        # Refresh UI components
+        self._project_tree.set_connections(self._connections)
+        self._transmit_panel.set_connections(self._connections)
 
-            # Update status bar bus name
-            self._status_bar.update_bus_name(connection.id, connection.name)
+        # Update status bar bus name
+        self._status_bar.update_bus_name(connection.id, connection.name)
 
-            # Update bus combo boxes in views
-            if old_name != connection.name:
-                self._receive_view.rename_bus(old_name, connection.name)
-                self._trace_view.rename_bus(old_name, connection.name)
+        # Update bus combo boxes in views (for all connections)
+        for conn in self._connections:
+            self._receive_view.rename_bus(conn.name, conn.name)
+            self._trace_view.rename_bus(conn.name, conn.name)
 
-            self._status_bar.showMessage(f"Updated connection: {connection.name}")
+    def _on_filter_edited(self, filter_config: FilterConfig) -> None:
+        """Handle filter edited via properties panel."""
+        # Update tree display
+        self._project_tree._rebuild_filters()
+        # Apply filter changes
+        self._apply_filters()
+        self._status_bar.showMessage(f"Updated filter: {filter_config.name}")
+
+    def _on_filter_deleted(self, filter_config: FilterConfig) -> None:
+        """Handle filter deleted via properties panel."""
+        self._project_tree.remove_filter(filter_config)
+        self._properties_panel.clear()
+        self._status_bar.showMessage(f"Deleted filter: {filter_config.name}")
+
+    def _on_add_to_transmit(self, frame: CANFrame) -> None:
+        """Handle add frame to transmit panel request."""
+        self._transmit_panel.add_from_frame(frame)
+        self._status_bar.showMessage(f"Added {frame.id_str()} to transmit panel")
+
+    def _on_create_filter_for_id(self, arbitration_id: int, bus_name: str) -> None:
+        """Handle create filter for specific ID request."""
+        filter_config = FilterConfig(
+            name=f"ID 0x{arbitration_id:X}",
+            min_id=arbitration_id,
+            max_id=arbitration_id,
+            bus_filter=bus_name if bus_name else None,
+            enabled=True,
+        )
+        self._project_tree.add_filter(filter_config)
+        self._project_tree.filter_added.emit(filter_config)
+        # Select the new filter
+        self._properties_panel.show_filter(filter_config)
+        self._status_bar.showMessage(f"Created filter for 0x{arbitration_id:X}")
+
+    def _on_send_nmt_command(self, node_id: int, command: str) -> None:
+        """Handle NMT command request."""
+        # Build NMT frame
+        nmt_commands = {
+            "start": 0x01,
+            "stop": 0x02,
+            "pre_operational": 0x80,
+            "reset": 0x81,
+            "reset_communication": 0x82,
+        }
+        cmd_byte = nmt_commands.get(command, 0x01)
+        data = bytes([cmd_byte, node_id])
+
+        # Create NMT frame (always ID 0x000)
+        frame = CANFrame(
+            arbitration_id=0x000,
+            data=data,
+            dlc=2,
+            is_rx=False,
+        )
+
+        # Send on first connected bus
+        for conn in self._connections:
+            state = self._bus_manager.get_bus_state(conn.id)
+            if state not in (BusState.UNKNOWN, BusState.STOPPED, BusState.BUS_OFF):
+                self._bus_manager.send_frame(conn.id, frame)
+                self._status_bar.showMessage(f"Sent NMT {command} to node {node_id}")
+                return
+
+        self._status_bar.showMessage("No connected bus to send NMT command", 3000)
 
     def _on_remove_connection(self, connection: Connection) -> None:
         """Remove a connection after confirmation."""
