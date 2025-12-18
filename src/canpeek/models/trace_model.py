@@ -7,7 +7,6 @@ with incremental updates and virtual scrolling support.
 
 from __future__ import annotations
 
-from collections import deque
 from enum import IntEnum
 from typing import Any, Optional
 
@@ -81,13 +80,18 @@ class TraceModel(QAbstractTableModel):
         super().__init__(parent)
 
         self._max_frames = max_frames
-        self._frames: deque[CANFrame] = deque(maxlen=max_frames)
+        # Use list instead of deque for manual control over removal timing
+        self._frames: list[CANFrame] = []
         self._first_timestamp: Optional[float] = None
         self._show_relative_time = True
         self._show_decoded = True
 
         # Decoding support (set externally)
         self._decoder = None
+
+        # Throttling for overflow case
+        self._pending_frames: list[CANFrame] = []
+        self._overflow_mode = False
 
     @property
     def frame_count(self) -> int:
@@ -122,8 +126,9 @@ class TraceModel(QAbstractTableModel):
         """Remove all frames."""
         if self._frames:
             self.beginResetModel()
-            self._frames.clear()
+            self._frames = []
             self._first_timestamp = None
+            self._overflow_mode = False
             self.endResetModel()
 
     def add_frame(self, frame: CANFrame) -> None:
@@ -145,7 +150,7 @@ class TraceModel(QAbstractTableModel):
             return
 
         # Track first timestamp for relative time
-        if self._first_timestamp is None and frames:
+        if self._first_timestamp is None:
             self._first_timestamp = frames[0].timestamp
 
         current_count = len(self._frames)
@@ -154,6 +159,7 @@ class TraceModel(QAbstractTableModel):
 
         if total <= self._max_frames:
             # Simple append - no overflow
+            self._overflow_mode = False
             self.beginInsertRows(
                 QModelIndex(),
                 current_count,
@@ -162,12 +168,24 @@ class TraceModel(QAbstractTableModel):
             self._frames.extend(frames)
             self.endInsertRows()
         else:
-            # Overflow case - use model reset for safety
-            # The deque's maxlen auto-removes old items, which doesn't work well
-            # with separate beginRemoveRows/beginInsertRows calls
-            self.beginResetModel()
+            # Overflow case - use incremental remove/insert
+            # This is much faster than beginResetModel
+            self._overflow_mode = True
+
+            # Calculate how many frames need to be removed from the front
+            to_remove = total - self._max_frames
+
+            # Remove old frames first
+            if to_remove > 0:
+                self.beginRemoveRows(QModelIndex(), 0, to_remove - 1)
+                del self._frames[:to_remove]
+                self.endRemoveRows()
+
+            # Now add new frames at the end
+            new_start = len(self._frames)
+            self.beginInsertRows(QModelIndex(), new_start, new_start + new_count - 1)
             self._frames.extend(frames)
-            self.endResetModel()
+            self.endInsertRows()
 
     def set_frames(self, frames: list[CANFrame]) -> None:
         """
@@ -176,9 +194,9 @@ class TraceModel(QAbstractTableModel):
         Use this for loading saved traces.
         """
         self.beginResetModel()
-        self._frames.clear()
-        self._first_timestamp = frames[0].timestamp if frames else None
-        self._frames.extend(frames[-self._max_frames:])  # Limit to max
+        self._frames = frames[-self._max_frames:]  # Limit to max
+        self._first_timestamp = self._frames[0].timestamp if self._frames else None
+        self._overflow_mode = False
         self.endResetModel()
 
     def get_frame(self, row: int) -> Optional[CANFrame]:

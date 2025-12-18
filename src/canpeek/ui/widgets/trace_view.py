@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (
     QWidget,
@@ -60,6 +60,13 @@ class TraceView(QWidget):
         self._proxy_model.setSourceModel(self._model)
         self._autoscroll = True
 
+        # Debounced autoscroll timer to reduce scroll frequency
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setSingleShot(True)
+        self._scroll_timer.setInterval(50)  # 50ms debounce
+        self._scroll_timer.timeout.connect(self._do_autoscroll)
+        self._scroll_pending = False
+
         self._setup_ui()
         self._connect_signals()
 
@@ -80,6 +87,9 @@ class TraceView(QWidget):
         self._table_view.setSelectionBehavior(QTableView.SelectRows)
         self._table_view.setSelectionMode(QTableView.SingleSelection)
         self._table_view.verticalHeader().setVisible(False)
+        # Enable uniform row heights for fast scrolling with large datasets
+        self._table_view.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        self._table_view.verticalHeader().setDefaultSectionSize(20)
 
         # Set monospace font
         mono_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
@@ -249,7 +259,14 @@ class TraceView(QWidget):
         self._frame_count_label.setText(f"Frames: {count} / {max_count}")
 
     def _maybe_autoscroll(self) -> None:
-        """Scroll to bottom if autoscroll is enabled."""
+        """Schedule scroll to bottom if autoscroll is enabled (debounced)."""
+        if self._autoscroll and not self._pause_checkbox.isChecked():
+            # Debounce scroll requests
+            if not self._scroll_timer.isActive():
+                self._scroll_timer.start()
+
+    def _do_autoscroll(self) -> None:
+        """Actually perform the scroll (called by timer)."""
         if self._autoscroll and not self._pause_checkbox.isChecked():
             self._table_view.scrollToBottom()
 
