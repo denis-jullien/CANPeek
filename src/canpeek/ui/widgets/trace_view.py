@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (
     QWidget,
@@ -59,13 +59,6 @@ class TraceView(QWidget):
         self._proxy_model = TraceFilterProxyModel()
         self._proxy_model.setSourceModel(self._model)
         self._autoscroll = True
-
-        # Debounced autoscroll timer to reduce scroll frequency
-        self._scroll_timer = QTimer(self)
-        self._scroll_timer.setSingleShot(True)
-        self._scroll_timer.setInterval(50)  # 50ms debounce
-        self._scroll_timer.timeout.connect(self._do_autoscroll)
-        self._scroll_pending = False
 
         self._setup_ui()
         self._connect_signals()
@@ -259,14 +252,7 @@ class TraceView(QWidget):
         self._frame_count_label.setText(f"Frames: {count} / {max_count}")
 
     def _maybe_autoscroll(self) -> None:
-        """Schedule scroll to bottom if autoscroll is enabled (debounced)."""
-        if self._autoscroll and not self._pause_checkbox.isChecked():
-            # Debounce scroll requests
-            if not self._scroll_timer.isActive():
-                self._scroll_timer.start()
-
-    def _do_autoscroll(self) -> None:
-        """Actually perform the scroll (called by timer)."""
+        """Scroll to bottom if autoscroll is enabled."""
         if self._autoscroll and not self._pause_checkbox.isChecked():
             self._table_view.scrollToBottom()
 
