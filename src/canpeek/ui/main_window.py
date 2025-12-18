@@ -37,7 +37,7 @@ from canpeek.core.types import Connection, BusState, CANFrame
 from canpeek.core.reader import BusManager
 from canpeek.core.decoder import DBCDecoder
 from canpeek.protocols.canopen import CANopenNodeManager, CANopenNode, CANopenMessage
-from canpeek.project import Project, DatabaseConfig
+from canpeek.project import Project, DatabaseConfig, FilterConfig
 from canpeek.ui.widgets.receive_view import ReceiveView
 from canpeek.ui.widgets.trace_view import TraceView
 from canpeek.ui.widgets.project_tree import ProjectTree
@@ -322,6 +322,15 @@ class MainWindow(QMainWindow):
         self._project_tree.database_toggled.connect(
             self._on_database_toggled
         )
+        self._project_tree.filter_added.connect(
+            self._on_filter_added
+        )
+        self._project_tree.filter_removed.connect(
+            self._on_filter_removed
+        )
+        self._project_tree.filter_toggled.connect(
+            self._on_filter_toggled
+        )
 
         # Frame received signal
         self.frames_received.connect(self._on_frames_received)
@@ -422,6 +431,50 @@ class MainWindow(QMainWindow):
             if success:
                 self._status_bar.showMessage(f"Disabled database: {path}")
 
+    def _on_filter_added(self, filter_config: FilterConfig) -> None:
+        """Handle new filter added."""
+        self._apply_filters()
+        self._status_bar.showMessage(f"Added filter: {filter_config.name}")
+
+    def _on_filter_removed(self, filter_config: FilterConfig) -> None:
+        """Handle filter removed."""
+        self._apply_filters()
+        self._status_bar.showMessage(f"Removed filter: {filter_config.name}")
+
+    def _on_filter_toggled(self, filter_config: FilterConfig, enabled: bool) -> None:
+        """Handle filter enabled/disabled toggle."""
+        self._apply_filters()
+        state = "enabled" if enabled else "disabled"
+        self._status_bar.showMessage(f"Filter {filter_config.name} {state}")
+
+    def _apply_filters(self) -> None:
+        """Apply all enabled filters to the views."""
+        # Collect all enabled filters
+        enabled_filters = self._project_tree.get_enabled_filters()
+
+        if not enabled_filters:
+            # No filters - clear filter settings
+            self._receive_view.proxy_model.set_id_range(None, None)
+            self._trace_view.proxy_model.set_id_range(None, None)
+        else:
+            # Combine filters - use the union of all ID ranges
+            min_id = None
+            max_id = None
+            for f in enabled_filters:
+                if f.min_id is not None:
+                    if min_id is None:
+                        min_id = f.min_id
+                    else:
+                        min_id = min(min_id, f.min_id)
+                if f.max_id is not None:
+                    if max_id is None:
+                        max_id = f.max_id
+                    else:
+                        max_id = max(max_id, f.max_id)
+
+            self._receive_view.proxy_model.set_id_range(min_id, max_id)
+            self._trace_view.proxy_model.set_id_range(min_id, max_id)
+
     def _on_frame_selected(self, frame: CANFrame) -> None:
         """Handle frame selection in views."""
         # Get message info from decoder
@@ -497,6 +550,7 @@ class MainWindow(QMainWindow):
 
     def _on_edit_connection(self, connection: Connection) -> None:
         """Show dialog to edit an existing connection."""
+        old_name = connection.name
         dialog = ConnectionDialog(self, connection=connection)
         if dialog.exec() == ConnectionDialog.Accepted:
             updated_conn = dialog.get_connection()
@@ -508,8 +562,19 @@ class MainWindow(QMainWindow):
             connection.data_bitrate = updated_conn.data_bitrate
             connection.fd = updated_conn.fd
             connection.extra_config = updated_conn.extra_config
-            # Refresh the tree
+
+            # Refresh UI components
             self._project_tree.set_connections(self._connections)
+            self._transmit_panel.set_connections(self._connections)
+
+            # Update status bar bus name
+            self._status_bar.update_bus_name(connection.id, connection.name)
+
+            # Update bus combo boxes in views
+            if old_name != connection.name:
+                self._receive_view.rename_bus(old_name, connection.name)
+                self._trace_view.rename_bus(old_name, connection.name)
+
             self._status_bar.showMessage(f"Updated connection: {connection.name}")
 
     def _on_remove_connection(self, connection: Connection) -> None:

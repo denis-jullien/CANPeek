@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from canpeek.core.types import Connection, BusState
 from canpeek.protocols.canopen import CANopenNode, NMTState
+from canpeek.project import FilterConfig
 
 
 class ProjectTree(QWidget):
@@ -58,6 +59,9 @@ class ProjectTree(QWidget):
     database_loaded = Signal(str)  # path - emitted when database is added
     database_unloaded = Signal(str)  # path - emitted when database is removed
     database_toggled = Signal(str, bool)  # path, enabled - emitted on checkbox toggle
+    filter_added = Signal(object)  # FilterConfig - emitted when filter is added
+    filter_removed = Signal(object)  # FilterConfig - emitted when filter is removed
+    filter_toggled = Signal(object, bool)  # FilterConfig, enabled - emitted on toggle
     project_changed = Signal()
 
     # Item type constants
@@ -225,14 +229,69 @@ class ProjectTree(QWidget):
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
         item.setCheckState(0, Qt.Checked)
 
-    def add_filter(self, name: str, filter_data: Any) -> None:
+    def add_filter(self, filter_config: FilterConfig) -> None:
         """Add a filter to the tree."""
         item = QTreeWidgetItem(self._filter_root)
-        item.setText(0, name)
+        item.setText(0, self._format_filter_name(filter_config))
         item.setData(0, Qt.UserRole, self.TYPE_FILTER)
-        item.setData(0, Qt.UserRole + 1, filter_data)
+        item.setData(0, Qt.UserRole + 1, filter_config)
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-        item.setCheckState(0, Qt.Checked)
+        item.setCheckState(0, Qt.Checked if filter_config.enabled else Qt.Unchecked)
+        item.setToolTip(0, self._format_filter_tooltip(filter_config))
+
+    def _format_filter_name(self, f: FilterConfig) -> str:
+        """Format filter name for display."""
+        parts = [f.name]
+        if f.min_id is not None or f.max_id is not None:
+            min_str = f"0x{f.min_id:X}" if f.min_id is not None else "0x0"
+            max_str = f"0x{f.max_id:X}" if f.max_id is not None else "0x7FF"
+            parts.append(f"({min_str}-{max_str})")
+        if f.bus_filter:
+            parts.append(f"[{f.bus_filter}]")
+        return " ".join(parts)
+
+    def _format_filter_tooltip(self, f: FilterConfig) -> str:
+        """Format filter tooltip."""
+        lines = [f"Name: {f.name}"]
+        if f.min_id is not None:
+            lines.append(f"Min ID: 0x{f.min_id:X}")
+        if f.max_id is not None:
+            lines.append(f"Max ID: 0x{f.max_id:X}")
+        if f.bus_filter:
+            lines.append(f"Bus: {f.bus_filter}")
+        if f.id_pattern:
+            lines.append(f"Pattern: {f.id_pattern}")
+        return "\n".join(lines)
+
+    def remove_filter(self, filter_config: FilterConfig) -> None:
+        """Remove a filter from the tree."""
+        for i in range(self._filter_root.childCount()):
+            item = self._filter_root.child(i)
+            if item.data(0, Qt.UserRole + 1) is filter_config:
+                self._filter_root.removeChild(item)
+                self.filter_removed.emit(filter_config)
+                self.project_changed.emit()
+                break
+
+    def get_enabled_filters(self) -> list[FilterConfig]:
+        """Get all enabled filters."""
+        filters = []
+        for i in range(self._filter_root.childCount()):
+            item = self._filter_root.child(i)
+            filter_config = item.data(0, Qt.UserRole + 1)
+            if filter_config and item.checkState(0) == Qt.Checked:
+                filters.append(filter_config)
+        return filters
+
+    def get_all_filters(self) -> list[FilterConfig]:
+        """Get all filters."""
+        filters = []
+        for i in range(self._filter_root.childCount()):
+            item = self._filter_root.child(i)
+            filter_config = item.data(0, Qt.UserRole + 1)
+            if filter_config:
+                filters.append(filter_config)
+        return filters
 
     def _on_selection_changed(self) -> None:
         """Handle selection change."""
@@ -275,6 +334,11 @@ class ProjectTree(QWidget):
             checked = item.checkState(0) == Qt.Checked
             self.database_toggled.emit(item_data, checked)
 
+        elif item_type == self.TYPE_FILTER and item_data:
+            checked = item.checkState(0) == Qt.Checked
+            item_data.enabled = checked
+            self.filter_toggled.emit(item_data, checked)
+
     def _show_context_menu(self, pos) -> None:
         """Show context menu."""
         item = self._tree.itemAt(pos)
@@ -311,8 +375,16 @@ class ProjectTree(QWidget):
             remove_action.triggered.connect(lambda: self.remove_database(db_path))
 
         elif item_type == self.TYPE_FILTERS_ROOT:
-            add_action = menu.addAction("Add Filter")
+            add_action = menu.addAction("Add Filter...")
             add_action.triggered.connect(self._add_filter)
+
+        elif item_type == self.TYPE_FILTER:
+            filter_config = item.data(0, Qt.UserRole + 1)
+            edit_action = menu.addAction("Edit...")
+            edit_action.triggered.connect(lambda: self._edit_filter(filter_config))
+            menu.addSeparator()
+            remove_action = menu.addAction("Remove")
+            remove_action.triggered.connect(lambda: self.remove_filter(filter_config))
 
         if menu.actions():
             menu.exec(self._tree.viewport().mapToGlobal(pos))
@@ -352,9 +424,108 @@ class ProjectTree(QWidget):
                 break
 
     def _add_filter(self) -> None:
-        """Add a new filter."""
-        # TODO: Implement filter dialog
-        self.add_filter(f"Filter {self._filter_root.childCount() + 1}", None)
+        """Add a new filter via dialog."""
+        from PySide6.QtWidgets import QInputDialog
+
+        name, ok = QInputDialog.getText(
+            self,
+            "Add Filter",
+            "Filter name:",
+            text=f"Filter {self._filter_root.childCount() + 1}"
+        )
+        if not ok or not name:
+            return
+
+        # Get ID range
+        min_id_str, ok = QInputDialog.getText(
+            self,
+            "Add Filter",
+            "Minimum ID (hex, e.g. 0x100):",
+            text=""
+        )
+        min_id = None
+        if ok and min_id_str:
+            try:
+                min_id = int(min_id_str, 16) if min_id_str.startswith("0x") else int(min_id_str, 16)
+            except ValueError:
+                pass
+
+        max_id_str, ok = QInputDialog.getText(
+            self,
+            "Add Filter",
+            "Maximum ID (hex, e.g. 0x1FF):",
+            text=""
+        )
+        max_id = None
+        if ok and max_id_str:
+            try:
+                max_id = int(max_id_str, 16) if max_id_str.startswith("0x") else int(max_id_str, 16)
+            except ValueError:
+                pass
+
+        filter_config = FilterConfig(
+            name=name,
+            min_id=min_id,
+            max_id=max_id,
+        )
+        self.add_filter(filter_config)
+        self.filter_added.emit(filter_config)
+        self.project_changed.emit()
+
+    def _edit_filter(self, filter_config: FilterConfig) -> None:
+        """Edit an existing filter."""
+        from PySide6.QtWidgets import QInputDialog
+
+        name, ok = QInputDialog.getText(
+            self,
+            "Edit Filter",
+            "Filter name:",
+            text=filter_config.name
+        )
+        if not ok:
+            return
+
+        min_id_str, ok = QInputDialog.getText(
+            self,
+            "Edit Filter",
+            "Minimum ID (hex, e.g. 0x100):",
+            text=f"0x{filter_config.min_id:X}" if filter_config.min_id is not None else ""
+        )
+        min_id = None
+        if ok and min_id_str:
+            try:
+                min_id = int(min_id_str, 16) if min_id_str.startswith("0x") else int(min_id_str, 16)
+            except ValueError:
+                pass
+
+        max_id_str, ok = QInputDialog.getText(
+            self,
+            "Edit Filter",
+            "Maximum ID (hex, e.g. 0x1FF):",
+            text=f"0x{filter_config.max_id:X}" if filter_config.max_id is not None else ""
+        )
+        max_id = None
+        if ok and max_id_str:
+            try:
+                max_id = int(max_id_str, 16) if max_id_str.startswith("0x") else int(max_id_str, 16)
+            except ValueError:
+                pass
+
+        # Update filter config
+        filter_config.name = name
+        filter_config.min_id = min_id
+        filter_config.max_id = max_id
+
+        # Update tree item
+        for i in range(self._filter_root.childCount()):
+            item = self._filter_root.child(i)
+            if item.data(0, Qt.UserRole + 1) is filter_config:
+                item.setText(0, self._format_filter_name(filter_config))
+                item.setToolTip(0, self._format_filter_tooltip(filter_config))
+                break
+
+        # Emit signal to update views
+        self.filter_toggled.emit(filter_config, filter_config.enabled)
         self.project_changed.emit()
 
     # --- CANopen node management ---

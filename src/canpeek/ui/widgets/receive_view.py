@@ -228,6 +228,14 @@ class ReceiveView(QWidget):
                 self._bus_combo.removeItem(i)
                 break
 
+    def rename_bus(self, old_name: str, new_name: str) -> None:
+        """Rename a bus in the filter combo."""
+        for i in range(self._bus_combo.count()):
+            if self._bus_combo.itemData(i) == old_name:
+                self._bus_combo.setItemText(i, new_name)
+                self._bus_combo.setItemData(i, new_name)
+                break
+
     def _update_status(self) -> None:
         """Update status labels."""
         count = self._model.message_count
@@ -335,6 +343,11 @@ class ReceiveView(QWidget):
     def model(self) -> GroupedModel:
         """Get the underlying model."""
         return self._model
+
+    @property
+    def proxy_model(self) -> MessageFilterProxyModel:
+        """Get the filter proxy model."""
+        return self._proxy_model
 
     @property
     def is_paused(self) -> bool:
