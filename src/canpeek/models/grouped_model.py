@@ -83,16 +83,42 @@ class MessageItem:
     # Row tracking
     row_index: int = 0
 
+    # Cached display values (avoid repeated formatting)
+    _cached_id_str: str = ""
+    _cached_data_str: str = ""
+    _cached_data_bytes: bytes = b""
+
     def update(self, frame: CANFrame) -> None:
         """Update with a new frame."""
         self.frame = frame
         self.dlc = frame.dlc
-        self.data = frame.data
+
+        # Only update cached strings if data changed
+        if frame.data != self._cached_data_bytes:
+            self.data = frame.data
+            self._cached_data_bytes = frame.data
+            self._cached_data_str = frame.data.hex(' ').upper()
+
         self.count += 1
         self.timestamps.append(frame.timestamp)
 
         # Invalidate signals for re-decode
         self.signals_loaded = False
+
+    @property
+    def id_str(self) -> str:
+        """Get cached ID string."""
+        if not self._cached_id_str:
+            if self.frame and self.frame.is_extended_id:
+                self._cached_id_str = f"0x{self.arbitration_id:08X}"
+            else:
+                self._cached_id_str = f"0x{self.arbitration_id:03X}"
+        return self._cached_id_str
+
+    @property
+    def data_str(self) -> str:
+        """Get cached data string."""
+        return self._cached_data_str
 
     def get_cycle_time_ms(self) -> Optional[float]:
         """Calculate average cycle time in milliseconds."""
@@ -211,23 +237,20 @@ class GroupedModel(QAbstractItemModel):
             self._message_list.extend(new_messages)
             self.endInsertRows()
 
-        # Notify about updated existing messages
+        # Notify about updated existing messages - batched for performance
         if updated_rows:
-            for row in updated_rows:
-                # Emit dataChanged for all columns of this row
-                top_left = self.index(row, 0)
-                bottom_right = self.index(row, len(GroupedColumn) - 1)
-                self.dataChanged.emit(top_left, bottom_right)
+            # Emit a single dataChanged covering all updated rows
+            min_row = min(updated_rows)
+            max_row = max(updated_rows)
+            top_left = self.index(min_row, 0)
+            bottom_right = self.index(max_row, len(GroupedColumn) - 1)
+            self.dataChanged.emit(top_left, bottom_right)
 
-                # Also update children if expanded
+            # Invalidate signal cache for updated messages
+            for row in updated_rows:
                 msg = self._message_list[row]
-                if msg.signals_loaded and msg.signals:
-                    msg.signals_loaded = False  # Force re-decode
-                    # Notify that children may have changed
-                    parent_idx = self.index(row, 0)
-                    child_top = self.index(0, 0, parent_idx)
-                    child_bottom = self.index(len(msg.signals) - 1, len(GroupedColumn) - 1, parent_idx)
-                    self.dataChanged.emit(child_top, child_bottom)
+                if msg.signals_loaded:
+                    msg.signals_loaded = False
 
     def get_message(self, row: int) -> Optional[MessageItem]:
         """Get message at row index."""
@@ -362,9 +385,7 @@ class GroupedModel(QAbstractItemModel):
 
         if role == Qt.DisplayRole:
             if column == GroupedColumn.ID:
-                if msg.frame and msg.frame.is_extended_id:
-                    return f"0x{msg.arbitration_id:08X}"
-                return f"0x{msg.arbitration_id:03X}"
+                return msg.id_str  # Use cached value
 
             if column == GroupedColumn.BUS:
                 return msg.bus_name or str(msg.bus_id)
@@ -383,7 +404,7 @@ class GroupedModel(QAbstractItemModel):
                 return str(msg.dlc)
 
             if column == GroupedColumn.DATA:
-                return msg.data.hex(' ').upper()
+                return msg.data_str  # Use cached value
 
             if column == GroupedColumn.CYCLE:
                 cycle = msg.get_cycle_time_ms()

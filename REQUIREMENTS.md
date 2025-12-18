@@ -816,10 +816,13 @@ canpeek2/
 
 ### Phase 3: Multi-bus & Performance ✅ COMPLETE
 - [x] Multi-bus reader
-- [x] DBC decoder with caching
+- [x] DBC decoder with LRU caching (10k entries)
 - [x] Frame filtering (ID range, bus, pattern)
-- [ ] Background processor (optional - current performance is adequate)
-- [ ] Performance optimization (optional)
+- [x] Performance optimizations:
+  - Batched dataChanged signals in GroupedModel
+  - Cached display strings (id_str, data_str) in MessageItem
+  - LRU decode cache in DBCDecoder
+  - Efficient incremental model updates
 
 ### Phase 4: Full Features ✅ COMPLETE
 - [x] Project save/load (YAML format)

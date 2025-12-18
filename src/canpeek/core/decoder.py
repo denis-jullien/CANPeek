@@ -63,11 +63,16 @@ class DBCDecoder:
         >>> print(signals)  # {'EngineRPM': 3500, 'EngineTemp': 92}
     """
 
-    def __init__(self):
+    def __init__(self, decode_cache_size: int = 10000):
         self._databases: list[Database] = []
         self._db_paths: list[str] = []
         self._message_cache: dict[int, Message] = {}
         self._lock = threading.Lock()
+
+        # LRU cache for decoded values: (arb_id, data_bytes) -> decoded dict
+        self._decode_cache_size = decode_cache_size
+        self._decode_cache: dict[tuple[int, bytes], dict[str, Any]] = {}
+        self._decode_cache_order: list[tuple[int, bytes]] = []
 
     def load_database(self, path: str) -> bool:
         """
@@ -189,21 +194,55 @@ class DBCDecoder:
         """
         Decode a CAN frame to signal values.
 
+        Uses LRU cache for performance - same data returns cached result.
+
         Args:
             frame: CAN frame to decode
 
         Returns:
             Dictionary of signal_name -> value, or None if unknown message
         """
+        cache_key = (frame.arbitration_id, frame.data)
+
+        # Check cache first (fast path)
+        if cache_key in self._decode_cache:
+            return self._decode_cache[cache_key]
+
         msg = self.get_message(frame.arbitration_id)
         if msg is None:
             return None
 
         try:
             # Decode using cantools
-            return msg.decode(frame.data, decode_choices=True)
+            result = msg.decode(frame.data, decode_choices=True)
+
+            # Add to cache with LRU eviction
+            self._cache_put(cache_key, result)
+
+            return result
         except Exception:
             return None
+
+    def _cache_put(self, key: tuple[int, bytes], value: dict[str, Any]) -> None:
+        """Add entry to decode cache with LRU eviction."""
+        if key in self._decode_cache:
+            # Move to end (most recent)
+            self._decode_cache_order.remove(key)
+            self._decode_cache_order.append(key)
+            return
+
+        # Evict oldest if at capacity
+        while len(self._decode_cache) >= self._decode_cache_size:
+            oldest = self._decode_cache_order.pop(0)
+            del self._decode_cache[oldest]
+
+        self._decode_cache[key] = value
+        self._decode_cache_order.append(key)
+
+    def clear_decode_cache(self) -> None:
+        """Clear the decode cache."""
+        self._decode_cache.clear()
+        self._decode_cache_order.clear()
 
     def decode_with_units(self, frame: CANFrame) -> Optional[dict[str, tuple[Any, str]]]:
         """
