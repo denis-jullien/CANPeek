@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import Optional, Any
 from uuid import UUID
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon, QColor, QAction
 from PySide6.QtWidgets import (
@@ -63,6 +65,13 @@ class ProjectTree(QWidget):
     filter_removed = Signal(object)  # FilterConfig - emitted when filter is removed
     filter_toggled = Signal(object, bool)  # FilterConfig, enabled - emitted on toggle
     project_changed = Signal()
+
+    # CANopen node management signals
+    canopen_node_add_requested = Signal()  # Request to add a manual node
+    canopen_node_remove_requested = Signal(object)  # CANopenNode to remove
+    od_assign_requested = Signal(object)  # CANopenNode - request OD assignment
+    od_clear_requested = Signal(object)  # CANopenNode - clear OD assignment
+    canopen_node_selected = Signal(object)  # CANopenNode - node was selected
 
     # Item type constants
     TYPE_ROOT = "root"
@@ -396,6 +405,25 @@ class ProjectTree(QWidget):
             remove_action = menu.addAction("Remove")
             remove_action.triggered.connect(lambda: self.remove_filter(filter_config))
 
+        elif item_type == self.TYPE_CANOPEN_ROOT:
+            add_action = menu.addAction("Add Node...")
+            add_action.triggered.connect(lambda: self.canopen_node_add_requested.emit())
+
+        elif item_type == self.TYPE_CANOPEN_NODE:
+            node = item.data(0, Qt.UserRole + 1)
+            if node:
+                # OD assignment options
+                assign_action = menu.addAction("Assign Object Dictionary...")
+                assign_action.triggered.connect(lambda: self.od_assign_requested.emit(node))
+
+                if hasattr(node, 'od_path') and node.od_path:
+                    clear_od_action = menu.addAction("Clear Object Dictionary")
+                    clear_od_action.triggered.connect(lambda: self.od_clear_requested.emit(node))
+
+                menu.addSeparator()
+                remove_action = menu.addAction("Remove Node")
+                remove_action.triggered.connect(lambda: self.canopen_node_remove_requested.emit(node))
+
         if menu.actions():
             menu.exec(self._tree.viewport().mapToGlobal(pos))
 
@@ -493,12 +521,20 @@ class ProjectTree(QWidget):
 
     def _update_canopen_node_item(self, item: QTreeWidgetItem, node: CANopenNode) -> None:
         """Update CANopen node item appearance based on state."""
-        # Update text with state
+        # Build display text
         state_str = node.state_name
+        text_parts = [f"Node {node.node_id}"]
+
         if node.device_name:
-            item.setText(0, f"Node {node.node_id}: {node.device_name} [{state_str}]")
-        else:
-            item.setText(0, f"Node {node.node_id} [{state_str}]")
+            text_parts.append(f": {node.device_name}")
+
+        # Show OD file name if assigned
+        if hasattr(node, 'od_path') and node.od_path:
+            od_name = Path(node.od_path).name if isinstance(node.od_path, (str, Path)) else str(node.od_path)
+            text_parts.append(f" ({od_name})")
+
+        text_parts.append(f" [{state_str}]")
+        item.setText(0, "".join(text_parts))
 
         # Color based on state
         if node.state == NMTState.OPERATIONAL:
@@ -520,6 +556,8 @@ class ProjectTree(QWidget):
             tooltip += f"Errors: {node.error_count}\n"
         if node.heartbeat_interval_ms:
             tooltip += f"Heartbeat: {node.heartbeat_interval_ms:.0f} ms\n"
+        if hasattr(node, 'od_path') and node.od_path:
+            tooltip += f"Object Dictionary: {node.od_path}\n"
         item.setToolTip(0, tooltip)
 
     def remove_canopen_node(self, node_id: int) -> None:

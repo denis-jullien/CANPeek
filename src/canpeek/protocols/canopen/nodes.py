@@ -43,6 +43,9 @@ class CANopenNode:
     product_code: Optional[int] = None
     device_name: str = ""
 
+    # Object Dictionary assignment
+    od_path: Optional[str] = None
+
     def update_heartbeat(self, nmt_state: NMTState) -> None:
         """Update from heartbeat message."""
         now = time.time()

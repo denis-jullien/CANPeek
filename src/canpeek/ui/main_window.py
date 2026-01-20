@@ -44,7 +44,10 @@ from canpeek.ui.widgets.project_tree import ProjectTree
 from canpeek.ui.widgets.status_bar import StatusBar
 from canpeek.ui.widgets.transmit_panel import TransmitPanel
 from canpeek.ui.widgets.properties_panel import PropertiesPanel
+from canpeek.ui.widgets.od_browser import ODBrowser
 from canpeek.ui.dialogs.sudo_dialog import SudoDialog
+from canpeek.protocols.canopen.object_dictionary import ObjectDictionaryWrapper
+from canpeek.protocols.canopen.sdo_client import SdoClient, SdoAbortError, SdoTimeoutError
 
 
 class MainWindow(QMainWindow):
@@ -81,6 +84,10 @@ class MainWindow(QMainWindow):
         self._frame_count = 0
         self._last_frame_count = 0
         self._message_rate = 0.0
+
+        # SDO client for OD operations
+        self._active_sdo_client = None
+        self._od_cache: dict[str, ObjectDictionaryWrapper] = {}
 
         # Set up UI
         self._setup_docking()
@@ -164,6 +171,14 @@ class MainWindow(QMainWindow):
             QtAds.BottomDockWidgetArea, transmit_dock, central_area
         )
 
+        # Object Dictionary browser
+        self._od_browser = ODBrowser()
+        od_dock = QtAds.CDockWidget("Object Dictionary")
+        od_dock.setWidget(self._od_browser)
+        self._dock_manager.addDockWidget(
+            QtAds.RightDockWidgetArea, od_dock, right_area
+        )
+
         # Store dock references
         self._docks = {
             'receive': receive_dock,
@@ -171,6 +186,7 @@ class MainWindow(QMainWindow):
             'project': project_dock,
             'properties': properties_dock,
             'transmit': transmit_dock,
+            'od_browser': od_dock,
         }
 
     def _setup_actions(self) -> None:
@@ -357,6 +373,15 @@ class MainWindow(QMainWindow):
         self._properties_panel.create_filter_for_id.connect(self._on_create_filter_for_id)
         self._properties_panel.send_nmt_command.connect(self._on_send_nmt_command)
 
+        # Project tree - OD management signals
+        self._project_tree.od_assign_requested.connect(self._on_od_assign_requested)
+        self._project_tree.od_clear_requested.connect(self._on_od_clear_requested)
+
+        # OD Browser signals
+        self._od_browser.sdo_read_requested.connect(self._on_sdo_read)
+        self._od_browser.sdo_write_requested.connect(self._on_sdo_write)
+        self._od_browser.scan_requested.connect(self._on_sdo_scan)
+
     def _add_default_connection(self) -> None:
         """Add a default virtual CAN connection."""
         conn = Connection(
@@ -525,6 +550,15 @@ class MainWindow(QMainWindow):
             self._properties_panel.show_filter(item_data)
         elif item_type == "canopen_node" and item_data:
             self._properties_panel.show_canopen_node(item_data)
+            # Also update OD browser if node has an assigned OD
+            if hasattr(item_data, 'od_path') and item_data.od_path:
+                try:
+                    od = ObjectDictionaryWrapper(item_data.od_path)
+                    self._od_browser.set_node(item_data.node_id, od)
+                except Exception as e:
+                    self._status_bar.showMessage(f"Failed to load OD: {e}", 3000)
+            else:
+                self._od_browser.clear()
         elif item_type == "database" and item_data:
             # item_data is the database path
             msg_count = self._dbc_decoder.message_count
@@ -946,3 +980,204 @@ class MainWindow(QMainWindow):
         self._project_tree.set_connections(self._connections)
         self._transmit_panel.set_connections(self._connections)
         self._status_bar.remove_bus(connection_id)
+
+    # --- Object Dictionary / SDO methods ---
+
+    def _on_od_assign_requested(self, node: CANopenNode) -> None:
+        """Handle OD assignment request from project tree."""
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Object Dictionary",
+            "",
+            "EDS/DCF Files (*.eds *.dcf);;All Files (*)"
+        )
+        if path:
+            try:
+                # Load the OD
+                od = ObjectDictionaryWrapper(path)
+
+                # Store path on node
+                node.od_path = path
+
+                # Update tree display
+                self._project_tree.update_canopen_node(node)
+
+                # Show in OD browser
+                self._od_browser.set_node(node.node_id, od)
+
+                self._status_bar.showMessage(f"Loaded OD for node {node.node_id}: {path}")
+            except Exception as e:
+                self._status_bar.showMessage(f"Failed to load OD: {e}", 5000)
+
+    def _on_od_clear_requested(self, node: CANopenNode) -> None:
+        """Handle OD clear request."""
+        if hasattr(node, 'od_path'):
+            node.od_path = None
+        self._project_tree.update_canopen_node(node)
+        self._od_browser.clear()
+        self._status_bar.showMessage(f"Cleared OD for node {node.node_id}")
+
+    def _on_sdo_read(self, node_id: int, index: int, subindex: int) -> None:
+        """Handle SDO read request from OD browser."""
+        import asyncio
+
+        async def do_read():
+            try:
+                # Find connection for this node
+                # For now, use first active connection
+                conn = self._get_active_connection()
+                if not conn:
+                    self._od_browser.show_status("No active connection", True)
+                    return
+
+                client = SdoClient(
+                    node_id=node_id,
+                    connection_id=conn.id,
+                    send_callback=self._send_frame_for_sdo
+                )
+
+                # Register for responses
+                self._active_sdo_client = client
+
+                data = await client.read(index, subindex)
+
+                # Format value
+                value = self._format_sdo_value(data)
+                self._od_browser.update_value(index, subindex, value, data)
+                self._status_bar.showMessage(f"Read 0x{index:04X}:{subindex:02X} = {value}")
+
+            except SdoAbortError as e:
+                self._od_browser.show_error(f"SDO Abort: {e.message}")
+            except SdoTimeoutError:
+                self._od_browser.show_error("SDO Timeout")
+            except Exception as e:
+                self._od_browser.show_error(f"Error: {e}")
+            finally:
+                self._active_sdo_client = None
+
+        # Run async task
+        asyncio.ensure_future(do_read())
+
+    def _on_sdo_write(self, node_id: int, index: int, subindex: int, data: bytes) -> None:
+        """Handle SDO write request."""
+        import asyncio
+
+        async def do_write():
+            try:
+                conn = self._get_active_connection()
+                if not conn:
+                    self._status_bar.showMessage("No active connection", 3000)
+                    return
+
+                client = SdoClient(
+                    node_id=node_id,
+                    connection_id=conn.id,
+                    send_callback=self._send_frame_for_sdo
+                )
+
+                self._active_sdo_client = client
+                await client.write(index, subindex, data)
+
+                self._status_bar.showMessage(f"Written 0x{index:04X}:{subindex:02X}")
+
+            except SdoAbortError as e:
+                self._status_bar.showMessage(f"SDO Abort: {e.message}", 5000)
+            except SdoTimeoutError:
+                self._status_bar.showMessage("SDO Timeout", 3000)
+            except Exception as e:
+                self._status_bar.showMessage(f"Write error: {e}", 3000)
+            finally:
+                self._active_sdo_client = None
+
+        asyncio.ensure_future(do_write())
+
+    def _on_sdo_scan(self, node_id: int) -> None:
+        """Handle scan all request."""
+        import asyncio
+
+        async def do_scan():
+            # Access the OD from the browser
+            od = getattr(self._od_browser, '_current_od', None)
+            if not od:
+                return
+
+            conn = self._get_active_connection()
+            if not conn:
+                self._od_browser.show_error("No active connection")
+                return
+
+            client = SdoClient(
+                node_id=node_id,
+                connection_id=conn.id,
+                send_callback=self._send_frame_for_sdo
+            )
+            self._active_sdo_client = client
+
+            # Get all readable entries
+            entries = [e for e in od.get_readable_entries()]
+            total = len(entries)
+            success_count = 0
+            error_count = 0
+
+            for i, entry in enumerate(entries):
+                try:
+                    self._od_browser.set_progress(i + 1, total)
+                    data = await client.read(entry.index, entry.subindex)
+                    value = self._format_sdo_value(data)
+                    self._od_browser.update_value(entry.index, entry.subindex, value)
+                    success_count += 1
+                except Exception:
+                    error_count += 1
+
+                # Small delay between reads
+                await asyncio.sleep(0.01)
+
+            self._od_browser.set_progress(0, 0)  # Hide progress
+            self._status_bar.showMessage(
+                f"Scan complete: {success_count} read, {error_count} errors"
+            )
+            self._active_sdo_client = None
+
+        asyncio.ensure_future(do_scan())
+
+    def _send_frame_for_sdo(self, frame, connection_id: UUID) -> None:
+        """Send frame callback for SDO client."""
+        self._bus_manager.send_frame(connection_id, frame)
+
+    def _get_active_connection(self) -> Optional[Connection]:
+        """Get first active connection."""
+        for conn in self._connections:
+            state = self._bus_manager.get_bus_state(conn.id)
+            if state not in (BusState.UNKNOWN, BusState.STOPPED, BusState.BUS_OFF):
+                return conn
+        return None
+
+    def _format_sdo_value(self, data: bytes) -> str:
+        """Format SDO data as a string."""
+        if len(data) == 1:
+            return f"0x{data[0]:02X} ({data[0]})"
+        elif len(data) == 2:
+            import struct
+            val = struct.unpack('<H', data)[0]
+            return f"0x{val:04X} ({val})"
+        elif len(data) == 4:
+            import struct
+            val = struct.unpack('<I', data)[0]
+            return f"0x{val:08X} ({val})"
+        else:
+            return data.hex()
+
+    def _on_project_item_selected_canopen(self, item_type: str, item_data) -> None:
+        """Handle CANopen node selection to show OD."""
+        if item_type == "canopen_node" and item_data:
+            node = item_data
+            if hasattr(node, 'od_path') and node.od_path:
+                try:
+                    od = ObjectDictionaryWrapper(node.od_path)
+                    self._od_browser.set_node(node.node_id, od)
+                except Exception as e:
+                    self._status_bar.showMessage(f"Failed to load OD: {e}", 3000)
+            else:
+                self._od_browser.clear()

@@ -21,6 +21,16 @@ from canpeek.protocols.canopen.nodes import (
     CANopenNode,
     CANopenNodeManager,
 )
+from canpeek.protocols.canopen.object_dictionary import (
+    ObjectDictionaryWrapper,
+    ODEntry,
+    ODIndex,
+)
+from canpeek.protocols.canopen.sdo_client import (
+    SdoClient,
+    SdoAbortError,
+    SdoTimeoutError,
+)
 
 __all__ = [
     # Decoder
@@ -38,4 +48,12 @@ __all__ = [
     # Nodes
     "CANopenNode",
     "CANopenNodeManager",
+    # Object Dictionary
+    "ObjectDictionaryWrapper",
+    "ODEntry",
+    "ODIndex",
+    # SDO Client
+    "SdoClient",
+    "SdoAbortError",
+    "SdoTimeoutError",
 ]
